@@ -1168,12 +1168,11 @@ class GlobalVariables:
             item.setProperty("UnWatchedEpisodes", str(menu_item["unwatched_episodes"]))
         if "watched_episodes" in menu_item:
             item.setProperty("WatchedEpisodes", str(menu_item["watched_episodes"]))
-        if (
-            menu_item.get("episode_count", 0)
-            and menu_item.get("watched_episodes", 0)
-            and menu_item.get("episode_count", 0) == menu_item.get("watched_episodes", 0)
-        ):
-            info["playcount"] = 1
+        if menu_item.get("episode_count", 0) and menu_item.get("watched_episodes", 0):
+            if menu_item["episode_count"] == menu_item["watched_episodes"]:
+                info["playcount"] = 1
+            else:
+                item.setProperty("WatchedProgress", str(max(1, int((float(menu_item["watched_episodes"]) / menu_item["episode_count"]) * 100))))
         if (
             menu_item.get("watched_episodes", 0) == 0
             and menu_item.get("episode_count", 0)
@@ -1198,6 +1197,7 @@ class GlobalVariables:
         ):
             params["resume"] = str(menu_item["resume_time"])
             item.setProperty("resumetime", str(menu_item["resume_time"]))
+            item.setProperty("WatchedProgress", str(int((float(menu_item["resume_time"]) / info["duration"]) * 100)))
         if "play_count" in menu_item and menu_item.get("play_count") is not None:
             info["playcount"] = menu_item["play_count"]
         if "air_date" in menu_item and menu_item.get("air_date") is not None:
@@ -1574,7 +1574,7 @@ class GlobalVariables:
             xbmc.executebuiltin(f"SetFocus({-(80 - setting_offset)})")
 
     def create_icon_dict(self, icon_slug, base_path, art_types=None):
-        keys = art_types or ['icon', 'poster', 'thumb', 'fanart']
+        keys = art_types or ['icon', 'poster', 'thumb']
         return {"art": dict.fromkeys(keys, f"{base_path}{icon_slug}.png")}
 
 

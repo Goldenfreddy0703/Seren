@@ -278,6 +278,8 @@ class Menus:
             ignore_cache=True,
             no_paging=paginate,
             pull_all=True,
+            sort_by="added",
+            sort_how="desc"
         )
         self.list_builder.movie_menu_builder(trakt_list, no_paging=paginate)
 

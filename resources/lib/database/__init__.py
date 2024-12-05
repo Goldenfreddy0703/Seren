@@ -283,8 +283,10 @@ class SQLiteConnection(_connection):
 
     def _create_connection(self):
         retries = 0
+        delay = 0.1
         exception = None
-        while retries != 50 and not g.abort_requested():
+
+        while retries < 50 and not g.abort_requested():
             try:
                 connection = sqlite3.connect(  # pylint: disable=no-member
                     self.path,
@@ -295,12 +297,20 @@ class SQLiteConnection(_connection):
                 )
                 self._set_connection_settings(connection)
                 return connection
+            except sqlite3.OperationalError as error:
+                if "database is locked" in str(error) or "unable to open database" in str(error):
+                    g.log(f"Database is locked; retrying ({retries + 1}/50)", "warning")
+                    g.wait_for_abort(delay)
+                    delay = min(delay * 2, 5)  # Exponential backoff, capped at 5 seconds
+                else:
+                    raise
             except Exception as error:
-                self._retry_handler(error)
+                g.log(f"Unexpected error on connection attempt {retries + 1}: {error}", "error")
                 exception = error
+                break
             retries += 1
-        # If we reach here we have exceeded our retries so just raise the last exception
-        g.log(f"Unable to connect to database '{self.path}' {exception=}", "error")
+
+        g.log(f"Unable to connect to database '{self.path}' after {retries} attempts: {exception}", "error")
         raise exception
 
     def _retry_handler(self, exception):
@@ -331,6 +341,7 @@ class SQLiteConnection(_connection):
         connection.execute("PRAGMA synchronous = normal")
         connection.execute("PRAGMA temp_store = memory")
         connection.execute("PRAGMA mmap_size = 30000000000")
+        connection.execute("PRAGMA busy_timeout = 5000")
 
     def _create_db_path(self):
         if not xbmcvfs.exists(os.path.dirname(self.path)):
