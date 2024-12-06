@@ -298,11 +298,12 @@ class SerenPlayer(xbmc.Player):
         if self.playback_started:
             return
 
-        last_chapter = self.final_chapter()
-        if last_chapter is not None:
-            remaining_time = self.item_information["info"]["duration"] * (1 - last_chapter / 100)
-            if remaining_time > 5:
-                self.playing_next_time = min(self.playing_next_time, remaining_time)
+        if g.get_bool_setting("playingnext.chapters"):
+            last_chapter = self.final_chapter()
+            if last_chapter is not None:
+                remaining_time = self.item_information["info"]["duration"] * (1 - last_chapter / 100)
+                if remaining_time > 5:
+                    self.playing_next_time = min(self.playing_next_time, remaining_time)
 
         if self.offset and not self.resumed:
             self.seekTime(self.offset)

@@ -1231,6 +1231,7 @@ class GlobalVariables:
             if key.endswith("_id"):
                 item.setProperty(key, str(value))
 
+        # TODO: Fix setting of IDs on seasons and episodes
         media_type = info.get("mediatype", None)
         id_keys = {
             "tmdb_id": "tmdb",
