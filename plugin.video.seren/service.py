@@ -45,7 +45,6 @@ try:
 
     xbmc.executebuiltin('RunPlugin("plugin://plugin.video.seren/?action=torrentCacheCleanup")')
 
-    g.wait_for_abort(30)  # Sleep for a half a minute to allow widget loads to complete.
     while not monitor.abortRequested():
         xbmc.executebuiltin('RunPlugin("plugin://plugin.video.seren/?action=runMaintenance")')
         if not g.wait_for_abort(15):  # Sleep to make sure tokens refreshed during maintenance

@@ -320,6 +320,8 @@ class Menus:
             ignore_cache=True,
             no_paging=paginate,
             pull_all=True,
+            sort_by="added",
+            sort_how="asc" if g.get_int_setting("general.watchlist.sort") == 1 else "desc"
         )
         self.list_builder.show_list_builder(trakt_list, no_paging=paginate)
 
@@ -364,6 +366,8 @@ class Menus:
 
     def my_next_up(self):
         episodes = self.shows_database.get_nextup_episodes(g.get_int_setting("nextup.sort") == 1)
+        if g.get_bool_setting("limit.nextup"):
+            episodes = [i for i in episodes if i["trakt_id"]][: self.page_limit]
         self.list_builder.mixed_episode_builder(episodes, no_paging=True)
 
     @trakt_auth_guard

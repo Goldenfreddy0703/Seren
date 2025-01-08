@@ -142,5 +142,5 @@ class SmartPlayWindow(BaseWindow):
             if control_id == 3002:
                 self.close()
             if control_id == 3003:
-                xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
+                g.PLAYLIST.clear()
                 self.close()
