@@ -4066,3 +4066,7 @@ msgstr "Scrape TorBox Cloud"
 msgctxt "#30730"
 msgid "Enable TorBox Hosters"
 msgstr "Enable TorBox Hosters"
+#: /resources/settings.xml
+msgctxt "#30731"
+msgid "Hide Empty Widgets"
+msgstr "Hide Empty Widgets"
