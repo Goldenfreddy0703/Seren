@@ -1588,11 +1588,12 @@ class GlobalVariables:
 
     def cancel_directory(self):
         if g.FROM_WIDGET:
-            g.add_directory_item(
-                g.get_language_string(284, addon=False),
-                menu_item=g.create_icon_dict("trakt_sync", base_path=g.ICONS_PATH),
-            )
-            xbmcplugin.setContent(self.PLUGIN_HANDLE, g.CONTENT_MENU)
+            if not g.ADDON.getSettingBool("general.widget.hide_empty"):
+                g.add_directory_item(
+                    g.get_language_string(284, addon=False),
+                    menu_item=g.create_icon_dict("trakt_sync", base_path=g.ICONS_PATH),
+                )
+                xbmcplugin.setContent(self.PLUGIN_HANDLE, g.CONTENT_MENU)
             xbmcplugin.endOfDirectory(self.PLUGIN_HANDLE, succeeded=True, cacheToDisc=False)
         else:
             xbmcplugin.endOfDirectory(self.PLUGIN_HANDLE, succeeded=False, cacheToDisc=False)

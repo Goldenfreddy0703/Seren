@@ -50,6 +50,11 @@
 					<default>false</default>
 					<control type="toggle"/>
 				</setting>
+				<setting id="general.widget.hide_empty" type="boolean" label="30731" help="">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
 			</group>
 			<group id="2" label="30592">
 				<setting id="general.flatten.episodes" type="boolean" label="30208" help="">
