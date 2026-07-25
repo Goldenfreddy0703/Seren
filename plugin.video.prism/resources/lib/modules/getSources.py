@@ -356,8 +356,9 @@ class Sources:
 
         try:
             resp = self._imdb_suggestions(imdb_id)
-            year = resp.get('y', self.item_information['info']['year'])
-            if year is not None and year != self.item_information['info']['year']:
+            existing_year = self.item_information['info'].get('year')
+            year = resp.get('y', existing_year)
+            if year is not None and year != existing_year:
                 self.item_information['info']['year'] = str(year)
         except requests.exceptions.ConnectionError as ce:
             g.log("Unable to obtain IMDB suggestions to confirm movie year", "warning")
