@@ -4,6 +4,7 @@ import datetime
 from collections import OrderedDict
 from concurrent.futures import as_completed
 from functools import cached_property
+from typing import Any
 
 from resources.lib.common import tools
 from resources.lib.modules.globals import g
@@ -70,7 +71,7 @@ class MetadataHandler:
 
     @property
     def meta_hash(self):
-        from resources.lib.modules.metadata_providers import art_limit, art_option_enabled
+        from resources.lib.meta.provider_settings import art_limit, art_option_enabled
 
         return tools.md5_hash(
             [
@@ -125,7 +126,7 @@ class MetadataHandler:
                 self.fanarttv_api.fanart_support,
                 self._provider_enabled("tmdb"),
                 self._provider_enabled("tvdb"),
-                self._provider_enabled("fanart"),
+                self._fanart_art_usable(),
                 self._provider_enabled("mdblist"),
             ]
         )
@@ -172,7 +173,7 @@ class MetadataHandler:
 
         result = {"info": {}, "art": {}, "cast": []}
 
-        from resources.lib.modules.artwork_profile import artwork_profile_for_row
+        from resources.lib.meta.artwork import artwork_profile_for_row
 
         simkl_info = tools.safe_dict_get(simkl_data, "info") or {}
         default_media = simkl_info.get("mediatype") or "tvshow"
@@ -187,7 +188,13 @@ class MetadataHandler:
 
         result.update(
             self._apply_best_fit_meta_data(
-                simkl_data, tmdb_object, tvdb_object, fanart_object, art_profile=art_profile
+                simkl_data,
+                tmdb_object,
+                tvdb_object,
+                fanart_object,
+                art_profile=art_profile,
+                imdb_data=db_object.get("imdb_object"),
+                anilist_data=db_object.get("anilist_object"),
             )
         )
 
@@ -221,7 +228,7 @@ class MetadataHandler:
         finalize_playback_info(result["info"])
         if result["info"].get("mediatype") == "season":
             MetadataHandler._title_fallback(result)
-        from resources.lib.modules.meta_storage import slim_formatted_item
+        from resources.lib.meta.storage import slim_formatted_item
 
         return slim_formatted_item(result)
 
@@ -246,11 +253,7 @@ class MetadataHandler:
         if mediatype not in ("episode", "season"):
             return
 
-        from resources.lib.simkl.field_map import merge_simkl_child_supplemental_info
-
-        merged = dict(simkl_info)
-        merge_simkl_child_supplemental_info(merged, result["info"])
-        result["info"] = merged
+        result["info"] = dict(simkl_info)
 
         if mediatype == "season":
             from resources.lib.simkl.field_map import ensure_season_title
@@ -405,12 +408,12 @@ class MetadataHandler:
         }
         return coalesced
 
-    def _apply_best_fit_meta_data(self, simkl_data, tmdb_data, tvdb_data, fanart_object, art_profile=None):
+    def _apply_best_fit_meta_data(self, simkl_data, tmdb_data, tvdb_data, fanart_object, art_profile=None, imdb_data=None, anilist_data=None):
         simkl_data = simkl_data or {}
         simkl_info = tools.safe_dict_get(simkl_data, "info") or {}
         media_type = simkl_info.get("mediatype") or "episode"
         if art_profile is None:
-            from resources.lib.modules.artwork_profile import artwork_profile_for_row
+            from resources.lib.meta.artwork import artwork_profile_for_row
 
             art_profile = artwork_profile_for_row(
                 {"info": simkl_info, "simkl_id": simkl_info.get("simkl_id")},
@@ -419,7 +422,17 @@ class MetadataHandler:
         result = {}
 
         self._apply_best_fit_info(result, simkl_data, tmdb_data, tvdb_data)
-        self._apply_best_fit_cast(result, tmdb_data, tvdb_data)
+        self._apply_best_fit_cast(
+            result,
+            tmdb_data,
+            tvdb_data,
+            imdb_data=imdb_data,
+            anilist_data=anilist_data,
+        )
+        if anilist_data and anilist_data.get("studio"):
+            info = result.setdefault("info", {})
+            if isinstance(info, dict) and not info.get("studio"):
+                info["studio"] = anilist_data.get("studio")
         result["art"] = dict(tools.safe_dict_get(simkl_data, "art") or {})
         self._apply_best_fit_art(result, tmdb_data, tvdb_data, fanart_object, media_type, art_profile=art_profile)
 
@@ -429,12 +442,18 @@ class MetadataHandler:
         """Simkl art is seeded on result before this runs; external sources gap-fill only."""
         if tmdb_object:
             result["art"] = tools.smart_merge_dictionary(
-                result.get("art", {}), tmdb_object.get("art", {}), keep_original=True, extend_array=False
+                result.get("art", {}),
+                tmdb_object.get("art", {}),
+                keep_original=not self._is_tmdb_artwork_selected(media_type, art_profile=art_profile),
+                extend_array=False,
             )
 
         if tvdb_object:
             result["art"] = tools.smart_merge_dictionary(
-                result.get("art", {}), tvdb_object.get("art", {}), keep_original=True, extend_array=False
+                result.get("art", {}),
+                tvdb_object.get("art", {}),
+                keep_original=not self._is_tvdb_artwork_selected(media_type, art_profile=art_profile),
+                extend_array=False,
             )
 
         if fanart_object:
@@ -454,28 +473,9 @@ class MetadataHandler:
         tmdb_data,
         tvdb_data,
     ):
-        # Simkl info is the base layer; external providers only fill missing keys.
+        # Simkl owns identity, status, and ratings; providers gap-fill descriptive fields.
         result.update({"info": tools.safe_dict_get(simkl_data, "info") or {}})
         mediatype = result["info"].get("mediatype")
-
-        if mediatype in ("episode", "season"):
-            self._apply_simkl_child_supplemental_info(result, tmdb_data, tvdb_data)
-        else:
-            if tmdb_data:
-                result["info"] = tools.smart_merge_dictionary(
-                    result["info"],
-                    tools.safe_dict_get(tmdb_data, "info"),
-                    keep_original=True,
-                    extend_array=False,
-                )
-
-            if tvdb_data:
-                result["info"] = tools.smart_merge_dictionary(
-                    result["info"],
-                    tools.safe_dict_get(tvdb_data, "info"),
-                    keep_original=True,
-                    extend_array=False,
-                )
 
         self._apply_best_fit_release(result)
         self._use_simkl_air_date(simkl_data, result)
@@ -483,14 +483,6 @@ class MetadataHandler:
         if mediatype not in ("episode", "season") and not result["info"].get("plot") and result["info"].get("overview"):
             result["info"]["plot"] = result["info"]["overview"]
         self._title_fallback(result)
-
-    @staticmethod
-    def _apply_simkl_child_supplemental_info(result, tmdb_data, tvdb_data):
-        """Seasons/episodes: Simkl owns metadata; external APIs only gap-fill ids/ratings."""
-        from resources.lib.simkl.field_map import merge_simkl_child_supplemental_info
-
-        for source in (tmdb_data, tvdb_data):
-            merge_simkl_child_supplemental_info(result["info"], tools.safe_dict_get(source, "info"))
 
     def _apply_best_fit_release(self, result):
         releases = tools.safe_dict_get(result, "info", "releases")
@@ -575,8 +567,38 @@ class MetadataHandler:
                 meta["info"]["sorttitle"] = title
                 meta["info"]["title"] = title
 
-    def _apply_best_fit_cast(self, result, tmdb_data, tvdb_data):
+    def _apply_best_fit_cast(self, result, tmdb_data, tvdb_data, imdb_data=None, anilist_data=None):
         if tools.safe_dict_get(result, "info", "mediatype") in ("episode", "season"):
+            return
+        if imdb_data is not None and imdb_data.get("cast"):
+            result["cast"] = imdb_data.get("cast", [])
+            return
+        if anilist_data is not None and anilist_data.get("cast"):
+            result["cast"] = anilist_data.get("cast", [])
+            return
+        if result.get("cast"):
+            return
+        from resources.lib.meta.artwork import artwork_profile_for_row
+
+        media_type = tools.safe_dict_get(result, "info", "mediatype") or "tvshow"
+        art_profile = artwork_profile_for_row(result, default_media_type=media_type)
+        preferred = self._effective_preferred_art_source(
+            "movie" if media_type == "movie" else "tvshow",
+            art_profile=art_profile,
+        )
+        from resources.lib.meta.provider_settings import ART_TMDB, ART_TVDB
+
+        if preferred == ART_TVDB:
+            if tvdb_data is not None and tvdb_data.get("cast", []):
+                result["cast"] = tvdb_data.get("cast", [])
+            elif tmdb_data is not None and tmdb_data.get("cast", []):
+                result["cast"] = tmdb_data.get("cast", [])
+            return
+        if preferred == ART_TMDB:
+            if tmdb_data is not None and tmdb_data.get("cast", []):
+                result["cast"] = tmdb_data.get("cast", [])
+            elif tvdb_data is not None and tvdb_data.get("cast", []):
+                result["cast"] = tvdb_data.get("cast", [])
             return
         if tmdb_data is not None and tmdb_data.get("cast", []):
             result["cast"] = tmdb_data.get("cast", [])
@@ -584,8 +606,8 @@ class MetadataHandler:
             result["cast"] = tvdb_data.get("cast", [])
 
     def _effective_preferred_art_source(self, media_type: str, art_profile: str | None = None) -> int:
-        from resources.lib.modules.artwork_profile import PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES
-        from resources.lib.modules.metadata_providers import effective_preferred_art_source
+        from resources.lib.meta.artwork import PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES
+        from resources.lib.meta.provider_settings import effective_preferred_art_source
 
         if art_profile in (PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES):
             raw = g.get_int_setting("anime.preferedsource", 1)
@@ -596,19 +618,185 @@ class MetadataHandler:
         return effective_preferred_art_source(raw)
 
     def _is_fanart_artwork_selected(self, media_type, art_profile=None):
-        from resources.lib.modules.metadata_providers import ART_FANART
+        from resources.lib.meta.provider_settings import ART_FANART
 
         return self._effective_preferred_art_source(media_type, art_profile=art_profile) == ART_FANART
 
     def _is_tmdb_artwork_selected(self, media_type, art_profile=None):
-        from resources.lib.modules.metadata_providers import ART_TMDB
+        from resources.lib.meta.provider_settings import ART_TMDB
 
         return self._effective_preferred_art_source(media_type, art_profile=art_profile) == ART_TMDB
 
     def _is_tvdb_artwork_selected(self, media_type, art_profile=None):
-        from resources.lib.modules.metadata_providers import ART_TVDB
+        from resources.lib.meta.provider_settings import ART_TVDB
 
         return self._effective_preferred_art_source(media_type, art_profile=art_profile) == ART_TVDB
+
+    def _child_art_profile_for_db_object(self, db_object):
+        from resources.lib.meta.artwork import artwork_profile_for_row
+
+        info = tools.safe_dict_get(db_object, "simkl_object", "info")
+        if not isinstance(info, dict):
+            info = db_object.get("info") if isinstance(db_object.get("info"), dict) else {}
+        return artwork_profile_for_row(
+            {"info": info, "simkl_id": db_object.get("simkl_id")},
+            default_media_type="tvshow",
+        )
+
+    def _is_tmdb_art_preferred_for_child(self, db_object):
+        from resources.lib.meta.artwork import PROFILE_ANIME_MOVIE
+
+        profile = self._child_art_profile_for_db_object(db_object)
+        media_type = "movie" if profile == PROFILE_ANIME_MOVIE else "tvshow"
+        return self._is_tmdb_artwork_selected(media_type, art_profile=profile)
+
+    def _is_tvdb_art_preferred_for_child(self, db_object):
+        from resources.lib.meta.artwork import PROFILE_ANIME_MOVIE
+
+        profile = self._child_art_profile_for_db_object(db_object)
+        media_type = "movie" if profile == PROFILE_ANIME_MOVIE else "tvshow"
+        return self._is_tvdb_artwork_selected(media_type, art_profile=profile)
+
+    def _art_profile_for_db_object(self, db_object):
+        profile = db_object.get("_art_profile")
+        if profile:
+            return profile
+        return self._child_art_profile_for_db_object(db_object)
+
+    @staticmethod
+    def _media_type_for_art_profile(art_profile: str) -> str:
+        from resources.lib.meta.artwork import PROFILE_ANIME_MOVIE, PROFILE_MOVIE
+
+        if art_profile in (PROFILE_ANIME_MOVIE, PROFILE_MOVIE):
+            return "movie"
+        return "tvshow"
+
+    def _preferred_art_source_for_db_object(self, db_object):
+        art_profile = self._art_profile_for_db_object(db_object)
+        return self._effective_preferred_art_source(
+            self._media_type_for_art_profile(art_profile),
+            art_profile=art_profile,
+        )
+
+    def _fetch_movie_fanart_patch(self, db_object):
+        g.ensure_addon()
+        if not self._fanart_art_usable() or not self.fanarttv_api.fanart_support:
+            return None
+        if not (self._fanart_needs_update(db_object) or self._force_update(db_object)):
+            return None
+        patch = {}
+        if self._tmdb_id_valid(db_object):
+            tools.smart_merge_dictionary(patch, self.fanarttv_api.get_movie(db_object.get("tmdb_id")))
+        if self._imdb_id_valid(db_object) and self._fanart_needs_update(db_object):
+            tools.smart_merge_dictionary(patch, self.fanarttv_api.get_movie(db_object.get("imdb_id")))
+        return patch or None
+
+    def _fetch_tvshow_fanart_patch(self, db_object):
+        g.ensure_addon()
+        if not self._fanart_art_usable() or not self.fanarttv_api.fanart_support:
+            return None
+        if not (self._fanart_needs_update(db_object) or self._force_update(db_object)):
+            return None
+        if not self._tvdb_id_valid(db_object):
+            return None
+        return self.fanarttv_api.get_show(db_object.get("tvdb_id"))
+
+    def _merge_supplementary_fanart_movie_art(self, db_object):
+        """Fanart.tv supplies discart/clearart/banner etc. when TMDB/TVDB is preferred (Seren parity)."""
+        from resources.lib.meta.provider_settings import ART_FANART, ART_SIMKL
+
+        preferred = self._preferred_art_source_for_db_object(db_object)
+        if preferred in (ART_SIMKL, ART_FANART):
+            return
+        patch = self._fetch_movie_fanart_patch(db_object)
+        if patch:
+            tools.smart_merge_dictionary(db_object, patch)
+
+    def _merge_supplementary_fanart_tvshow_art(self, db_object):
+        from resources.lib.meta.provider_settings import ART_FANART, ART_SIMKL
+
+        preferred = self._preferred_art_source_for_db_object(db_object)
+        if preferred in (ART_SIMKL, ART_FANART):
+            return
+        patch = self._fetch_tvshow_fanart_patch(db_object)
+        if patch:
+            tools.smart_merge_dictionary(db_object, patch)
+
+    def _merge_tmdb_movie_art(self, db_object):
+        if not self._provider_enabled("tmdb") or not self._tmdb_id_valid(db_object):
+            return
+        if self._tmdb_art_meta_up_to_par("movie", db_object) and not self._force_update(db_object):
+            return
+        tools.smart_merge_dictionary(db_object, self.tmdb_api.get_movie_art(db_object["tmdb_id"]))
+
+    def _merge_tvdb_movie_art(self, db_object):
+        if not self._provider_enabled("tvdb") or not self._tvdb_id_valid(db_object):
+            return
+        if self._tvdb_art_meta_up_to_par("movie", db_object) and not self._force_update(db_object):
+            return
+        tools.smart_merge_dictionary(db_object, self.tvdb_api.get_movie_art(db_object["tvdb_id"]))
+
+    def _merge_tmdb_tvshow_art(self, db_object):
+        if not self._provider_enabled("tmdb") or not self._tmdb_id_valid(db_object):
+            return
+        if self._tmdb_art_meta_up_to_par("tvshow", db_object) and not self._force_update(db_object):
+            return
+        tools.smart_merge_dictionary(db_object, self.tmdb_api.get_show_art(db_object["tmdb_id"]))
+
+    def _merge_tvdb_tvshow_art(self, db_object):
+        if not self._provider_enabled("tvdb") or not self._tvdb_id_valid(db_object):
+            return
+        if self._tvdb_art_meta_up_to_par("tvshow", db_object) and not self._force_update(db_object):
+            return
+        tools.smart_merge_dictionary(db_object, self.tvdb_api.get_show_art(db_object["tvdb_id"]))
+
+    def _update_movie_art_fallback(self, db_object):
+        from resources.lib.meta.provider_settings import ART_FANART, ART_SIMKL, ART_TMDB, ART_TVDB
+
+        preferred = self._preferred_art_source_for_db_object(db_object)
+        if preferred == ART_SIMKL:
+            return
+        if preferred == ART_FANART and not self._fanart_art_meta_up_to_par("movie", db_object):
+            if self._provider_enabled("tmdb") and self._tmdb_id_valid(db_object):
+                self._merge_tmdb_movie_art(db_object)
+            elif self._provider_enabled("tvdb") and self._tvdb_id_valid(db_object):
+                self._merge_tvdb_movie_art(db_object)
+            return
+        if preferred == ART_TMDB and not self._tmdb_art_meta_up_to_par("movie", db_object):
+            if self._provider_enabled("tvdb") and self._tvdb_id_valid(db_object):
+                self._merge_tvdb_movie_art(db_object)
+            elif self._fanart_art_usable() and self.fanarttv_api.fanart_support:
+                tools.smart_merge_dictionary(db_object, self._fetch_movie_fanart_patch(db_object) or {})
+            return
+        if preferred == ART_TVDB and not self._tvdb_art_meta_up_to_par("movie", db_object):
+            if self._provider_enabled("tmdb") and self._tmdb_id_valid(db_object):
+                self._merge_tmdb_movie_art(db_object)
+            elif self._fanart_art_usable() and self.fanarttv_api.fanart_support:
+                tools.smart_merge_dictionary(db_object, self._fetch_movie_fanart_patch(db_object) or {})
+
+    def _update_tvshow_art_fallback(self, db_object):
+        from resources.lib.meta.provider_settings import ART_FANART, ART_SIMKL, ART_TMDB, ART_TVDB
+
+        preferred = self._preferred_art_source_for_db_object(db_object)
+        if preferred == ART_SIMKL:
+            return
+        if preferred == ART_FANART and not self._fanart_art_meta_up_to_par("tvshow", db_object):
+            if self._provider_enabled("tmdb") and self._tmdb_id_valid(db_object):
+                self._merge_tmdb_tvshow_art(db_object)
+            elif self._provider_enabled("tvdb") and self._tvdb_id_valid(db_object):
+                self._merge_tvdb_tvshow_art(db_object)
+            return
+        if preferred == ART_TMDB and not self._tmdb_art_meta_up_to_par("tvshow", db_object):
+            if self._provider_enabled("tvdb") and self._tvdb_id_valid(db_object):
+                self._merge_tvdb_tvshow_art(db_object)
+            elif self._fanart_art_usable() and self._tvdb_id_valid(db_object):
+                tools.smart_merge_dictionary(db_object, self._fetch_tvshow_fanart_patch(db_object) or {})
+            return
+        if preferred == ART_TVDB and not self._tvdb_art_meta_up_to_par("tvshow", db_object):
+            if self._provider_enabled("tmdb") and self._tmdb_id_valid(db_object):
+                self._merge_tmdb_tvshow_art(db_object)
+            elif self._fanart_art_usable() and self._tvdb_id_valid(db_object):
+                tools.smart_merge_dictionary(db_object, self._fetch_tvshow_fanart_patch(db_object) or {})
 
     def _handle_art(self, media_type, art_data, art_profile=None):
         if art_data is None:
@@ -621,7 +809,7 @@ class MetadataHandler:
 
         self._fallback_art_before_handling(art_data)
 
-        from resources.lib.modules.artwork_profile import PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES
+        from resources.lib.meta.artwork import PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES
 
         profile = art_profile or media_type
         if profile == PROFILE_ANIME_MOVIE:
@@ -684,7 +872,7 @@ class MetadataHandler:
         return data
 
     def _handle_show_art(self, data):
-        from resources.lib.modules.metadata_providers import art_limit, art_option_enabled
+        from resources.lib.meta.provider_settings import art_limit, art_option_enabled
 
         result = {}
 
@@ -707,7 +895,7 @@ class MetadataHandler:
         return result
 
     def _handle_movie_art(self, data):
-        from resources.lib.modules.metadata_providers import art_limit, art_option_enabled
+        from resources.lib.meta.provider_settings import art_limit, art_option_enabled
 
         result = {}
 
@@ -732,7 +920,7 @@ class MetadataHandler:
         return result
 
     def _handle_anime_series_art(self, data):
-        from resources.lib.modules.metadata_providers import art_limit, art_option_enabled
+        from resources.lib.meta.provider_settings import art_limit, art_option_enabled
 
         result = {}
 
@@ -755,7 +943,7 @@ class MetadataHandler:
         return result
 
     def _handle_anime_movie_art(self, data):
-        from resources.lib.modules.metadata_providers import art_option_enabled
+        from resources.lib.meta.provider_settings import art_option_enabled
 
         result = self._handle_anime_series_art(data)
         if art_option_enabled("anime.discart", "anime_movie"):
@@ -763,8 +951,8 @@ class MetadataHandler:
         return result
 
     def _handle_season_art(self, data, art_profile=None):
-        from resources.lib.modules.artwork_profile import PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES
-        from resources.lib.modules.metadata_providers import art_limit, art_option_enabled
+        from resources.lib.meta.artwork import PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES
+        from resources.lib.meta.provider_settings import art_limit, art_option_enabled
 
         is_anime = art_profile in (PROFILE_ANIME_SERIES, PROFILE_ANIME_MOVIE)
         result = {}
@@ -791,8 +979,8 @@ class MetadataHandler:
         return result
 
     def _handle_episode_art(self, data, art_profile=None):
-        from resources.lib.modules.artwork_profile import PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES
-        from resources.lib.modules.metadata_providers import art_limit, art_option_enabled
+        from resources.lib.meta.artwork import PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES
+        from resources.lib.meta.provider_settings import art_limit, art_option_enabled
 
         is_anime = art_profile in (PROFILE_ANIME_SERIES, PROFILE_ANIME_MOVIE)
         result = {}
@@ -845,6 +1033,14 @@ class MetadataHandler:
         """
         media_type = MetadataHandler.get_simkl_info(db_object, "mediatype")
 
+        if media_type in ("movie", "tvshow") and self._sync_update_noop(db_object, media_type):
+            g.log(
+                f"sync_meta_update provider_fetches=0 simkl_id={db_object.get('simkl_id')} media={media_type}",
+                "debug",
+            )
+            self._write_log(db_object, media_type)
+            return [db_object]
+
         if media_type == "movie":
             self._update_movie(db_object)
         if media_type == "tvshow":
@@ -868,190 +1064,544 @@ class MetadataHandler:
         if self.fanarttv_api.fanart_support and media_type != "episode" and not db_object.get("fanart_object"):
             g.log(f"Unable to lookup fanart meta for {db_object.get('simkl_id')}", "debug")
 
+    def _provider_cast_missing(self, db_object, provider_key):
+        return not tools.safe_dict_get(db_object, f"{provider_key}_object", "cast")
+
+    @staticmethod
+    def _imdb_id_valid(db_object) -> bool:
+        from resources.lib.meta.provider_settings import external_ids_from_row
+
+        return bool(external_ids_from_row(db_object).get("imdb_id"))
+
+    def _merge_imdb_cast(self, db_object, cast: list[dict]) -> None:
+        if not cast:
+            return
+        tools.smart_merge_dictionary(db_object, {"cast": cast, "imdb_object": {"cast": cast}})
+
+    @staticmethod
+    def _coerce_int_id(value) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _merge_anilist_cast(self, db_object: dict, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict) or not payload:
+            return
+        cast = payload.get("cast")
+        studio = payload.get("studio")
+        merge: dict[str, Any] = {}
+        anilist_object: dict[str, Any] = {}
+        if cast:
+            merge["cast"] = cast
+            anilist_object["cast"] = cast
+        if studio:
+            anilist_object["studio"] = studio
+            info = db_object.get("info")
+            if not isinstance(info, dict):
+                info = {}
+            if not info.get("studio"):
+                info = dict(info)
+                info["studio"] = studio
+                merge["info"] = info
+        if anilist_object:
+            merge["anilist_object"] = anilist_object
+        if merge:
+            tools.smart_merge_dictionary(db_object, merge)
+
+    def _fill_anilist_cast_batch(
+        self,
+        fallback_pending: list[tuple[int, dict]],
+    ) -> tuple[list[tuple[int, dict]], dict[int, list], dict[int, str], list[dict]]:
+        from resources.lib.indexers.anilist import get_cast_batch_for_pending
+        from resources.lib.meta.artwork import PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES
+        from resources.lib.meta.provider_settings import external_ids_from_row
+
+        if not self._provider_enabled("anilist"):
+            return fallback_pending, {}, {}, []
+
+        anilist_queue: list[tuple[int, dict, int | None, int | None]] = []
+        remaining: list[tuple[int, dict]] = []
+        for simkl_id, db_object in fallback_pending:
+            profile = db_object.get("_art_profile")
+            if profile not in (PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES):
+                remaining.append((simkl_id, db_object))
+                continue
+            ids = external_ids_from_row(db_object)
+            mal_id = self._coerce_int_id(ids.get("mal_id"))
+            anilist_id = self._coerce_int_id(ids.get("anilist_id"))
+            if mal_id or anilist_id:
+                anilist_queue.append((simkl_id, db_object, mal_id, anilist_id))
+            else:
+                remaining.append((simkl_id, db_object))
+
+        if not anilist_queue:
+            return fallback_pending, {}, {}, []
+
+        resolved = get_cast_batch_for_pending(anilist_queue)
+        cast_map: dict[int, list] = {}
+        studio_map: dict[int, str] = {}
+        blobs: list[dict] = []
+        still_missing: list[tuple[int, dict]] = list(remaining)
+
+        for simkl_id, db_object, _mal_id, _anilist_id in anilist_queue:
+            payload = resolved.get(int(simkl_id))
+            if not payload:
+                still_missing.append((simkl_id, db_object))
+                continue
+            self._merge_anilist_cast(db_object, payload)
+            cast = payload.get("cast")
+            if cast:
+                cast_map[int(simkl_id)] = cast
+            studio = payload.get("studio")
+            if studio:
+                studio_map[int(simkl_id)] = str(studio)
+            blobs.append(db_object)
+
+        return still_missing, cast_map, studio_map, blobs
+
+    def _fetch_anilist_cast_for_object(self, db_object) -> None:
+        if not self._provider_enabled("anilist"):
+            return
+        from resources.lib.indexers.anilist import get_cast_batch_for_pending
+        from resources.lib.meta.artwork import PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES, artwork_profile_for_row
+        from resources.lib.meta.provider_settings import external_ids_from_row
+
+        profile = db_object.get("_art_profile")
+        if not profile:
+            info = db_object.get("info") if isinstance(db_object.get("info"), dict) else {}
+            profile = artwork_profile_for_row(
+                {"info": info, "simkl_id": db_object.get("simkl_id")},
+                info.get("mediatype") or "tvshow",
+            )
+        if profile not in (PROFILE_ANIME_MOVIE, PROFILE_ANIME_SERIES):
+            return
+        if not self._provider_cast_missing(db_object, "anilist") and db_object.get("cast"):
+            return
+
+        simkl_id = self._coerce_int_id(db_object.get("simkl_id") or (db_object.get("info") or {}).get("simkl_id"))
+        if simkl_id is None:
+            return
+
+        ids = external_ids_from_row(db_object)
+        mal_id = self._coerce_int_id(ids.get("mal_id"))
+        anilist_id = self._coerce_int_id(ids.get("anilist_id"))
+        if not mal_id and not anilist_id:
+            return
+
+        payload = get_cast_batch_for_pending([(simkl_id, db_object, mal_id, anilist_id)]).get(simkl_id)
+        if payload:
+            self._merge_anilist_cast(db_object, payload)
+
+    @staticmethod
+    def _merge_cast_studio_into_rows(
+        rows: list,
+        cast_by_id: dict[int, list],
+        studio_by_id: dict[int, str] | None = None,
+    ) -> list:
+        if not cast_by_id and not studio_by_id:
+            return rows
+        merged_rows: list = []
+        for row in rows:
+            if not isinstance(row, dict):
+                merged_rows.append(row)
+                continue
+            simkl_id = row.get("simkl_id") or (row.get("info") or {}).get("simkl_id")
+            if simkl_id is None:
+                merged_rows.append(row)
+                continue
+            key = int(simkl_id)
+            if key not in cast_by_id and key not in (studio_by_id or {}):
+                merged_rows.append(row)
+                continue
+            updated = dict(row)
+            if key in cast_by_id:
+                updated["cast"] = cast_by_id[key]
+            if studio_by_id and key in studio_by_id:
+                info = dict(updated.get("info") or {})
+                if not info.get("studio"):
+                    info["studio"] = studio_by_id[key]
+                updated["info"] = info
+            merged_rows.append(updated)
+        return merged_rows
+
+    def _fetch_imdb_cast_for_object(self, db_object) -> None:
+        if not self._provider_enabled("imdb") or not self._imdb_id_valid(db_object):
+            return
+        if not self._provider_cast_missing(db_object, "imdb") and db_object.get("cast"):
+            return
+        from resources.lib.meta.provider_settings import external_ids_from_row
+        from resources.lib.indexers.imdb import thread_imdb_api
+        from resources.lib.simkl.field_map import _normalize_imdb_id
+
+        imdb_id = _normalize_imdb_id(external_ids_from_row(db_object).get("imdb_id"))
+        if not imdb_id:
+            return
+        cast_map = thread_imdb_api().get_cast_batch([imdb_id])
+        cast = cast_map.get(imdb_id)
+        if cast:
+            self._merge_imdb_cast(db_object, cast)
+
+    def _movie_needs_tmdb_bundle(self, db_object):
+        if not self._provider_enabled("tmdb") or not self._tmdb_id_valid(db_object):
+            return False
+        return (
+            not self._tmdb_art_meta_up_to_par("movie", db_object)
+            or self._provider_cast_missing(db_object, "tmdb")
+            or self._force_update(db_object)
+        )
+
+    def _merge_tmdb_movie_bundle(self, db_object):
+        if not self._movie_needs_tmdb_bundle(db_object):
+            return
+        if self._provider_cast_missing(db_object, "tmdb"):
+            tools.smart_merge_dictionary(db_object, self.tmdb_api.get_movie_cast(db_object["tmdb_id"]))
+        self._merge_tmdb_movie_art(db_object)
+
+    def _movie_needs_tvdb_bundle(self, db_object):
+        if not self._provider_enabled("tvdb") or not self._tvdb_id_valid(db_object):
+            return False
+        return (
+            not self._tvdb_art_meta_up_to_par("movie", db_object)
+            or self._provider_cast_missing(db_object, "tvdb")
+            or self._force_update(db_object)
+        )
+
+    def _merge_tvdb_movie_bundle(self, db_object):
+        if not self._movie_needs_tvdb_bundle(db_object):
+            return
+        if self._provider_cast_missing(db_object, "tvdb"):
+            tools.smart_merge_dictionary(db_object, self.tvdb_api.get_movie(db_object["tvdb_id"]))
+        self._merge_tvdb_movie_art(db_object)
+
+    def _tvshow_needs_tmdb_bundle(self, db_object):
+        if not self._provider_enabled("tmdb") or not self._tmdb_id_valid(db_object):
+            return False
+        return (
+            not self._tmdb_art_meta_up_to_par("tvshow", db_object)
+            or self._provider_cast_missing(db_object, "tmdb")
+            or self._force_update(db_object)
+        )
+
+    def _merge_tmdb_tvshow_bundle(self, db_object):
+        if not self._tvshow_needs_tmdb_bundle(db_object):
+            return
+        if self._provider_cast_missing(db_object, "tmdb"):
+            tools.smart_merge_dictionary(db_object, self.tmdb_api.get_show_cast(db_object["tmdb_id"]))
+        self._merge_tmdb_tvshow_art(db_object)
+
+    def _tvshow_needs_tvdb_bundle(self, db_object):
+        if not self._provider_enabled("tvdb") or not self._tvdb_id_valid(db_object):
+            return False
+        needs_cast = self._provider_cast_missing(db_object, "tvdb") and self._provider_cast_missing(db_object, "tmdb")
+        return (
+            not self._tvdb_art_meta_up_to_par("tvshow", db_object)
+            or needs_cast
+            or self._force_update(db_object)
+        )
+
+    def _merge_tvdb_tvshow_bundle(self, db_object):
+        if not self._tvshow_needs_tvdb_bundle(db_object):
+            return
+        if self._provider_cast_missing(db_object, "tvdb"):
+            tools.smart_merge_dictionary(db_object, self.tvdb_api.get_show_cast(db_object["tvdb_id"]))
+        self._merge_tvdb_tvshow_art(db_object)
+
     # region movie
     def _update_movie(self, db_object):
-        self._update_movie_simkl(db_object)
+        from resources.lib.meta.provider_settings import ART_FANART, ART_SIMKL, ART_TMDB, ART_TVDB
 
-        def _fetch_tmdb():
-            g.ensure_addon()
-            if not self._provider_enabled("tmdb"):
-                return None
-            if not self._tmdb_id_valid(db_object):
-                return None
-            if not (self._tmdb_needs_update(db_object) or self._force_update(db_object)):
-                return None
-            return self.tmdb_api.get_movie(db_object["tmdb_id"])
-
-        def _fetch_tvdb():
-            g.ensure_addon()
-            if not self._provider_enabled("tvdb"):
-                return None
-            if not self._tvdb_id_valid(db_object):
-                return None
-            if not (self._tvdb_needs_update(db_object) or self._force_update(db_object)):
-                return None
-            return self.tvdb_api.get_movie(db_object["tvdb_id"])
-
-        def _fetch_fanart():
-            g.ensure_addon()
-            if not self._provider_enabled("fanart"):
-                return None
-            if not self.fanarttv_api.fanart_support:
-                return None
-            if not (self._fanart_needs_update(db_object) or self._force_update(db_object)):
-                return None
-            patch = {}
-            if self._tmdb_id_valid(db_object):
-                tools.smart_merge_dictionary(patch, self.fanarttv_api.get_movie(db_object.get("tmdb_id")))
-            if self._imdb_id_valid(db_object) and self._fanart_needs_update(db_object):
-                tools.smart_merge_dictionary(patch, self.fanarttv_api.get_movie(db_object.get("imdb_id")))
-            return patch or None
-
-        self._merge_provider_patches(db_object, self._parallel_provider_patches([_fetch_tmdb, _fetch_tvdb, _fetch_fanart]))
-        self._update_movie_fallback(db_object)
-        self._update_movie_ratings(db_object)
+        preferred = self._preferred_art_source_for_db_object(db_object)
+        if preferred == ART_SIMKL:
+            return
+        if preferred == ART_FANART:
+            tools.smart_merge_dictionary(db_object, self._fetch_movie_fanart_patch(db_object) or {})
+        elif preferred == ART_TMDB:
+            self._merge_tmdb_movie_bundle(db_object)
+        elif preferred == ART_TVDB:
+            self._merge_tvdb_movie_bundle(db_object)
+        self._update_movie_art_fallback(db_object)
+        self._merge_supplementary_fanart_movie_art(db_object)
         self._update_movie_cast(db_object)
 
-    def _update_movie_simkl(self, db_object):
-        return  # Prism: Simkl API removed — metadata from Simkl/MDBList/TMDB/TVDB
-
     def _update_movie_tmdb(self, db_object):
-        if not self._provider_enabled("tmdb"):
-            return
-        if not self._tmdb_id_valid(db_object):
-            return
-        if not (self._tmdb_needs_update(db_object) or self._force_update(db_object)):
-            return
-        tools.smart_merge_dictionary(db_object, self.tmdb_api.get_movie(db_object["tmdb_id"]))
+        self._merge_tmdb_movie_bundle(db_object)
 
     def _update_movie_tvdb(self, db_object):
-        if not self._provider_enabled("tvdb"):
-            return
-        if not self._tvdb_id_valid(db_object):
-            return
-        if not (self._tvdb_needs_update(db_object) or self._force_update(db_object)):
-            return
-        tools.smart_merge_dictionary(db_object, self.tvdb_api.get_movie(db_object["tvdb_id"]))
+        self._merge_tvdb_movie_bundle(db_object)
 
     def _update_movie_fanart(self, db_object):
-        if not self._provider_enabled("fanart"):
+        if not self._fanart_art_usable():
             return
-        if self.fanarttv_api.fanart_support and (self._fanart_needs_update(db_object) or self._force_update(db_object)):
-            if self._tmdb_id_valid(db_object):
-                tools.smart_merge_dictionary(db_object, self.fanarttv_api.get_movie(db_object.get("tmdb_id")))
-            if self._imdb_id_valid(db_object) and self._fanart_needs_update(db_object):
-                tools.smart_merge_dictionary(db_object, self.fanarttv_api.get_movie(db_object.get("imdb_id")))
-
-    def _update_movie_fallback(self, db_object):
-        if self._provider_enabled("tmdb") and self._tmdb_id_valid(db_object) and not self._tmdb_art_meta_up_to_par("movie", db_object):
-            tools.smart_merge_dictionary(db_object, self.tmdb_api.get_movie_art(db_object["tmdb_id"]))
-        if self._provider_enabled("tvdb") and self._tvdb_id_valid(db_object) and not self._tvdb_art_meta_up_to_par("movie", db_object):
-            tools.smart_merge_dictionary(db_object, self.tvdb_api.get_movie_art(db_object["tvdb_id"]))
-
-    def _update_movie_ratings(self, db_object):
-        if self._provider_enabled("tmdb") and self._tmdb_id_valid(db_object):
-            tools.smart_merge_dictionary(db_object, self.tmdb_api.get_movie_rating(db_object["tmdb_id"]))
+        tools.smart_merge_dictionary(db_object, self._fetch_movie_fanart_patch(db_object) or {})
 
     def _update_movie_cast(self, db_object):
+        self._fetch_imdb_cast_for_object(db_object)
+        if db_object.get("cast"):
+            return
+        self._fetch_anilist_cast_for_object(db_object)
+        if db_object.get("cast"):
+            return
+        from resources.lib.meta.provider_settings import ART_TVDB
+
+        preferred = self._preferred_art_source_for_db_object(db_object)
+        if preferred == ART_TVDB and self._provider_enabled("tvdb") and self._tvdb_id_valid(db_object):
+            if self._provider_cast_missing(db_object, "tvdb"):
+                tools.smart_merge_dictionary(db_object, self.tvdb_api.get_movie(db_object["tvdb_id"]))
+            return
         if self._provider_enabled("tmdb") and self._tmdb_id_valid(db_object):
-            tools.smart_merge_dictionary(db_object, self.tmdb_api.get_movie_cast(db_object["tmdb_id"]))
+            if self._provider_cast_missing(db_object, "tmdb"):
+                tools.smart_merge_dictionary(db_object, self.tmdb_api.get_movie_cast(db_object["tmdb_id"]))
+            return
+        if self._provider_enabled("tvdb") and self._tvdb_id_valid(db_object):
+            if self._provider_cast_missing(db_object, "tvdb"):
+                tools.smart_merge_dictionary(db_object, self.tvdb_api.get_movie(db_object["tvdb_id"]))
+
+    def _list_extended_art_enabled(self, db_object: dict) -> bool:
+        """True when any extended list art type (clearlogo, discart, etc.) is enabled."""
+        from resources.lib.meta.artwork import (
+            PROFILE_ANIME_MOVIE,
+            PROFILE_ANIME_SERIES,
+            PROFILE_MOVIE,
+            artwork_profile_for_row,
+        )
+        from resources.lib.meta.provider_settings import art_option_enabled
+
+        profile = db_object.get("_art_profile")
+        if not profile:
+            entity = db_object.get("_entity", "movie")
+            default = "movie" if entity == "movie" else "tvshow"
+            profile = artwork_profile_for_row(db_object, default_media_type=default)
+        if profile == PROFILE_ANIME_MOVIE:
+            keys = (
+                ("anime.clearlogo", "anime_movie"),
+                ("anime.clearart", "anime_movie"),
+                ("anime.discart", "anime_movie"),
+                ("anime.banner", "anime_movie"),
+                ("anime.landscape", "anime_movie"),
+            )
+        elif profile == PROFILE_ANIME_SERIES:
+            keys = (
+                ("anime.clearlogo", "anime_series"),
+                ("anime.clearart", "anime_series"),
+                ("anime.banner", "anime_series"),
+                ("anime.landscape", "anime_series"),
+            )
+        elif profile == PROFILE_MOVIE:
+            keys = (
+                ("movies.clearlogo", "movie"),
+                ("movies.clearart", "movie"),
+                ("movies.discart", "movie"),
+                ("movies.banner", "movie"),
+                ("movies.landscape", "movie"),
+            )
+        else:
+            keys = (
+                ("tvshows.clearlogo", "tvshow"),
+                ("tvshows.clearart", "tvshow"),
+                ("tvshows.banner", "tvshow"),
+                ("tvshows.landscape", "tvshow"),
+            )
+        return any(art_option_enabled(setting_id, media_key) for setting_id, media_key in keys)
+
+    def _fetch_tmdb_movie_art_patch(self, db_object):
+        if not self._provider_enabled("tmdb") or not self._tmdb_id_valid(db_object):
+            return None
+        if self._tmdb_art_meta_up_to_par("movie", db_object) and not self._force_update(db_object):
+            return None
+        return self.tmdb_api.get_movie_art(db_object["tmdb_id"])
+
+    def _fetch_tvdb_movie_art_patch(self, db_object):
+        if not self._provider_enabled("tvdb") or not self._tvdb_id_valid(db_object):
+            return None
+        if self._tvdb_art_meta_up_to_par("movie", db_object) and not self._force_update(db_object):
+            return None
+        return self.tvdb_api.get_movie_art(db_object["tvdb_id"])
+
+    def _fetch_tmdb_tvshow_art_patch(self, db_object):
+        if not self._provider_enabled("tmdb") or not self._tmdb_id_valid(db_object):
+            return None
+        if self._tmdb_art_meta_up_to_par("tvshow", db_object) and not self._force_update(db_object):
+            return None
+        return self.tmdb_api.get_show_art(db_object["tmdb_id"])
+
+    def _fetch_tvdb_tvshow_art_patch(self, db_object):
+        if not self._provider_enabled("tvdb") or not self._tvdb_id_valid(db_object):
+            return None
+        if self._tvdb_art_meta_up_to_par("tvshow", db_object) and not self._force_update(db_object):
+            return None
+        return self.tvdb_api.get_show_art(db_object["tvdb_id"])
+
+    def _merge_cast_art_paint_rows(
+        self,
+        base_rows: list[dict],
+        cast_rows: list[dict],
+        art_rows: list[dict],
+    ) -> list[dict]:
+        """Merge parallel cast and art waves by simkl_id, preserving base order."""
+        by_id: dict[int, dict] = {
+            int(row["simkl_id"]): dict(row)
+            for row in base_rows
+            if isinstance(row, dict) and row.get("simkl_id") is not None
+        }
+        for row in cast_rows:
+            if not isinstance(row, dict) or row.get("simkl_id") is None:
+                continue
+            sid = int(row["simkl_id"])
+            merged = dict(by_id.get(sid, row))
+            if row.get("cast"):
+                merged["cast"] = row["cast"]
+            cast_info = row.get("info") if isinstance(row.get("info"), dict) else {}
+            info = merged.get("info") if isinstance(merged.get("info"), dict) else {}
+            if cast_info.get("studio") and not info.get("studio"):
+                info = dict(info)
+                info["studio"] = cast_info["studio"]
+                merged["info"] = info
+            by_id[sid] = merged
+        for row in art_rows:
+            if not isinstance(row, dict) or row.get("simkl_id") is None:
+                continue
+            sid = int(row["simkl_id"])
+            merged = dict(by_id.get(sid, row))
+            merged["art"] = tools.smart_merge_dictionary(
+                dict(merged.get("art") or {}),
+                dict(row.get("art") or {}),
+                keep_original=True,
+                extend_array=False,
+            )
+            by_id[sid] = merged
+        merged_rows: list[dict] = []
+        for row in base_rows:
+            if not isinstance(row, dict):
+                merged_rows.append(row)
+                continue
+            sid = row.get("simkl_id")
+            if sid is not None and int(sid) in by_id:
+                merged_rows.append(by_id[int(sid)])
+            else:
+                merged_rows.append(row)
+        return merged_rows
+
+    def _update_movie_list_art(self, db_object):
+        """List paint: extended art from the preferred provider only, then fallback."""
+        from resources.lib.meta.provider_settings import ART_FANART, ART_SIMKL, ART_TMDB, ART_TVDB
+
+        preferred = self._preferred_art_source_for_db_object(db_object)
+        if preferred == ART_SIMKL:
+            return
+        wave1: list = []
+        if preferred == ART_FANART:
+            wave1.append(lambda o=db_object: self._fetch_movie_fanart_patch(o))
+        elif preferred == ART_TMDB:
+            wave1.append(lambda o=db_object: self._fetch_tmdb_movie_art_patch(o))
+        elif preferred == ART_TVDB:
+            wave1.append(lambda o=db_object: self._fetch_tvdb_movie_art_patch(o))
+        if (
+            preferred in (ART_TMDB, ART_TVDB)
+            and self._list_extended_art_enabled(db_object)
+            and self._fanart_art_usable()
+        ):
+            wave1.append(lambda o=db_object: self._fetch_movie_fanart_patch(o))
+        if wave1:
+            self._merge_provider_patches(db_object, self._parallel_provider_patches(wave1))
+        self._update_movie_art_fallback(db_object)
 
     # endregion
 
     # region tvshow
     def _update_tvshow(self, db_object):
-        self._update_tvshow_simkl(db_object)
+        from resources.lib.meta.provider_settings import ART_FANART, ART_SIMKL, ART_TMDB, ART_TVDB
 
-        def _fetch_tmdb():
-            g.ensure_addon()
-            if not self._provider_enabled("tmdb"):
-                return None
-            if not self._tmdb_id_valid(db_object):
-                return None
-            if not (self._tmdb_needs_update(db_object) or self._force_update(db_object)):
-                return None
-            return self.tmdb_api.get_show(db_object["tmdb_id"])
-
-        def _fetch_tvdb():
-            g.ensure_addon()
-            if not self._provider_enabled("tvdb"):
-                return None
-            if not self._tvdb_id_valid(db_object):
-                return None
-            if not (self._tvdb_needs_update(db_object) or self._force_update(db_object)):
-                return None
-            return self.tvdb_api.get_show(db_object["tvdb_id"])
-
-        def _fetch_fanart():
-            g.ensure_addon()
-            if not self._provider_enabled("fanart"):
-                return None
-            if not self.fanarttv_api.fanart_support:
-                return None
-            if not (self._fanart_needs_update(db_object) or self._force_update(db_object)):
-                return None
-            if not self._tvdb_id_valid(db_object):
-                return None
-            return self.fanarttv_api.get_show(db_object.get("tvdb_id"))
-
-        self._merge_provider_patches(db_object, self._parallel_provider_patches([_fetch_tmdb, _fetch_tvdb, _fetch_fanart]))
-        self._update_tvshow_fallback(db_object)
-        # self._update_tvshow_rating(db_object)  # Commenting for now to reduce tvdb calls
+        preferred = self._preferred_art_source_for_db_object(db_object)
+        if preferred == ART_SIMKL:
+            return
+        if preferred == ART_FANART:
+            tools.smart_merge_dictionary(db_object, self._fetch_tvshow_fanart_patch(db_object) or {})
+        elif preferred == ART_TMDB:
+            self._merge_tmdb_tvshow_bundle(db_object)
+        elif preferred == ART_TVDB:
+            self._merge_tvdb_tvshow_bundle(db_object)
+        self._update_tvshow_art_fallback(db_object)
+        self._merge_supplementary_fanart_tvshow_art(db_object)
         self._update_tvshow_cast(db_object)
 
-    def _update_tvshow_simkl(self, db_object):
-        return  # Prism: Simkl API removed — metadata from Simkl/MDBList/TMDB/TVDB
-
     def _update_tvshow_tmdb(self, db_object):
-        if not self._provider_enabled("tmdb"):
-            return
-        if not self._tmdb_id_valid(db_object):
-            return
-        if not (self._tmdb_needs_update(db_object) or self._force_update(db_object)):
-            return
-        tools.smart_merge_dictionary(db_object, self.tmdb_api.get_show(db_object["tmdb_id"]))
+        self._merge_tmdb_tvshow_bundle(db_object)
 
     def _update_tvshow_tvdb(self, db_object):
-        if not self._provider_enabled("tvdb"):
-            return
-        if not self._tvdb_id_valid(db_object):
-            return
-        if not (self._tvdb_needs_update(db_object) or self._force_update(db_object)):
-            return
-        tools.smart_merge_dictionary(db_object, self.tvdb_api.get_show(db_object["tvdb_id"]))
+        self._merge_tvdb_tvshow_bundle(db_object)
 
     def _update_tvshow_fanart(self, db_object):
-        if not self._provider_enabled("fanart"):
+        if not self._fanart_art_usable():
             return
-        if (
-            self.fanarttv_api.fanart_support
-            and (self._fanart_needs_update(db_object) or self._force_update(db_object))
-            and self._tvdb_id_valid(db_object)
-        ):
-            tools.smart_merge_dictionary(db_object, self.fanarttv_api.get_show(db_object.get("tvdb_id")))
-
-    def _update_tvshow_fallback(self, db_object):
-        if self._provider_enabled("tmdb") and self._tmdb_id_valid(db_object) and not self._tmdb_art_meta_up_to_par("tvshow", db_object):
-            tools.smart_merge_dictionary(db_object, self.tmdb_api.get_show_art(db_object["tmdb_id"]))
-        if self._provider_enabled("tvdb") and self._tvdb_id_valid(db_object) and not self._tvdb_art_meta_up_to_par("tvshow", db_object):
-            tools.smart_merge_dictionary(db_object, self.tvdb_api.get_show_art(db_object["tvdb_id"]))
-
-    def _update_tvshow_rating(self, db_object):
-        if self._provider_enabled("tmdb") and not tools.safe_dict_get(db_object, "tmdb_object", "info") and self._tmdb_id_valid(db_object):
-            tools.smart_merge_dictionary(db_object, self.tmdb_api.get_show_rating(db_object["tmdb_id"]))
-        if self._provider_enabled("tvdb") and not tools.safe_dict_get(db_object, "tvdb_object", "info") and self._tvdb_id_valid(db_object):
-            tools.smart_merge_dictionary(db_object, self.tvdb_api.get_show_rating(db_object["tvdb_id"]))
+        tools.smart_merge_dictionary(db_object, self._fetch_tvshow_fanart_patch(db_object) or {})
 
     def _update_tvshow_cast(self, db_object):
-        if self._provider_enabled("tmdb") and not tools.safe_dict_get(db_object, "tmdb_object", "cast") and self._tmdb_id_valid(db_object):
-            tools.smart_merge_dictionary(db_object, self.tmdb_api.get_show_cast(db_object["tmdb_id"]))
+        self._fetch_imdb_cast_for_object(db_object)
+        if db_object.get("cast"):
+            return
+        self._fetch_anilist_cast_for_object(db_object)
+        if db_object.get("cast"):
+            return
+        from resources.lib.meta.provider_settings import ART_TMDB, ART_TVDB
+
+        preferred = self._preferred_art_source_for_db_object(db_object)
+        if preferred == ART_TVDB:
+            if (
+                self._provider_enabled("tvdb")
+                and self._provider_cast_missing(db_object, "tvdb")
+                and self._tvdb_id_valid(db_object)
+            ):
+                tools.smart_merge_dictionary(db_object, self.tvdb_api.get_show_cast(db_object["tvdb_id"]))
+            return
+        if preferred == ART_TMDB:
+            if (
+                self._provider_enabled("tmdb")
+                and self._provider_cast_missing(db_object, "tmdb")
+                and self._tmdb_id_valid(db_object)
+            ):
+                tools.smart_merge_dictionary(db_object, self.tmdb_api.get_show_cast(db_object["tmdb_id"]))
+            return
         if (
-            self._provider_enabled("tvdb")
+            self._provider_enabled("tmdb")
+            and self._provider_cast_missing(db_object, "tmdb")
             and not tools.safe_dict_get(db_object, "tvdb_object", "cast")
+            and self._tmdb_id_valid(db_object)
+        ):
+            tools.smart_merge_dictionary(db_object, self.tmdb_api.get_show_cast(db_object["tmdb_id"]))
+        elif (
+            self._provider_enabled("tvdb")
+            and self._provider_cast_missing(db_object, "tvdb")
             and not tools.safe_dict_get(db_object, "tmdb_object", "cast")
             and self._tvdb_id_valid(db_object)
         ):
             tools.smart_merge_dictionary(db_object, self.tvdb_api.get_show_cast(db_object["tvdb_id"]))
+
+    def _update_tvshow_list_art(self, db_object):
+        """List paint: extended art from the preferred provider only, then fallback."""
+        from resources.lib.meta.provider_settings import ART_FANART, ART_SIMKL, ART_TMDB, ART_TVDB
+
+        preferred = self._preferred_art_source_for_db_object(db_object)
+        if preferred == ART_SIMKL:
+            return
+        wave1: list = []
+        if preferred == ART_FANART:
+            wave1.append(lambda o=db_object: self._fetch_tvshow_fanart_patch(o))
+        elif preferred == ART_TMDB:
+            wave1.append(lambda o=db_object: self._fetch_tmdb_tvshow_art_patch(o))
+        elif preferred == ART_TVDB:
+            wave1.append(lambda o=db_object: self._fetch_tvdb_tvshow_art_patch(o))
+        if (
+            preferred in (ART_TMDB, ART_TVDB)
+            and self._list_extended_art_enabled(db_object)
+            and self._fanart_art_usable()
+        ):
+            wave1.append(lambda o=db_object: self._fetch_tvshow_fanart_patch(o))
+        if wave1:
+            self._merge_provider_patches(db_object, self._parallel_provider_patches(wave1))
+        self._update_tvshow_art_fallback(db_object)
 
     # endregion
 
@@ -1068,10 +1618,15 @@ class MetadataHandler:
 
     def _update_season(self, db_object):
         """Simkl owns season metadata — external APIs only supply artwork."""
+        from resources.lib.meta.provider_settings import ART_FANART, ART_SIMKL, ART_TMDB, ART_TVDB
+
+        preferred = self._preferred_art_source_for_db_object(db_object)
+        if preferred == ART_SIMKL:
+            return
 
         def _fetch_tmdb():
             g.ensure_addon()
-            if not self._provider_enabled("tmdb"):
+            if preferred != ART_TMDB or not self._provider_enabled("tmdb"):
                 return None
             if not self._tmdb_show_id_valid(db_object):
                 return None
@@ -1085,7 +1640,7 @@ class MetadataHandler:
 
         def _fetch_tvdb():
             g.ensure_addon()
-            if not self._provider_enabled("tvdb"):
+            if preferred != ART_TVDB or not self._provider_enabled("tvdb"):
                 return None
             if not self._tvdb_show_id_valid(db_object):
                 return None
@@ -1099,9 +1654,9 @@ class MetadataHandler:
 
         def _fetch_fanart():
             g.ensure_addon()
-            if not self._provider_enabled("fanart"):
+            if preferred != ART_FANART:
                 return None
-            if not self.fanarttv_api.fanart_support:
+            if not self._fanart_art_usable() or not self.fanarttv_api.fanart_support:
                 return None
             if not (self._fanart_needs_update(db_object) or self._force_update(db_object)):
                 return None
@@ -1151,7 +1706,7 @@ class MetadataHandler:
             )
 
     def _update_season_fanart(self, db_object):
-        if not self._provider_enabled("fanart"):
+        if not self._fanart_art_usable():
             return
         if (
             self.fanarttv_api.fanart_support
@@ -1174,7 +1729,7 @@ class MetadataHandler:
             self._provider_enabled("tmdb")
             and self._tmdb_show_id_valid(db_object)
             and not self._tmdb_art_meta_up_to_par("season", db_object)
-            and g.get_int_setting("tvshows.preferedsource", 1) != ART_TMDB
+            and not self._is_tmdb_art_preferred_for_child(db_object)
         ):
             self._merge_season_external(
                 db_object,
@@ -1184,7 +1739,7 @@ class MetadataHandler:
             self._provider_enabled("tvdb")
             and self._tvdb_show_id_valid(db_object)
             and not self._tvdb_art_meta_up_to_par("season", db_object)
-            and g.get_int_setting("tvshows.preferedsource", 1) != ART_TVDB
+            and not self._is_tvdb_art_preferred_for_child(db_object)
         ):
             self._merge_season_external(
                 db_object,
@@ -1202,12 +1757,20 @@ class MetadataHandler:
             tools.smart_merge_dictionary(db_object, patch)
 
     def _update_episode(self, db_object):
-        """Simkl owns episode metadata — external APIs only supply art and supplemental ids."""
+        """Simkl owns episode metadata — external APIs only supply artwork."""
+        from resources.lib.meta.provider_settings import ART_SIMKL
+
+        if self._preferred_art_source_for_db_object(db_object) == ART_SIMKL:
+            return
         self._update_episode_tmdb(db_object)
         self._update_episode_tvdb(db_object)
         self._update_episode_fallback(db_object)
 
     def _update_episode_tmdb(self, db_object):
+        from resources.lib.meta.provider_settings import ART_TMDB
+
+        if self._preferred_art_source_for_db_object(db_object) not in (ART_TMDB,):
+            return
         if not self._provider_enabled("tmdb"):
             return
         if not self._tmdb_show_id_valid(db_object):
@@ -1215,19 +1778,17 @@ class MetadataHandler:
         season_num, episode_num = self._simkl_episode_lookup(db_object)
         if episode_num is None:
             return
-        needs_refresh = self._tmdb_needs_update(db_object) or self._force_update(db_object)
-        if needs_refresh or not self._tmdb_art_meta_up_to_par("episode", db_object):
+        if not self._tmdb_art_meta_up_to_par("episode", db_object):
             self._merge_episode_external(
                 db_object,
                 self.tmdb_api.get_episode_art(db_object["tmdb_show_id"], season_num, episode_num),
             )
-        if needs_refresh:
-            self._merge_episode_external(
-                db_object,
-                self.tmdb_api.get_episode_rating(db_object["tmdb_show_id"], season_num, episode_num),
-            )
 
     def _update_episode_tvdb(self, db_object):
+        from resources.lib.meta.provider_settings import ART_TVDB
+
+        if self._preferred_art_source_for_db_object(db_object) not in (ART_TVDB,):
+            return
         if not self._provider_enabled("tvdb"):
             return
         if not self._tvdb_show_id_valid(db_object):
@@ -1235,13 +1796,7 @@ class MetadataHandler:
         season_num, episode_num = self._simkl_episode_lookup(db_object)
         if episode_num is None:
             return
-        needs_refresh = self._tvdb_needs_update(db_object) or self._force_update(db_object)
-        if needs_refresh:
-            self._merge_episode_external(
-                db_object,
-                self.tvdb_api.get_episode_rating(db_object["tvdb_show_id"], season_num, episode_num),
-            )
-        if needs_refresh or not self._tvdb_art_meta_up_to_par("episode", db_object):
+        if not self._tvdb_art_meta_up_to_par("episode", db_object):
             self._merge_episode_external(
                 db_object,
                 self.tvdb_api.get_episode(db_object["tvdb_show_id"], season_num, episode_num),
@@ -1255,7 +1810,7 @@ class MetadataHandler:
             self._provider_enabled("tmdb")
             and self._tmdb_show_id_valid(db_object)
             and not self._tmdb_art_meta_up_to_par("episode", db_object)
-            and g.get_int_setting("tvshows.preferedsource", 1) != ART_TMDB
+            and not self._is_tmdb_art_preferred_for_child(db_object)
         ):
             self._merge_episode_external(
                 db_object,
@@ -1265,26 +1820,11 @@ class MetadataHandler:
             self._provider_enabled("tvdb")
             and self._tvdb_show_id_valid(db_object)
             and not self._tvdb_art_meta_up_to_par("episode", db_object)
-            and g.get_int_setting("tvshows.preferedsource", 1) != ART_TVDB
+            and not self._is_tvdb_art_preferred_for_child(db_object)
         ):
             self._merge_episode_external(
                 db_object,
                 self.tvdb_api.get_episode(db_object["tvdb_show_id"], season_num, episode_num),
-            )
-
-    def _update_episode_rating(self, db_object):
-        season_num, episode_num = self._simkl_episode_lookup(db_object)
-        if episode_num is None:
-            return
-        if self._provider_enabled("tmdb") and self._tmdb_show_id_valid(db_object):
-            self._merge_episode_external(
-                db_object,
-                self.tmdb_api.get_episode_rating(db_object["tmdb_show_id"], season_num, episode_num),
-            )
-        if self._provider_enabled("tvdb") and self._tvdb_show_id_valid(db_object):
-            self._merge_episode_external(
-                db_object,
-                self.tvdb_api.get_episode_rating(db_object["tvdb_show_id"], season_num, episode_num),
             )
 
     # endregion
@@ -1338,7 +1878,7 @@ class MetadataHandler:
         return any(key.startswith(prefix) and art.get(key) for key in art)
 
     def _db_object_for_row(self, row: dict, media_type: str) -> dict:
-        from resources.lib.modules.metadata_providers import external_ids_from_row
+        from resources.lib.meta.provider_settings import external_ids_from_row
         from resources.lib.simkl.ids import canonicalize_info_identity
 
         info = dict(row.get("info") or {})
@@ -1369,15 +1909,21 @@ class MetadataHandler:
 
     @staticmethod
     def _can_fetch_provider_meta(row: dict) -> bool:
-        from resources.lib.modules.metadata_providers import gapfill_provider_available_for_row
+        from resources.lib.meta.provider_settings import gapfill_provider_available_for_row
 
         return gapfill_provider_available_for_row(row)
 
     @staticmethod
     def _provider_enabled(provider: str) -> bool:
-        from resources.lib.modules.metadata_providers import provider_enabled
+        from resources.lib.meta.provider_settings import provider_enabled
 
         return provider_enabled(provider)
+
+    @staticmethod
+    def _fanart_art_usable() -> bool:
+        from resources.lib.meta.provider_settings import fanart_art_usable
+
+        return fanart_art_usable()
 
     @staticmethod
     def _cast_has_photos(cast: list) -> bool:
@@ -1400,18 +1946,26 @@ class MetadataHandler:
         normalized = "movie" if media_type == "movie" else "show"
         return row_needs_refresh(normalized, row)
 
-    def _row_meta_gaps(self, row: dict, media_type: str, art_profile: str | None = None) -> list[str]:
-        from resources.lib.modules.artwork_profile import (
+    def _row_meta_gaps(
+        self,
+        row: dict,
+        media_type: str,
+        art_profile: str | None = None,
+        *,
+        scope: str = "full",
+    ) -> list[str]:
+        from resources.lib.meta.artwork import (
             PROFILE_ANIME_MOVIE,
             PROFILE_ANIME_SERIES,
             PROFILE_MOVIE,
             artwork_profile_for_row,
         )
-        from resources.lib.modules.metadata_providers import art_gapfill_available, art_option_enabled, cast_gapfill_available, fanart_art_usable
+        from resources.lib.meta.provider_settings import art_gapfill_available, art_option_enabled, cast_gapfill_available, fanart_art_usable
 
         if art_profile is None:
             art_profile = artwork_profile_for_row(row, default_media_type=media_type)
         provider_type = "movie" if art_profile in (PROFILE_ANIME_MOVIE, PROFILE_MOVIE) else "tvshow"
+        blocking_scope = str(scope).lower() == "blocking"
 
         gaps: list[str] = []
         cast = row.get("cast")
@@ -1424,50 +1978,55 @@ class MetadataHandler:
             gaps.append("cast")
         art = row.get("art") if isinstance(row.get("art"), dict) else {}
         online_art_keys = []
-        if art_profile == PROFILE_ANIME_MOVIE:
-            if art_option_enabled("anime.clearlogo", "anime_movie"):
-                online_art_keys.append("clearlogo")
-            if art_option_enabled("anime.clearart", "anime_movie"):
-                online_art_keys.append("clearart")
-            if art_option_enabled("anime.discart", "anime_movie"):
-                online_art_keys.append("discart")
-            if art_option_enabled("anime.banner", "anime_movie"):
-                online_art_keys.append("banner")
-            if art_option_enabled("anime.landscape", "anime_movie"):
-                online_art_keys.append("landscape")
-        elif art_profile == PROFILE_ANIME_SERIES:
-            if art_option_enabled("anime.clearlogo", "anime_series"):
-                online_art_keys.append("clearlogo")
-            if art_option_enabled("anime.clearart", "anime_series"):
-                online_art_keys.append("clearart")
-            if art_option_enabled("anime.banner", "anime_series"):
-                online_art_keys.append("banner")
-            if art_option_enabled("anime.landscape", "anime_series"):
-                online_art_keys.append("landscape")
-        elif media_type == "movie":
-            if art_option_enabled("movies.clearlogo", "movie"):
-                online_art_keys.append("clearlogo")
-            if art_option_enabled("movies.clearart", "movie"):
-                online_art_keys.append("clearart")
-            if art_option_enabled("movies.discart", "movie"):
-                online_art_keys.append("discart")
-            if art_option_enabled("movies.banner", "movie"):
-                online_art_keys.append("banner")
-            if art_option_enabled("movies.landscape", "movie"):
-                online_art_keys.append("landscape")
-        elif media_type in ("tvshow", "show"):
-            if art_option_enabled("tvshows.clearlogo", "tvshow"):
-                online_art_keys.append("clearlogo")
-            if art_option_enabled("tvshows.clearart", "tvshow"):
-                online_art_keys.append("clearart")
-            if art_option_enabled("tvshows.banner", "tvshow"):
-                online_art_keys.append("banner")
-            if art_option_enabled("tvshows.landscape", "tvshow"):
-                online_art_keys.append("landscape")
-        for art_key in online_art_keys:
-            if art_gapfill_available(row) and not self._art_key_present(art, art_key):
-                gaps.append(art_key)
-        if fanart_art_usable() and art_gapfill_available(row) and not self._art_key_present(art, "fanart"):
+        if not blocking_scope:
+            if art_profile == PROFILE_ANIME_MOVIE:
+                if art_option_enabled("anime.clearlogo", "anime_movie"):
+                    online_art_keys.append("clearlogo")
+                if art_option_enabled("anime.clearart", "anime_movie"):
+                    online_art_keys.append("clearart")
+                if art_option_enabled("anime.discart", "anime_movie"):
+                    online_art_keys.append("discart")
+                if art_option_enabled("anime.banner", "anime_movie"):
+                    online_art_keys.append("banner")
+                if art_option_enabled("anime.landscape", "anime_movie"):
+                    online_art_keys.append("landscape")
+            elif art_profile == PROFILE_ANIME_SERIES:
+                if art_option_enabled("anime.clearlogo", "anime_series"):
+                    online_art_keys.append("clearlogo")
+                if art_option_enabled("anime.clearart", "anime_series"):
+                    online_art_keys.append("clearart")
+                if art_option_enabled("anime.banner", "anime_series"):
+                    online_art_keys.append("banner")
+                if art_option_enabled("anime.landscape", "anime_series"):
+                    online_art_keys.append("landscape")
+            elif media_type == "movie":
+                if art_option_enabled("movies.clearlogo", "movie"):
+                    online_art_keys.append("clearlogo")
+                if art_option_enabled("movies.clearart", "movie"):
+                    online_art_keys.append("clearart")
+                if art_option_enabled("movies.discart", "movie"):
+                    online_art_keys.append("discart")
+                if art_option_enabled("movies.banner", "movie"):
+                    online_art_keys.append("banner")
+                if art_option_enabled("movies.landscape", "movie"):
+                    online_art_keys.append("landscape")
+            elif media_type in ("tvshow", "show"):
+                if art_option_enabled("tvshows.clearlogo", "tvshow"):
+                    online_art_keys.append("clearlogo")
+                if art_option_enabled("tvshows.clearart", "tvshow"):
+                    online_art_keys.append("clearart")
+                if art_option_enabled("tvshows.banner", "tvshow"):
+                    online_art_keys.append("banner")
+                if art_option_enabled("tvshows.landscape", "tvshow"):
+                    online_art_keys.append("landscape")
+            for art_key in online_art_keys:
+                if art_gapfill_available(row, provider_type) and not self._art_key_present(art, art_key):
+                    gaps.append(art_key)
+        if (
+            fanart_art_usable()
+            and art_gapfill_available(row, provider_type)
+            and not self._art_key_present(art, "fanart")
+        ):
             gaps.append("fanart")
         return gaps
 
@@ -1480,11 +2039,11 @@ class MetadataHandler:
         art_profile: str | None = None,
         provider_cache: dict | None = None,
     ) -> dict:
-        """Merge full art, cast, and info from cached provider meta — no API calls."""
+        """Merge cached provider art and cast only — Simkl owns descriptive metadata."""
         if not isinstance(row, dict):
             return row
 
-        from resources.lib.modules.artwork_profile import artwork_profile_for_row, provider_media_type
+        from resources.lib.meta.artwork import artwork_profile_for_row, provider_media_type
         from resources.lib.simkl.ids import canonicalize_info_identity, entity_simkl_id
 
         info = row.get("info") or {}
@@ -1513,18 +2072,12 @@ class MetadataHandler:
         db_object.update(cached_meta)
         if not any(
             db_object.get(f"{provider}_object")
-            for provider in ("simkl", "tmdb", "tvdb", "fanart")
+            for provider in ("simkl", "tmdb", "tvdb", "imdb", "fanart")
         ):
             return row
 
         formatted = self.format_meta(db_object)
         merged = dict(row)
-        merged["info"] = tools.smart_merge_dictionary(
-            dict(info),
-            formatted.get("info") or {},
-            keep_original=True,
-            extend_array=False,
-        )
         merged["art"] = tools.smart_merge_dictionary(
             dict(row.get("art") or {}),
             formatted.get("art") or {},
@@ -1543,14 +2096,14 @@ class MetadataHandler:
         meta_cache,
         art_profile: str | None = None,
     ) -> dict | None:
-        from resources.lib.modules.artwork_profile import artwork_profile_for_row, provider_media_type
+        from resources.lib.meta.artwork import artwork_profile_for_row, provider_media_type
         from resources.lib.simkl.ids import entity_simkl_id
 
         if art_profile is None:
             art_profile = artwork_profile_for_row(row, default_media_type=media_type)
         provider_type = provider_media_type(art_profile)
         cache_media_type = "movie" if provider_type == "movie" else "show"
-        gaps = self._row_meta_gaps(row, provider_type, art_profile=art_profile)
+        gaps = self._row_meta_gaps(row, provider_type, art_profile=art_profile, scope="full")
         stale = self._row_needs_refresh(row, provider_type)
         simkl_id = entity_simkl_id(row) or row.get("simkl_id")
         if simkl_id is None:
@@ -1587,9 +2140,11 @@ class MetadataHandler:
         merged: list = []
         enrichment_refs: list[dict] = []
         from resources.lib.database.sync_meta_cache import SyncMetaCache
-        from resources.lib.modules.artwork_profile import artwork_profile_for_row, provider_media_type
+        from resources.lib.meta.artwork import artwork_profile_for_row, provider_media_type
 
         meta_cache = SyncMetaCache()
+        from resources.lib.meta.paint_stamp import row_has_trusted_paint_stamp
+
         movie_rows: list[dict] = []
         show_rows: list[dict] = []
         for row in rows:
@@ -1609,6 +2164,9 @@ class MetadataHandler:
 
         for row in rows:
             if not isinstance(row, dict):
+                merged.append(row)
+                continue
+            if row_has_trusted_paint_stamp(row):
                 merged.append(row)
                 continue
             info = row.get("info")
@@ -1636,6 +2194,683 @@ class MetadataHandler:
         )
         return merged, enrichment_refs
 
+    def _fetch_cast_patch(self, db_object: dict) -> dict:
+        """Fetch TMDB/TVDB cast credits for a single list row db_object."""
+        entity = db_object.get("_entity", "movie")
+        if entity == "movie":
+            self._update_movie_cast(db_object)
+        else:
+            self._update_tvshow_cast(db_object)
+        return db_object
+
+    _LIST_ART_GAP_KEYS = frozenset({"clearlogo", "clearart", "discart", "banner", "landscape", "fanart"})
+
+    def _fetch_art_patch(self, db_object: dict) -> dict:
+        """Fetch Fanart/TMDB/TVDB extended art for a single list row db_object."""
+        from resources.lib.meta.profiles import MetaProfile, profile_scope
+
+        entity = db_object.get("_entity", "movie")
+        with profile_scope(MetaProfile.LIST):
+            if entity == "movie":
+                self._update_movie_list_art(db_object)
+            else:
+                self._update_tvshow_list_art(db_object)
+        return db_object
+
+    def _persist_list_provider_blobs(self, db_object: dict, db, provider_type: str) -> None:
+        """Cache provider blobs fetched during list paint for subsequent offline merges."""
+        from resources.lib.meta.profiles import MetaProfile, profile_scope
+
+        table = "movies" if provider_type == "movie" else "shows"
+        fanart_id_col = "tmdb_id" if provider_type == "movie" else "tvdb_id"
+        with profile_scope(MetaProfile.FULL):
+            if db_object.get("tmdb_object"):
+                db.save_to_meta_table([db_object], table, "tmdb", "tmdb_id")
+            if db_object.get("tvdb_object"):
+                db.save_to_meta_table([db_object], table, "tvdb", "tvdb_id")
+            imdb_obj = db_object.get("imdb_object")
+            if isinstance(imdb_obj, dict) and imdb_obj and set(imdb_obj.keys()) != {"cast"}:
+                db.save_to_meta_table([db_object], table, "imdb", "imdb_id")
+            if db_object.get("fanart_object"):
+                db.save_to_meta_table([db_object], table, "fanart", fanart_id_col)
+
+    def fill_list_art_online(
+        self,
+        rows,
+        media_type: str,
+        *,
+        db=None,
+        gap_scope: str = "full",
+    ) -> list:
+        """Deduped extended art lookup via ArtBatchCoordinator."""
+        if not rows:
+            return rows
+
+        if db is None:
+            from resources.lib.database.session import get_sync_database
+
+            db = get_sync_database()
+
+        from resources.lib.meta.artwork import artwork_profile_for_row, provider_media_type
+
+        provider_cache: dict[int, dict] = {}
+        movie_rows = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and provider_media_type(artwork_profile_for_row(row, default_media_type=media_type)) == "movie"
+        ]
+        show_rows = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and provider_media_type(artwork_profile_for_row(row, default_media_type=media_type)) != "movie"
+        ]
+        if movie_rows:
+            provider_cache.update(db.load_cached_provider_meta_batch("movies", movie_rows))
+        if show_rows:
+            provider_cache.update(db.load_cached_provider_meta_batch("shows", show_rows))
+
+        merged_rows, _stats = self._apply_art_gaps_to_rows(
+            rows,
+            media_type,
+            db=db,
+            provider_cache=provider_cache,
+            gap_scope=gap_scope,
+        )
+        try:
+            from resources.lib.meta.display_store import get_display_meta_store
+
+            paint_type = "movie" if str(media_type).lower() in ("movie", "movies") else "tvshow"
+            to_persist = [
+                row
+                for row in merged_rows
+                if isinstance(row, dict) and row.get("simkl_id") is not None and row.get("art")
+            ]
+            if to_persist:
+                get_display_meta_store().merge_art_cast_rows_batch(paint_type, to_persist)
+        except Exception:
+            g.log_stacktrace()
+        return merged_rows
+
+    def fill_list_cast_online(self, rows, media_type: str, *, db=None) -> list:
+        """POV-style per-item cast lookup for visible list rows missing cached cast."""
+        if not rows:
+            return rows
+
+        if db is None:
+            from resources.lib.database.session import get_sync_database
+
+            db = get_sync_database()
+
+        from resources.lib.meta.artwork import artwork_profile_for_row, provider_media_type
+
+        pending: list[tuple[int, dict]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            profile = artwork_profile_for_row(row, default_media_type=media_type)
+            provider_type = provider_media_type(profile)
+            gaps = self._row_meta_gaps(row, provider_type, art_profile=profile)
+            if "cast" not in gaps or not self._can_fetch_provider_meta(row):
+                continue
+            simkl_id = row.get("simkl_id") or (row.get("info") or {}).get("simkl_id")
+            if simkl_id is None:
+                continue
+            db_object = self._db_object_for_row(row, provider_type)
+            db_object["_entity"] = "movie" if provider_type == "movie" else "tvshow"
+            db_object["_art_profile"] = profile
+            pending.append((int(simkl_id), db_object))
+
+        if not pending:
+            return rows
+
+        provider_type = "movie" if str(media_type).lower() in ("movie", "movies") else "tvshow"
+
+        imdb_pending: list[tuple[int, dict, str]] = []
+        fallback_pending: list[tuple[int, dict]] = []
+        if self._provider_enabled("imdb"):
+            from resources.lib.meta.provider_settings import external_ids_from_row
+            from resources.lib.simkl.field_map import _normalize_imdb_id
+
+            for simkl_id, db_object in pending:
+                imdb_id = _normalize_imdb_id(external_ids_from_row(db_object).get("imdb_id"))
+                if imdb_id:
+                    imdb_pending.append((simkl_id, db_object, imdb_id))
+                else:
+                    fallback_pending.append((simkl_id, db_object))
+        else:
+            fallback_pending = list(pending)
+
+        cast_by_id: dict[int, list] = {}
+        if imdb_pending:
+            from resources.lib.indexers.imdb import thread_imdb_api
+
+            imdb_ids = [item[2] for item in imdb_pending]
+            cast_map = thread_imdb_api().get_cast_batch(imdb_ids)
+            for simkl_id, db_object, imdb_id in imdb_pending:
+                cast = cast_map.get(imdb_id)
+                if cast:
+                    self._merge_imdb_cast(db_object, cast)
+                    cast_by_id[simkl_id] = cast
+                else:
+                    fallback_pending.append((simkl_id, db_object))
+            try:
+                for simkl_id, db_object, _ in imdb_pending:
+                    if db_object.get("imdb_object"):
+                        self._persist_list_provider_blobs(db_object, db, provider_type)
+            except Exception:
+                g.log_stacktrace()
+
+        studio_by_id: dict[int, str] = {}
+        fallback_pending, anilist_cast_map, anilist_studio_map, _anilist_blobs = self._fill_anilist_cast_batch(fallback_pending)
+        cast_by_id.update(anilist_cast_map)
+        studio_by_id.update(anilist_studio_map)
+
+        from resources.lib.common.thread_pool import ThreadPool
+
+        pool = ThreadPool()
+        for _, db_object in fallback_pending:
+            pool.put(self._fetch_cast_patch, db_object)
+
+        if pool.tasks:
+            import concurrent.futures
+
+            for task in concurrent.futures.as_completed(pool.tasks):
+                try:
+                    db_object = task.result()
+                except Exception:
+                    g.log_stacktrace()
+                    continue
+                if not isinstance(db_object, dict):
+                    continue
+                sid = db_object.get("simkl_id") or (db_object.get("info") or {}).get("simkl_id")
+                if sid is None:
+                    continue
+                formatted = self.format_meta(db_object)
+                cast = formatted.get("cast")
+                if cast:
+                    cast_by_id[int(sid)] = cast
+                if db_object.get("imdb_object"):
+                    try:
+                        self._persist_list_provider_blobs(db_object, db, provider_type)
+                    except Exception:
+                        g.log_stacktrace()
+            pool.tasks.clear()
+
+        if not cast_by_id and not studio_by_id:
+            return rows
+
+        merged_rows = self._merge_cast_studio_into_rows(rows, cast_by_id, studio_by_id)
+
+        try:
+            from resources.lib.meta.display_store import get_display_meta_store
+
+            paint_type = "movie" if str(media_type).lower() in ("movie", "movies") else "tvshow"
+            to_persist = [
+                row
+                for row in merged_rows
+                if isinstance(row, dict) and row.get("simkl_id") is not None and row.get("cast")
+            ]
+            if to_persist:
+                store = get_display_meta_store()
+                for paint_row in to_persist:
+                    store.merge_art_cast_row(paint_type, paint_row)
+        except Exception:
+            g.log_stacktrace()
+
+        return merged_rows
+
+    def _apply_cast_gaps_to_rows(
+        self,
+        rows: list[dict],
+        media_type: str,
+        *,
+        db,
+    ) -> tuple[list[dict], int]:
+        """IMDb batch + fallback cast gap-fill for the given row subset."""
+        if not rows:
+            return rows, 0
+
+        from resources.lib.meta.artwork import artwork_profile_for_row, provider_media_type
+
+        pending: list[tuple[int, dict]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            profile = artwork_profile_for_row(row, default_media_type=media_type)
+            provider_type = provider_media_type(profile)
+            gaps = self._row_meta_gaps(row, provider_type, art_profile=profile)
+            if "cast" not in gaps or not self._can_fetch_provider_meta(row):
+                continue
+            simkl_id = row.get("simkl_id") or (row.get("info") or {}).get("simkl_id")
+            if simkl_id is None:
+                continue
+            db_object = self._db_object_for_row(row, provider_type)
+            db_object["_entity"] = "movie" if provider_type == "movie" else "tvshow"
+            db_object["_art_profile"] = profile
+            pending.append((int(simkl_id), db_object))
+
+        if not pending:
+            return rows, 0
+
+        provider_type = "movie" if str(media_type).lower() in ("movie", "movies") else "tvshow"
+        cast_batch_count = 0
+        imdb_pending: list[tuple[int, dict, str]] = []
+        fallback_pending: list[tuple[int, dict]] = []
+        if self._provider_enabled("imdb"):
+            from resources.lib.meta.provider_settings import external_ids_from_row
+            from resources.lib.simkl.field_map import _normalize_imdb_id
+
+            for simkl_id, db_object in pending:
+                imdb_id = _normalize_imdb_id(external_ids_from_row(db_object).get("imdb_id"))
+                if imdb_id:
+                    imdb_pending.append((simkl_id, db_object, imdb_id))
+                else:
+                    fallback_pending.append((simkl_id, db_object))
+        else:
+            fallback_pending = list(pending)
+
+        cast_by_id: dict[int, list] = {}
+        blobs_to_persist: list[dict] = []
+        if imdb_pending:
+            from resources.lib.indexers.imdb import thread_imdb_api
+
+            imdb_ids = [item[2] for item in imdb_pending]
+            cast_map = thread_imdb_api().get_cast_batch(imdb_ids)
+            cast_batch_count = 1
+            for simkl_id, db_object, imdb_id in imdb_pending:
+                cast = cast_map.get(imdb_id)
+                if cast:
+                    self._merge_imdb_cast(db_object, cast)
+                    cast_by_id[simkl_id] = cast
+                    blobs_to_persist.append(db_object)
+                else:
+                    fallback_pending.append((simkl_id, db_object))
+
+        studio_by_id: dict[int, str] = {}
+        fallback_pending, anilist_cast_map, anilist_studio_map, anilist_blobs = self._fill_anilist_cast_batch(fallback_pending)
+        cast_by_id.update(anilist_cast_map)
+        studio_by_id.update(anilist_studio_map)
+        if anilist_blobs:
+            cast_batch_count += 1
+            blobs_to_persist.extend(anilist_blobs)
+
+        from resources.lib.common.thread_pool import ThreadPool
+
+        pool = ThreadPool()
+        for _, db_object in fallback_pending:
+            pool.put(self._fetch_cast_patch, db_object)
+
+        if pool.tasks:
+            import concurrent.futures
+
+            for task in concurrent.futures.as_completed(pool.tasks):
+                try:
+                    db_object = task.result()
+                except Exception:
+                    g.log_stacktrace()
+                    continue
+                if not isinstance(db_object, dict):
+                    continue
+                sid = db_object.get("simkl_id") or (db_object.get("info") or {}).get("simkl_id")
+                if sid is None:
+                    continue
+                formatted = self.format_meta(db_object)
+                cast = formatted.get("cast")
+                if cast:
+                    cast_by_id[int(sid)] = cast
+                if db_object.get("imdb_object"):
+                    blobs_to_persist.append(db_object)
+            pool.tasks.clear()
+
+        for db_object in blobs_to_persist:
+            try:
+                self._persist_list_provider_blobs(db_object, db, provider_type)
+            except Exception:
+                g.log_stacktrace()
+
+        if not cast_by_id and not studio_by_id:
+            return rows, cast_batch_count
+
+        merged_rows = self._merge_cast_studio_into_rows(rows, cast_by_id, studio_by_id)
+        return merged_rows, cast_batch_count
+
+    def _apply_art_gaps_to_rows(
+        self,
+        rows: list[dict],
+        media_type: str,
+        *,
+        db,
+        provider_cache: dict[int, dict] | None = None,
+        gap_scope: str = "full",
+    ) -> tuple[list[dict], dict[str, int]]:
+        """Coordinated art gap-fill for the given row subset."""
+        if not rows:
+            return rows, {"art_fetch": 0, "art_deduped": 0}
+
+        from resources.lib.meta.art_batch import ArtBatchCoordinator
+        from resources.lib.meta.artwork import artwork_profile_for_row, provider_media_type
+        from resources.lib.meta.paint_complete import art_gap_keys_for_scope
+
+        allowed_art_keys = art_gap_keys_for_scope(gap_scope)
+        pending: list[tuple[int, dict, str]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            profile = artwork_profile_for_row(row, default_media_type=media_type)
+            provider_type = provider_media_type(profile)
+            gaps = self._row_meta_gaps(
+                row, provider_type, art_profile=profile, scope=gap_scope
+            )
+            art_gaps = [gap for gap in gaps if gap in allowed_art_keys]
+            if not art_gaps or not self._can_fetch_provider_meta(row):
+                continue
+            simkl_id = row.get("simkl_id") or (row.get("info") or {}).get("simkl_id")
+            if simkl_id is None:
+                continue
+            info = row.get("info") if isinstance(row.get("info"), dict) else {}
+            table = "movies" if provider_type == "movie" else "shows"
+            db_object = self._db_object_for_row(row, provider_type)
+            cached = (provider_cache or {}).get(int(simkl_id))
+            if cached:
+                db_object.update(cached)
+            else:
+                db_object.update(db.load_cached_provider_meta(table, int(simkl_id), info))
+            db_object["_entity"] = "movie" if provider_type == "movie" else "tvshow"
+            db_object["_art_profile"] = profile
+            pending.append((int(simkl_id), db_object, provider_type))
+
+        if not pending:
+            return rows, {"art_fetch": 0, "art_deduped": 0}
+
+        coordinator = ArtBatchCoordinator(self)
+        art_by_id = coordinator.apply_art_gaps(pending, db=db, provider_cache=provider_cache)
+        if not art_by_id:
+            return rows, coordinator.stats
+
+        merged_rows: list = []
+        for row in rows:
+            if not isinstance(row, dict):
+                merged_rows.append(row)
+                continue
+            simkl_id = row.get("simkl_id") or (row.get("info") or {}).get("simkl_id")
+            if simkl_id is not None and int(simkl_id) in art_by_id:
+                updated = dict(row)
+                updated["art"] = tools.smart_merge_dictionary(
+                    dict(row.get("art") or {}),
+                    art_by_id[int(simkl_id)],
+                    keep_original=True,
+                    extend_array=False,
+                )
+                merged_rows.append(updated)
+            else:
+                merged_rows.append(row)
+        return merged_rows, coordinator.stats
+
+    def _prepare_drilldown_rows_local(self, rows: list[dict]) -> list[dict]:
+        """Simkl-only local paint for season/episode drilldown (no provider HTTP)."""
+        prepared: list[dict] = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                prepared.append(row)
+                continue
+            updated = dict(row)
+            info = updated.get("info") if isinstance(updated.get("info"), dict) else {}
+            simkl_data = {"info": dict(info), "art": dict(updated.get("art") or {})}
+            mediatype = (info.get("mediatype") or "").lower()
+            if mediatype == "episode":
+                self._apply_simkl_episode_thumb(updated, simkl_data)
+                art = updated.setdefault("art", {})
+                if not art.get("thumb") and not updated.get("info", {}).get("thumb"):
+                    thumb = (
+                        art.get("poster")
+                        or art.get("tvshow.poster")
+                        or art.get("season.poster")
+                        or art.get("fanart")
+                        or art.get("tvshow.fanart")
+                    )
+                    if thumb:
+                        art["thumb"] = thumb
+                        updated["info"]["thumb"] = thumb
+            elif mediatype == "season":
+                art = updated.setdefault("art", {})
+                if not art.get("poster") and not art.get("thumb"):
+                    poster = info.get("poster")
+                    if poster:
+                        art["poster"] = poster
+                        art.setdefault("thumb", poster)
+            prepared.append(updated)
+        return prepared
+
+    def prepare_list_rows_for_paint(
+        self,
+        rows: list[dict],
+        media_type: str,
+        *,
+        db=None,
+        profile: str = "browse",
+        overlay_sync: bool = True,
+    ) -> tuple[list[dict], list[dict], dict]:
+        """Seren-style prepare: provider HTTP only for incomplete rows."""
+        import time
+
+        stats: dict[str, int | float] = {
+            "complete": 0,
+            "incomplete": 0,
+            "cast_batch": 0,
+            "art_fetch": 0,
+            "art_deduped": 0,
+            "cast_art_parallel_ms": 0.0,
+            "prepare_ms": 0.0,
+            "prepare_skipped": 0,
+        }
+        if not rows:
+            return rows, [], stats
+
+        if db is None:
+            from resources.lib.database.session import get_sync_database
+
+            db = get_sync_database()
+
+        start = time.time()
+        from resources.lib.meta.paint_complete import partition_paint_rows
+
+        complete_rows, incomplete_rows = partition_paint_rows(rows, media_type, profile=profile, handler=self)
+        stats["complete"] = len(complete_rows)
+        stats["incomplete"] = len(incomplete_rows)
+
+        enrichment_refs: list[dict] = []
+        prepared_incomplete = incomplete_rows
+
+        if incomplete_rows:
+            if str(profile).lower() == "drilldown":
+                prepared_incomplete = self._prepare_drilldown_rows_local(incomplete_rows)
+            else:
+                prepared_incomplete, enrichment_refs = self.merge_list_meta_local(
+                    incomplete_rows, media_type, db=db
+                )
+                from resources.lib.meta.artwork import artwork_profile_for_row, provider_media_type
+                from resources.lib.meta.paint_complete import gap_scope_for_profile
+
+                gap_scope = gap_scope_for_profile(profile)
+                provider_cache: dict[int, dict] = {}
+                movie_rows = [
+                    row
+                    for row in prepared_incomplete
+                    if provider_media_type(artwork_profile_for_row(row, default_media_type=media_type)) == "movie"
+                ]
+                show_rows = [
+                    row
+                    for row in prepared_incomplete
+                    if provider_media_type(artwork_profile_for_row(row, default_media_type=media_type)) != "movie"
+                ]
+                if movie_rows:
+                    provider_cache.update(db.load_cached_provider_meta_batch("movies", movie_rows))
+                if show_rows:
+                    provider_cache.update(db.load_cached_provider_meta_batch("shows", show_rows))
+
+                wave_rows = [dict(row) for row in prepared_incomplete]
+                cast_input = [dict(row) for row in wave_rows]
+                art_input = [dict(row) for row in wave_rows]
+                parallel_start = time.time()
+                from resources.lib.common.thread_pool import get_provider_executor
+
+                executor = get_provider_executor()
+                cast_future = executor.submit(
+                    self._apply_cast_gaps_to_rows, cast_input, media_type, db=db
+                )
+                art_future = executor.submit(
+                    self._apply_art_gaps_to_rows,
+                    art_input,
+                    media_type,
+                    db=db,
+                    provider_cache=provider_cache,
+                    gap_scope=gap_scope,
+                )
+                cast_rows, cast_batch_count = cast_future.result()
+                art_rows, art_stats = art_future.result()
+                prepared_incomplete = self._merge_cast_art_paint_rows(wave_rows, cast_rows, art_rows)
+                stats["cast_batch"] = cast_batch_count
+                stats["cast_art_parallel_ms"] = round((time.time() - parallel_start) * 1000, 1)
+                stats["art_fetch"] = int(art_stats.get("art_fetch", 0))
+                stats["art_deduped"] = int(art_stats.get("art_deduped", 0))
+
+        if overlay_sync and prepared_incomplete and str(profile).lower() != "drilldown":
+            from resources.lib.meta.paint_cache import _overlay_sync_fields
+
+            prepared_incomplete = _overlay_sync_fields(prepared_incomplete, media_type, db)
+
+        by_id: dict[int, dict] = {}
+        for row in complete_rows + prepared_incomplete:
+            if isinstance(row, dict) and row.get("simkl_id") is not None:
+                by_id[int(row["simkl_id"])] = row
+
+        merged: list[dict] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                merged.append(row)
+                continue
+            sid = row.get("simkl_id")
+            if sid is not None and int(sid) in by_id:
+                merged.append(by_id[int(sid)])
+            else:
+                merged.append(row)
+
+        try:
+            from resources.lib.meta.display_store import get_display_meta_store
+            from resources.lib.meta.paint_complete import row_paint_complete
+            from resources.lib.meta.paint_library import filter_library_paint_rows
+
+            from resources.lib.meta.paint_stamp import attach_paint_stamp, row_ready_to_stamp
+
+            paint_type = "movie" if str(media_type).lower() in ("movie", "movies") else "tvshow"
+            paint_complete_rows = [
+                row
+                for row in merged
+                if isinstance(row, dict)
+                and row.get("simkl_id") is not None
+                and row_paint_complete(row, media_type, handler=self, scope="full")
+            ]
+            paint_complete_ids = {
+                int(row["simkl_id"])
+                for row in paint_complete_rows
+                if row.get("simkl_id") is not None
+            }
+            to_stamp = [
+                row
+                for row in merged
+                if isinstance(row, dict)
+                and row.get("simkl_id") is not None
+                and (
+                    int(row["simkl_id"]) in paint_complete_ids
+                    or (stats["incomplete"] > 0 and row_ready_to_stamp(row))
+                )
+            ]
+            if to_stamp:
+                stamped_batch = get_display_meta_store().set_stamped_rows_batch(paint_type, to_stamp)
+                stamped_ids = {int(row["simkl_id"]) for row in to_stamp if row.get("simkl_id") is not None}
+
+                merged = [
+                    attach_paint_stamp(row)
+                    if isinstance(row, dict)
+                    and row.get("simkl_id") is not None
+                    and int(row["simkl_id"]) in stamped_ids
+                    else row
+                    for row in merged
+                ]
+                _ = stamped_batch
+                sync_media = "movie" if paint_type == "movie" else "show"
+                library_rows = filter_library_paint_rows(paint_complete_rows, db=db)
+                if library_rows:
+                    try:
+                        db.upsert_paint_rows_batch(sync_media, library_rows)
+                    except Exception:
+                        g.log_stacktrace()
+        except Exception:
+            g.log_stacktrace()
+
+        stats["prepare_skipped"] = 1 if stats["incomplete"] == 0 else 0
+        try:
+            from resources.lib.meta.menu_paint_profile import record_paint_cache_context
+
+            record_paint_cache_context(
+                layer="display_meta" if stats["prepare_skipped"] else "provider",
+                prepare_skipped=bool(stats["prepare_skipped"]),
+            )
+        except Exception:
+            pass
+
+        if not enrichment_refs:
+            from resources.lib.database.sync_meta_cache import SyncMetaCache
+
+            meta_cache = SyncMetaCache()
+            from resources.lib.meta.artwork import artwork_profile_for_row, provider_media_type
+
+            for row in merged:
+                if not isinstance(row, dict) or row.get("simkl_id") is None:
+                    continue
+                art_profile = artwork_profile_for_row(row, default_media_type=media_type)
+                provider_type = provider_media_type(art_profile)
+                ref = self._collect_enrichment_ref(
+                    row, provider_type, meta_cache=meta_cache, art_profile=art_profile
+                )
+                if ref:
+                    enrichment_refs.append(ref)
+
+        from resources.lib.meta.paint_complete import row_paint_complete
+
+        filtered_refs: list[dict] = []
+        for ref in enrichment_refs:
+            sid = ref.get("simkl_id")
+            if sid is None:
+                continue
+            row = by_id.get(int(sid))
+            if row and row_paint_complete(row, media_type, handler=self, scope="full"):
+                art_profile = artwork_profile_for_row(row, default_media_type=media_type)
+                provider_type = provider_media_type(art_profile)
+                if not self._row_needs_refresh(row, provider_type):
+                    continue
+            filtered_refs.append(ref)
+        enrichment_refs = filtered_refs
+
+        stats["prepare_ms"] = round((time.time() - start) * 1000, 1)
+        try:
+            from resources.lib.meta.menu_paint_profile import record_prepare_stats
+
+            record_prepare_stats(stats)
+        except Exception:
+            pass
+        g.log(
+            f"prepare_list_paint complete={stats['complete']} incomplete={stats['incomplete']} "
+            f"prepare_skipped={stats['prepare_skipped']} "
+            f"cast_batch={stats['cast_batch']} art_fetch={stats['art_fetch']} "
+            f"art_deduped={stats['art_deduped']} cast_art_parallel_ms={stats.get('cast_art_parallel_ms', 0)} "
+            f"prepare_ms={stats['prepare_ms']}",
+            "debug",
+        )
+        return merged, enrichment_refs, stats
+
     def enrich_list_meta_online(
         self,
         refs: list[dict],
@@ -1643,6 +2878,7 @@ class MetadataHandler:
         *,
         db=None,
         persist: bool = True,
+        catalog: str | None = None,
     ) -> list:
         """Fetch missing provider meta online and optionally persist merged rows."""
         if not refs:
@@ -1656,7 +2892,7 @@ class MetadataHandler:
         from resources.lib.database.sync_meta_cache import SyncMetaCache
         from resources.lib.meta.profiles import current_profile
         from resources.lib.meta.providers import MetaProviderRouter
-        from resources.lib.modules.artwork_profile import artwork_profile_for_row, provider_media_type
+        from resources.lib.meta.artwork import artwork_profile_for_row, provider_media_type
 
         meta_cache = SyncMetaCache()
         need_online_refs = [dict(ref) for ref in refs if ref.get("simkl_id") is not None]
@@ -1664,9 +2900,13 @@ class MetadataHandler:
         active_profile = current_profile()
         online_ids: set[int] = set()
         if movie_refs:
-            online_ids |= self._online_update_refs(movie_refs, "movie", db, profile=active_profile)
+            online_ids |= self._online_update_refs(
+                movie_refs, "movie", db, profile=active_profile, catalog=catalog
+            )
         if tvshow_refs:
-            online_ids |= self._online_update_refs(tvshow_refs, "tvshow", db, profile=active_profile)
+            online_ids |= self._online_update_refs(
+                tvshow_refs, "tvshow", db, profile=active_profile, catalog=catalog
+            )
 
         merged_by_id: dict[int, dict] = {}
         if online_ids:
@@ -1729,13 +2969,23 @@ class MetadataHandler:
                 self._persist_list_rows(tvshow_rows, "tvshow", db=db, skip_ids=online_ids)
         return merged
 
-    def _online_update_refs(self, refs: list[dict], media_type: str, db, *, profile: str | None = None) -> set[int]:
+    def _online_update_refs(
+        self,
+        refs: list[dict],
+        media_type: str,
+        db,
+        *,
+        profile: str | None = None,
+        catalog: str | None = None,
+    ) -> set[int]:
         if not refs:
             return set()
         from resources.lib.meta.profiles import MetaProfile, current_profile, profile_scope
 
         active_profile = profile or current_profile() or MetaProfile.FULL
         with profile_scope(active_profile):
+            if catalog and hasattr(db, "ensure_catalog_refs_seeded"):
+                db.ensure_catalog_refs_seeded(refs, catalog, media_type)
             if media_type == "movie":
                 updater = db if hasattr(db, "_update_movies") else None
                 if updater is None:
@@ -1810,7 +3060,7 @@ class MetadataHandler:
             if not isinstance(info, dict) or not isinstance(art, dict):
                 continue
             from resources.lib.meta.profiles import current_profile
-            from resources.lib.modules.meta_storage import slim_db_row
+            from resources.lib.meta.storage import slim_db_row
 
             slim = slim_db_row({"info": info, "art": art, "cast": cast}, profile=current_profile())
             db.execute_sql(
@@ -1837,60 +3087,7 @@ class MetadataHandler:
             )
             from resources.lib.meta.display_store import get_display_meta_store
 
-            get_display_meta_store().set_row(media_type, slim)
-
-    def gapfill_list_meta(
-        self,
-        rows,
-        media_type: str,
-        *,
-        db=None,
-        persist: bool = False,
-        profile: str | None = None,
-        reason: str = "list_paint",
-    ) -> list:
-        """Merge cached provider meta; fetch online for remaining gaps before list paint."""
-        if not rows:
-            return rows
-
-        if db is None:
-            from resources.lib.database.session import get_sync_database
-
-            db = get_sync_database()
-
-        merged, enrichment_refs = self.merge_list_meta_local(rows, media_type, db=db)
-        if enrichment_refs:
-            from resources.lib.meta.profiles import MetaProfile, profile_scope
-            from resources.lib.meta.providers import MetaProviderRouter
-
-            active_profile = profile or MetaProfile.LIST
-            with profile_scope(active_profile):
-                MetaProviderRouter.enrich_list_refs(
-                    enrichment_refs,
-                    media_type,
-                    db=db,
-                    profile=active_profile,
-                    persist=persist,
-                    reason=reason,
-                )
-            movie_ids = {int(ref["simkl_id"]) for ref in enrichment_refs if ref.get("_provider_type") == "movie"}
-            tvshow_ids = {
-                int(ref["simkl_id"]) for ref in enrichment_refs if ref.get("_provider_type") != "movie"
-            }
-            reloaded: dict[int, dict] = {}
-            if movie_ids:
-                reloaded.update(self._reload_rows_by_id(db, "movie", movie_ids))
-            if tvshow_ids:
-                reloaded.update(self._reload_rows_by_id(db, "tvshow", tvshow_ids))
-            merged = [
-                reloaded.get(int(row["simkl_id"]), row) if isinstance(row, dict) and row.get("simkl_id") else row
-                for row in merged
-            ]
-        return merged
-
-    def gapfill_list_clearlogo(self, rows, media_type: str, *, db=None, persist: bool = False) -> list:
-        """Backward-compatible alias for fast-menu metadata merge."""
-        return self.gapfill_list_meta(rows, media_type, db=db, persist=persist)
+            get_display_meta_store().merge_art_cast_row(media_type, slim)
 
     # endregion
 
@@ -1899,6 +3096,41 @@ class MetadataHandler:
     @staticmethod
     def _force_update(db_object):
         return db_object.get("needs_update", False) in ["true", "True", True, 1]
+
+    def _sync_update_noop(self, db_object, media_type: str) -> bool:
+        """True when denormalized sync row is warm and no provider refresh is required."""
+        if self._force_update(db_object):
+            return False
+        info = db_object.get("info")
+        art = db_object.get("art")
+        if not isinstance(info, dict) or not isinstance(art, dict):
+            return False
+        if not info.get("title") and not info.get("originaltitle"):
+            return False
+        if not art.get("poster") and not art.get("thumb") and not info.get("poster"):
+            return False
+        if not db_object.get("cast"):
+            return False
+        from resources.lib.meta.provider_settings import ART_FANART, ART_SIMKL, ART_TMDB, ART_TVDB
+
+        preferred = self._preferred_art_source_for_db_object(db_object)
+        if preferred == ART_SIMKL:
+            return True
+        if media_type == "movie":
+            if preferred == ART_TMDB and not self._movie_needs_tmdb_bundle(db_object):
+                return True
+            if preferred == ART_TVDB and not self._movie_needs_tvdb_bundle(db_object):
+                return True
+            if preferred == ART_FANART and not self._fanart_needs_update(db_object):
+                return True
+        elif media_type == "tvshow":
+            if preferred == ART_TMDB and not self._tvshow_needs_tmdb_bundle(db_object):
+                return True
+            if preferred == ART_TVDB and not self._tvshow_needs_tvdb_bundle(db_object):
+                return True
+            if preferred == ART_FANART and not self._fanart_needs_update(db_object):
+                return True
+        return False
 
     def _tmdb_art_meta_up_to_par(self, media_type, item):
         return self.art_meta_up_to_par(media_type, MetadataHandler.tmdb_object(item))
@@ -1931,18 +3163,14 @@ class MetadataHandler:
     def _info_meta_up_to_par(item):
         return tools.safe_dict_get(item, "info", "title") and tools.safe_dict_get(item, "info", "plot")
 
-    def _tmdb_info_meta_up_to_par(self, item):
-        return self._info_meta_up_to_par(MetadataHandler.tmdb_object(item))
-
-    def _tvdb_info_meta_up_to_par(self, item):
-        return self._info_meta_up_to_par(MetadataHandler.tvdb_object(item))
-
     @staticmethod
     def full_meta_up_to_par(media_type, item):
-        if MetadataHandler._info_meta_up_to_par(item):
+        if not item:
+            return False
+        if item.get("cast"):
             return True
-        elif MetadataHandler.art_meta_up_to_par(media_type, item):
-            return True
+        if item.get("art"):
+            return MetadataHandler.art_meta_up_to_par(media_type, item)
         return False
 
     @staticmethod
@@ -1987,6 +3215,10 @@ class MetadataHandler:
     @staticmethod
     def tvdb_object(data):
         return data.get("tvdb_object", {})
+
+    @staticmethod
+    def imdb_object(data):
+        return data.get("imdb_object", {})
 
     @staticmethod
     def fanart_object(data):

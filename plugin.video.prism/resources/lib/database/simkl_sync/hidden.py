@@ -4,13 +4,6 @@ from resources.lib.database.simkl_sync import database
 
 
 class SimklSyncDatabase(database.SimklSyncDatabase):
-    @property
-    def insert_query(self):
-        return "REPLACE INTO hidden (simkl_id, mediatype, section) VALUES (?, ?, ?)"
-
-    def add_hidden_item(self, simkl_id, media_type, section):
-        self.execute_sql(self.insert_query, (simkl_id, media_type, section))
-
     def get_hidden_items(self, section, media_type=None):
 
         if media_type is None:
@@ -24,9 +17,3 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
     def get_hidden_simkl_ids(self, section, media_type=None) -> set[int]:
         rows = self.get_hidden_items(section, media_type)
         return {int(row["simkl_id"]) for row in rows if row.get("simkl_id") is not None}
-
-    def remove_item(self, section, simkl_id):
-        self.execute_sql(
-            "DELETE FROM hidden WHERE section=? AND simkl_id=?",
-            (str(section), int(simkl_id)),
-        )

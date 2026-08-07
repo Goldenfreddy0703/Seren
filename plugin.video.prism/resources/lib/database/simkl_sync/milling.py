@@ -7,6 +7,46 @@ from typing import Any
 from resources.lib.discover.normalize import _normalize_air_date
 from resources.lib.modules.globals import g
 
+_RAW_EPISODES_CACHE: dict[tuple[int, str, str], list[dict[str, Any]]] = {}
+
+
+def clear_raw_episodes_cache(show_id: int | None = None) -> None:
+    """Drop in-process Simkl episode JSON (e.g. after sync invalidates a show)."""
+    if show_id is None:
+        _RAW_EPISODES_CACHE.clear()
+        return
+    sid = int(show_id)
+    for key in [cache_key for cache_key in _RAW_EPISODES_CACHE if cache_key[0] == sid]:
+        _RAW_EPISODES_CACHE.pop(key, None)
+
+
+def fetch_raw_show_episodes(
+    show_id: int,
+    catalog: str,
+    slug: str | None = None,
+    *,
+    api=None,
+) -> list[dict[str, Any]]:
+    """Simkl /tv|anime/episodes JSON with per-process reuse (disk cache via use_cache)."""
+    cache_key = (int(show_id), str(catalog), slug or "")
+    cached = _RAW_EPISODES_CACHE.get(cache_key)
+    if cached is not None:
+        g.log(f"[season trace] raw episodes process-cache hit show={show_id}", "debug")
+        return cached
+
+    if api is None:
+        from resources.lib.indexers.simkl import thread_simkl_api
+
+        api = thread_simkl_api()
+    if catalog == "anime":
+        raw_episodes = api.get_anime_episodes(int(show_id), slug=slug) or []
+    else:
+        raw_episodes = api.get_tv_episodes(int(show_id), slug=slug) or []
+
+    normalized = [episode for episode in raw_episodes if isinstance(episode, dict)]
+    _RAW_EPISODES_CACHE[cache_key] = normalized
+    return normalized
+
 
 def season_simkl_id(show_id: int, season_num: int) -> int:
     from resources.lib.simkl.ids import season_key
@@ -176,19 +216,20 @@ def _build_season_dict(
     return season
 
 
-def pull_show_seasons(show_id: int, catalog: str, mill_episodes: bool, slug: str | None = None) -> list[dict[str, Any]]:
-    from resources.lib.indexers.simkl import thread_simkl_api
-
-    api = thread_simkl_api()
+def pull_show_seasons(
+    show_id: int,
+    catalog: str,
+    mill_episodes: bool,
+    slug: str | None = None,
+    *,
+    mill_season_filter: set[int] | frozenset[int] | None = None,
+) -> list[dict[str, Any]]:
     endpoint = "anime/episodes" if catalog == "anime" else "tv/episodes"
     g.log(
         f"[season trace] pull_show_seasons show={show_id} catalog={catalog} endpoint={endpoint} slug={slug or show_id}",
         "debug",
     )
-    if catalog == "anime":
-        raw_episodes = api.get_anime_episodes(show_id, slug=slug) or []
-    else:
-        raw_episodes = api.get_tv_episodes(show_id, slug=slug) or []
+    raw_episodes = fetch_raw_show_episodes(show_id, catalog, slug=slug)
 
     if not raw_episodes:
         g.log(f"Simkl milling: no episodes returned for show {show_id} ({catalog})", "warning")
@@ -214,6 +255,10 @@ def pull_show_seasons(show_id: int, catalog: str, mill_episodes: bool, slug: str
             continue
         season_num = _season_num(raw, catalog)
         grouped_raw[season_num].append(raw)
+        if not mill_episodes:
+            continue
+        if mill_season_filter is not None and season_num not in mill_season_filter:
+            continue
         episode_num_override = None
         if season_num == 0 and _episode_num(raw) is None:
             special_counters[season_num] += 1
@@ -231,16 +276,19 @@ def pull_show_seasons(show_id: int, catalog: str, mill_episodes: bool, slug: str
             grouped[season_num].append(episode)
 
     seasons = []
-    for season_num in sorted(grouped.keys()):
-        episodes = sorted(grouped[season_num], key=lambda ep: ep.get("episode") or 0)
+    for season_num in sorted(grouped_raw.keys()):
         aired_count = sum(1 for raw in grouped_raw[season_num] if raw.get("aired") is True)
+        if mill_episodes:
+            episodes = sorted(grouped[season_num], key=lambda ep: ep.get("episode") or 0)
+        else:
+            episodes = []
         seasons.append(
             _build_season_dict(show_id, season_num, episodes, mill_episodes, aired_count, slug=slug, catalog=catalog)
         )
 
     g.log(
         "[season trace] milled buckets="
-        f"{ {k: len(grouped[k]) for k in sorted(grouped.keys())} }",
+        f"{ {k: len(grouped_raw[k]) for k in sorted(grouped_raw.keys())} }",
         "debug",
     )
     return seasons
@@ -248,11 +296,5 @@ def pull_show_seasons(show_id: int, catalog: str, mill_episodes: bool, slug: str
 
 def count_special_episodes(show_id: int, catalog: str = "tv", slug: str | None = None) -> int:
     """Return how many Simkl episodes are tagged as specials for a show."""
-    from resources.lib.indexers.simkl import thread_simkl_api
-
-    api = thread_simkl_api()
-    if catalog == "anime":
-        raw_episodes = api.get_anime_episodes(show_id, slug=slug) or []
-    else:
-        raw_episodes = api.get_tv_episodes(show_id, slug=slug) or []
-    return sum(1 for raw in raw_episodes if isinstance(raw, dict) and raw.get("type") == "special")
+    raw_episodes = fetch_raw_show_episodes(show_id, catalog, slug=slug)
+    return sum(1 for raw in raw_episodes if raw.get("type") == "special")

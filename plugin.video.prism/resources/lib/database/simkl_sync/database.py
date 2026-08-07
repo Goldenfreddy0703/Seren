@@ -88,13 +88,16 @@ schema = {
                 ("air_date", ["TEXT"]),
                 ("is_airing", ["BOOLEAN"]),
                 ("last_watched_at", ["TEXT"]),
-                ("last_collected_at", ["TEXT"]),
                 ("user_rating", ["INTEGER", "NULL"]),
                 ("needs_update", ["BOOLEAN", "NOT NULL", "DEFAULT 1"]),
                 ("needs_milling", ["BOOLEAN", "NOT NULL", "DEFAULT 1"]),
+                ("simkl_status", ["TEXT", "NULL"]),
             ]
         ),
         "table_constraints": [],
+        "indices": [
+            ("idx_shows_simkl_status", ["simkl_status"]),
+        ],
         "default_seed": [],
     },
     "seasons": {
@@ -117,7 +120,6 @@ schema = {
                 ("air_date", ["TEXT"]),
                 ("is_airing", ["BOOLEAN"]),
                 ("last_watched_at", ["TEXT"]),
-                ("last_collected_at", ["TEXT"]),
                 ("user_rating", ["INTEGER", "NULL"]),
                 ("needs_update", ["BOOLEAN", "NOT NULL", "DEFAULT 1"]),
             ]
@@ -144,13 +146,11 @@ schema = {
                 ("art", ["PICKLE", "NULL"]),
                 ("meta_hash", ["TEXT", "NULL"]),
                 ("last_updated", ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"]),
-                ("collected", ["INTEGER", "NOT NULL", "DEFAULT 0"]),
                 ("watched", ["INTEGER", "NOT NULL", "DEFAULT 0"]),
                 ("number", ["INTEGER", "NOT NULL"]),
                 ("args", ["TEXT", "NOT NULL"]),
                 ("air_date", ["TEXT"]),
                 ("last_watched_at", ["TEXT"]),
-                ("collected_at", ["TEXT"]),
                 ("user_rating", ["INTEGER", "NULL"]),
                 ("needs_update", ["BOOLEAN", "NOT NULL", "DEFAULT 1"]),
             ]
@@ -166,7 +166,6 @@ schema = {
             ("idx_episodes_seasonid", ["simkl_season_id"]),
             ("idx_episodes_showid_season_number_lastwatched", ["simkl_show_id", "season", "number", "last_watched_at"]),
             ("idx_episodes_season_number", ["season", "number"]),
-            ("idx_episodes_collected", ["collected"]),
         ],
         "default_seed": [],
     },
@@ -182,20 +181,19 @@ schema = {
                 ("art", ["PICKLE", "NULL"]),
                 ("meta_hash", ["TEXT", "NULL"]),
                 ("last_updated", ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"]),
-                ("collected", ["INTEGER", "NOT NULL", "DEFAULT 0"]),
                 ("watched", ["INTEGER", "NOT NULL", "DEFAULT 0"]),
                 ("args", ["TEXT", "NOT NULL"]),
                 ("air_date", ["TEXT"]),
                 ("last_watched_at", ["TEXT"]),
-                ("collected_at", ["TEXT"]),
                 ("user_rating", ["INTEGER", "NULL"]),
                 ("needs_update", ["BOOLEAN", "NOT NULL", "DEFAULT 1"]),
+                ("simkl_status", ["TEXT", "NULL"]),
             ]
         ),
         "table_constraints": [],
         "indices": [
-            ("idx_movies_collected", ["collected"]),
             ("idx_movies_watched_lastwatched", ["watched", "last_watched_at"]),
+            ("idx_movies_simkl_status", ["simkl_status"]),
         ],
         "default_seed": [],
     },
@@ -220,39 +218,6 @@ schema = {
                     ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"],
                 ),
                 (
-                    "shows_watched",
-                    ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"],
-                ),
-                (
-                    "movies_watched",
-                    ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"],
-                ),
-                (
-                    "shows_rated",
-                    ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"],
-                ),
-                (
-                    "movies_rated",
-                    ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"],
-                ),
-                (
-                    "shows_collected",
-                    ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"],
-                ),
-                (
-                    "movies_collected",
-                    ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"],
-                ),
-                ("hidden_sync", ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"]),
-                (
-                    "shows_meta_update",
-                    ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"],
-                ),
-                (
-                    "movies_meta_update",
-                    ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"],
-                ),
-                (
                     "movies_bookmarked",
                     ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"],
                 ),
@@ -260,7 +225,6 @@ schema = {
                     "episodes_bookmarked",
                     ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"],
                 ),
-                ("lists_sync", ["TEXT", "NOT NULL", "DEFAULT '1970-01-01T00:00:00'"]),
                 ("simkl_username", ["TEXT", "NULL"]),
                 ("last_activities_call", ["INTEGER", "NOT NULL", "DEFAULT 1"]),
                 ("last_changes_poll", ["INTEGER", "NOT NULL", "DEFAULT 0"]),
@@ -284,24 +248,6 @@ schema = {
         "indices": [("idx_bookmarks_paused", ["paused_at"])],
         "default_seed": [],
     },
-    "lists": {
-        "columns": collections.OrderedDict(
-            [
-                ("simkl_id", ["INTEGER", "PRIMARY KEY", "NOT NULL"]),
-                ("name", ["TEXT", "NOT NULL"]),
-                ("username", ["TEXT", "NOT NULL"]),
-                ("last_updated", ["TEXT", "NOT NULL"]),
-                ("movie", ["BOOLEAN", "NOT NULL"]),
-                ("show", ["BOOLEAN", "NOT NULL"]),
-                ("sort_by", ["TEXT", "NOT NULL"]),
-                ("sort_how", ["TEXT", "NOT NULL"]),
-                ("slug", ["TEXT", "NOT NULL"]),
-                ("meta_hash", ["TEXT", "NOT NULL"]),
-            ]
-        ),
-        "table_constraints": [],
-        "default_seed": [],
-    },
 }
 
 
@@ -312,6 +258,7 @@ class SimklSyncDatabase(Database):
     ):
         super().__init__(db_path or g.SIMKL_SYNC_DB_PATH, schema)
 
+        self._ensure_auxiliary_tables()
         self.activities = {}
         self.item_list = []
         self.base_date = "1970-01-01T00:00:00"
@@ -326,6 +273,10 @@ class SimklSyncDatabase(Database):
             self._migrate_last_changes_poll_column()
             g.set_runtime_setting("simkl_sync.migrations.done", True)
 
+        self._migrate_provider_cast_art_only_policy()
+        self._migrate_episode_watch_state_repair()
+        self._migrate_activities_slim_schema()
+
         if self.activities is None:
             self.clear_all_meta(False)
             self.set_base_activities()
@@ -337,25 +288,202 @@ class SimklSyncDatabase(Database):
         self.page_limit = g.get_int_setting("item.limit")
         self._pending_list_enrichment = None
 
+    def _ensure_auxiliary_tables(self) -> None:
+        """Tables created outside the declarative schema (discover catalog, library cache)."""
+        from resources.lib.discover.catalog_store import ensure_catalog_tables
+        from resources.lib.simkl.library_cache import ensure_library_cache_tables
+
+        ensure_catalog_tables(self)
+        ensure_library_cache_tables(self)
+
     def consume_list_enrichment_refs(self) -> tuple[list[dict], str | None]:
-        """Return and clear refs queued during the last paint-first list load."""
+        """Return and clear the first refs batch queued during the last paint-first list load."""
+        batches = self.consume_list_enrichment_batches()
+        if not batches:
+            return [], None
+        return batches[0]
+
+    def consume_list_enrichment_batches(self) -> list[tuple[list[dict], str]]:
+        """Return and clear all refs batches queued during the last paint-first list load."""
         pending = self._pending_list_enrichment
         self._pending_list_enrichment = None
         if not pending:
-            return [], None
-        return pending.get("refs") or [], pending.get("media_type")
+            return []
+        if isinstance(pending, list):
+            batches: list[tuple[list[dict], str]] = []
+            for batch in pending:
+                refs = batch.get("refs") or []
+                media_type = batch.get("media_type")
+                if refs and media_type:
+                    batches.append((refs, media_type))
+            return batches
+        refs = pending.get("refs") or []
+        media_type = pending.get("media_type")
+        if refs and media_type:
+            return [(refs, media_type)]
+        return []
 
     def set_list_enrichment_refs(self, refs: list[dict], media_type: str) -> None:
-        if refs:
-            self._pending_list_enrichment = {"refs": refs, "media_type": media_type}
-        else:
+        if not refs:
             self._pending_list_enrichment = None
+            return
+        batch = {"refs": refs, "media_type": media_type}
+        pending = self._pending_list_enrichment
+        if pending is None:
+            self._pending_list_enrichment = [batch]
+        elif isinstance(pending, list):
+            pending.append(batch)
+        else:
+            self._pending_list_enrichment = [pending, batch]
 
     @cached_property
     def metadataHandler(self):
         from resources.lib.modules.metadataHandler import MetadataHandler
 
         return MetadataHandler()
+
+    def fetch_paint_overlay_fields(self, media_type: str, simkl_ids: list[int]) -> dict[int, dict]:
+        """Lightweight sync fields for paint-cache rows (no info/art pickles)."""
+        if not simkl_ids:
+            return {}
+        ids_sql = ",".join(str(int(simkl_id)) for simkl_id in simkl_ids)
+        if media_type == "movie":
+            query = f"""
+                SELECT m.simkl_id, m.args, m.watched AS play_count, m.user_rating,
+                       m.tmdb_id, m.tvdb_id, m.imdb_id, m.air_date, m.[cast],
+                       b.resume_time, b.percent_played
+                FROM movies AS m
+                LEFT JOIN bookmarks AS b ON b.simkl_id = m.simkl_id
+                WHERE m.simkl_id IN ({ids_sql})
+            """
+        else:
+            query = f"""
+                SELECT s.simkl_id, s.args, s.watched_episodes, s.episode_count, s.user_rating,
+                       s.tmdb_id, s.tvdb_id, s.imdb_id, s.air_date, s.is_airing, s.[cast],
+                       b.resume_time, b.percent_played
+                FROM shows AS s
+                LEFT JOIN bookmarks AS b ON b.simkl_id = s.simkl_id
+                WHERE s.simkl_id IN ({ids_sql})
+            """
+        rows = self.fetchall(query) or []
+        return {
+            int(row["simkl_id"]): dict(row)
+            for row in rows
+            if isinstance(row, dict) and row.get("simkl_id") is not None
+        }
+
+    def fetch_paint_rows_batch(self, media_type: str, simkl_ids: list[int]) -> dict[int, dict]:
+        """Load denormalized info/art/cast rows for list paint (Seren-style)."""
+        if not simkl_ids:
+            return {}
+        ids_sql = ",".join(str(int(simkl_id)) for simkl_id in simkl_ids)
+        if media_type == "movie":
+            query = f"""
+                SELECT simkl_id, info, art, [cast], tmdb_id, tvdb_id, imdb_id, air_date
+                FROM movies
+                WHERE simkl_id IN ({ids_sql})
+            """
+        else:
+            query = f"""
+                SELECT simkl_id, info, art, [cast], tmdb_id, tvdb_id, imdb_id, air_date, is_airing
+                FROM shows
+                WHERE simkl_id IN ({ids_sql})
+            """
+        rows = self.fetchall(query) or []
+        return {
+            int(row["simkl_id"]): dict(row)
+            for row in rows
+            if isinstance(row, dict) and row.get("simkl_id") is not None
+        }
+
+    def upsert_paint_rows_batch(self, media_type: str, rows: list[dict]) -> int:
+        """Persist paint-complete info/art/cast into movies/shows without full metadata update."""
+        if not rows:
+            return 0
+        from resources.lib.meta.storage import slim_art_dict, slim_info_dict
+        from resources.lib.database.sync_meta_cache import SyncMetaCache
+        from resources.lib.simkl.ids import serialize_action_args
+
+        table = "movies" if media_type == "movie" else "shows"
+        cache_media = "movie" if media_type == "movie" else "show"
+        payload_rows: list[tuple] = []
+        cache_rows: list[dict] = []
+        for row in rows:
+            if not isinstance(row, dict) or row.get("simkl_id") is None:
+                continue
+            info = row.get("info") if isinstance(row.get("info"), dict) else {}
+            art = row.get("art") if isinstance(row.get("art"), dict) else {}
+            cast = row.get("cast") if isinstance(row.get("cast"), list) else None
+            if not info and not art and not cast:
+                continue
+            slim_info = slim_info_dict(info) or None
+            slim_art = slim_art_dict(art, cache_media) or None
+            simkl_id = int(row["simkl_id"])
+            args_value = row.get("args")
+            if not args_value:
+                args_value = serialize_action_args(
+                    {
+                        "simkl_id": simkl_id,
+                        "catalog": row.get("catalog") or info.get("catalog"),
+                        "info": slim_info or info,
+                        "simkl_object": {"info": slim_info or info, "art": slim_art or art},
+                    }
+                )
+            payload_rows.append(
+                (
+                    simkl_id,
+                    slim_info,
+                    slim_art,
+                    cast,
+                    row.get("tmdb_id") or info.get("tmdb_id"),
+                    row.get("tvdb_id") or info.get("tvdb_id"),
+                    row.get("imdb_id") or info.get("imdb_id"),
+                    args_value,
+                )
+            )
+            cache_rows.append(
+                {
+                    "simkl_id": simkl_id,
+                    "info": slim_info or info,
+                    "art": slim_art or art,
+                    "cast": cast or [],
+                    "tmdb_id": row.get("tmdb_id") or info.get("tmdb_id"),
+                    "tvdb_id": row.get("tvdb_id") or info.get("tvdb_id"),
+                    "imdb_id": row.get("imdb_id") or info.get("imdb_id"),
+                    "air_date": row.get("air_date") or info.get("premiered") or info.get("released"),
+                }
+            )
+        if not payload_rows:
+            return 0
+        if table == "movies":
+            query = """
+                INSERT INTO movies(simkl_id, info, art, cast, tmdb_id, tvdb_id, imdb_id, args, watched, needs_update)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1)
+                ON CONFLICT(simkl_id) DO UPDATE SET
+                    info = coalesce(excluded.info, movies.info),
+                    art = coalesce(excluded.art, movies.art),
+                    cast = coalesce(excluded.cast, movies.cast),
+                    tmdb_id = coalesce(excluded.tmdb_id, movies.tmdb_id),
+                    tvdb_id = coalesce(excluded.tvdb_id, movies.tvdb_id),
+                    imdb_id = coalesce(excluded.imdb_id, movies.imdb_id),
+                    args = coalesce(excluded.args, movies.args)
+            """
+        else:
+            query = """
+                INSERT INTO shows(simkl_id, info, art, cast, tmdb_id, tvdb_id, imdb_id, args, needs_update, needs_milling)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
+                ON CONFLICT(simkl_id) DO UPDATE SET
+                    info = coalesce(excluded.info, shows.info),
+                    art = coalesce(excluded.art, shows.art),
+                    cast = coalesce(excluded.cast, shows.cast),
+                    tmdb_id = coalesce(excluded.tmdb_id, shows.tmdb_id),
+                    tvdb_id = coalesce(excluded.tvdb_id, shows.tvdb_id),
+                    imdb_id = coalesce(excluded.imdb_id, shows.imdb_id),
+                    args = coalesce(excluded.args, shows.args)
+            """
+        self.execute_sql(query, payload_rows)
+        SyncMetaCache().set_many_rows(cache_media, cache_rows)
+        return len(payload_rows)
 
     @cached_property
     def simkl_api(self):
@@ -470,6 +598,187 @@ class SimklSyncDatabase(Database):
             self.execute_sql("ALTER TABLE activities ADD last_changes_poll INTEGER NOT NULL DEFAULT 0")
             g.log("SimklSync: migrated activities.last_changes_poll column", "info")
 
+    def _migrate_activities_slim_schema(self) -> None:
+        """Drop legacy per-section activity watermarks superseded by all_activities."""
+        flag = "activities.slim_schema_v1"
+        if g.get_bool_runtime_setting(flag):
+            return
+
+        dead_columns = (
+            "shows_watched",
+            "movies_watched",
+            "shows_rated",
+            "movies_rated",
+            "hidden_sync",
+            "shows_meta_update",
+            "movies_meta_update",
+            "lists_sync",
+        )
+        existing = {row["name"] for row in self.fetchall("PRAGMA table_info(activities)")}
+        removed = 0
+        for column in dead_columns:
+            if column not in existing:
+                continue
+            try:
+                self.execute_sql(f"ALTER TABLE activities DROP COLUMN {column}")
+                removed += 1
+            except Exception:
+                g.log(f"SimklSync: could not drop activities.{column}", "debug")
+
+        if removed:
+            g.log(f"SimklSync: dropped {removed} legacy activities column(s)", "info")
+        g.set_runtime_setting(flag, True)
+
+    @staticmethod
+    def _strip_provider_text_from_info(info: dict, simkl_info: dict) -> dict:
+        """Remove TMDB/TVDB descriptive fields unless Simkl owns them."""
+        if not isinstance(info, dict):
+            return info
+        simkl_info = simkl_info if isinstance(simkl_info, dict) else {}
+        cleaned = dict(info)
+        text_fields = (
+            "plot",
+            "overview",
+            "plotoutline",
+            "tagline",
+            "mpaa",
+            "certification",
+            "studio",
+            "country",
+            "status",
+            "duration",
+            "runtime",
+        )
+        for key in text_fields:
+            if key in cleaned and not simkl_info.get(key) and not (
+                key == "plot" and simkl_info.get("overview")
+            ):
+                cleaned.pop(key, None)
+        for key in list(cleaned.keys()):
+            if str(key).startswith("rating.") and not simkl_info.get(key):
+                cleaned.pop(key, None)
+        for key in text_fields:
+            if simkl_info.get(key):
+                cleaned[key] = simkl_info[key]
+        if simkl_info.get("overview") and not cleaned.get("plot"):
+            cleaned["plot"] = simkl_info["overview"]
+        for key, value in simkl_info.items():
+            if str(key).startswith("rating."):
+                cleaned[key] = value
+        return cleaned
+
+    def _migrate_provider_cast_art_only_policy(self) -> None:
+        """One-time cleanup after enforcing TMDB/TVDB cast+art-only metadata policy."""
+        flag = "meta.provider_cast_art_only_v1"
+        if g.get_bool_runtime_setting(flag):
+            return
+
+        try:
+            from resources.lib.meta.display_store import get_display_meta_store
+
+            get_display_meta_store().clear_all()
+        except Exception:
+            g.log_stacktrace()
+
+        updated = 0
+        for table, meta_table in (("movies", "movies_meta"), ("shows", "shows_meta")):
+            rows = self.fetchall(
+                f"""
+                SELECT m.simkl_id, m.info, mm.value AS simkl_object
+                FROM {table} AS m
+                         LEFT JOIN {meta_table} AS mm
+                                   ON mm.id = m.simkl_id AND mm.type = 'simkl'
+                WHERE m.info IS NOT NULL
+                """
+            ) or []
+            for row in rows:
+                info = row.get("info")
+                if not isinstance(info, dict):
+                    continue
+                simkl_obj = row.get("simkl_object") or {}
+                simkl_info = simkl_obj.get("info") if isinstance(simkl_obj, dict) else {}
+                cleaned = self._strip_provider_text_from_info(info, simkl_info or {})
+                if cleaned != info:
+                    self.execute_sql(
+                        f"UPDATE {table} SET info=? WHERE simkl_id=?",
+                        (cleaned, int(row["simkl_id"])),
+                    )
+                    updated += 1
+
+        g.set_runtime_setting(flag, True)
+        g.log(
+            f"SimklSync: provider cast+art-only policy migration complete "
+            f"(display_meta cleared, {updated} info rows scrubbed)",
+            "info",
+        )
+
+    def _migrate_episode_watch_state_repair(self) -> None:
+        """Backfill episode watched flags cleared by episode-catalog warm upserts."""
+        flag = "episode_watch_state_repair_v1"
+        if g.get_bool_runtime_setting(flag):
+            return
+
+        before = self.fetchone(
+            "SELECT COUNT(*) AS c FROM episodes WHERE COALESCE(watched, 0) > 0"
+        )
+        before_count = int((before or {}).get("c") or 0)
+
+        self.execute_sql(
+            """
+            UPDATE episodes
+            SET watched = 1,
+                last_watched_at = COALESCE(
+                    episodes.last_watched_at,
+                    (SELECT s.last_watched_at FROM shows AS s WHERE s.simkl_id = episodes.simkl_show_id)
+                )
+            WHERE season != 0
+              AND COALESCE(watched, 0) = 0
+              AND simkl_show_id IN (
+                SELECT simkl_id FROM shows WHERE COALESCE(simkl_status, '') = 'completed'
+            )
+            """
+        )
+
+        self._update_all_shows_statisics()
+
+        after = self.fetchone(
+            "SELECT COUNT(*) AS c FROM episodes WHERE COALESCE(watched, 0) > 0"
+        )
+        after_count = int((after or {}).get("c") or 0)
+
+        g.set_runtime_setting(flag, True)
+        g.log(
+            f"SimklSync: episode watch-state repair complete "
+            f"({before_count} -> {after_count} watched episode rows)",
+            "info",
+        )
+
+    def sync_show_watch_state_from_entries(self, entries, shows) -> None:
+        """Apply Simkl per-episode flags, progress fallback, counters, and completed overrides."""
+        episode_entries = [
+            entry
+            for entry in (entries or [])
+            if isinstance(entry, dict) and entry.get("status") in ("watching", "completed", "dropped", "hold")
+        ]
+        if not episode_entries or not shows:
+            return
+        self.apply_watched_episodes_from_entries(episode_entries, shows)
+        for entry in episode_entries:
+            if not self._entry_has_per_episode_watch_rows(entry):
+                self.apply_watched_progress_from_entry(entry)
+        self.apply_show_watch_counters(episode_entries)
+        self.apply_completed_show_watch_flags(episode_entries)
+
+    def reapply_episode_watch_state_from_entries(self, entries, shows) -> None:
+        """Re-apply Simkl per-episode watch flags after episode catalog warm."""
+        self.sync_show_watch_state_from_entries(entries, shows)
+
+    def refresh_show_episode_watch_state(self, simkl_show_id: int, *, force: bool = False) -> bool:
+        """Pull per-episode watch flags from Simkl when local stubs lack watched state."""
+        from resources.lib.simkl.all_items_sync import refresh_show_episode_watch_state
+
+        return refresh_show_episode_watch_state(self, int(simkl_show_id), force=force)
+
     def replace_playback_bookmarks(self, bookmark_type: str, rows: list[tuple]) -> None:
         """Replace synced Simkl playback sessions for movie or episode type."""
         self.execute_sql("DELETE FROM bookmarks WHERE type=?", (bookmark_type,))
@@ -495,7 +804,7 @@ class SimklSyncDatabase(Database):
                    bm.percent_played,
                    mm.value         AS simkl_object
             FROM bookmarks AS bm
-                     LEFT JOIN movies_meta AS mm ON bm.simkl_id = mm.id
+                     LEFT JOIN movies_meta AS mm ON bm.simkl_id = mm.id AND mm.type = 'simkl'
             WHERE bm.type = 'movie'
               AND bm.catalog = 'movie'
             ORDER BY Datetime(bm.paused_at) DESC
@@ -594,7 +903,10 @@ class SimklSyncDatabase(Database):
 
     def flush_activities(self, clear_meta=False):
         if clear_meta:
-            self.clear_all_meta()
+            self.clear_all_meta(notify=False)
+        from resources.lib.modules.cache_maintenance import invalidate_all_menu_caches
+
+        invalidate_all_menu_caches(include_api_cache=False)
         self.execute_sql("DELETE FROM activities")
         self.set_base_activities()
 
@@ -603,9 +915,7 @@ class SimklSyncDatabase(Database):
         self.execute_sql(
             [
                 "UPDATE episodes SET watched=?",
-                "UPDATE episodes SET collected=?",
                 "UPDATE movies SET watched=?",
-                "UPDATE movies SET collected=?",
                 "UPDATE shows SET unwatched_episodes=?",
                 "UPDATE shows SET watched_episodes=?",
                 "UPDATE seasons SET unwatched_episodes=?",
@@ -624,15 +934,6 @@ class SimklSyncDatabase(Database):
         )
         self.execute_sql(
             [
-                "UPDATE episodes SET collected_at=?",
-                "UPDATE shows SET last_collected_at=?",
-                "UPDATE seasons SET last_collected_at=?",
-                "UPDATE movies SET collected_at=?",
-            ],
-            (None,),
-        )
-        self.execute_sql(
-            [
                 "DELETE from bookmarks WHERE TRUE",
                 "DELETE from hidden WHERE TRUE",
             ]
@@ -646,7 +947,6 @@ class SimklSyncDatabase(Database):
             ],
             (None,),
         )
-        self.execute_sql("DELETE from lists WHERE username=?", (username,))
         self.set_simkl_user("")
         self.set_base_activities()
         if notify:
@@ -689,13 +989,21 @@ class SimklSyncDatabase(Database):
             if confirm == 0:
                 return
 
+        from resources.lib.database.session import reset_sync_database
+        from resources.lib.modules.cache_maintenance import invalidate_all_menu_caches
+
         self.rebuild_database()
+        invalidate_all_menu_caches(include_api_cache=False)
+        # Rebuild recreates tables from declarative schema; clear the session migration
+        # gate so ALTER migrations re-run on the fresh singleton (tvdb_id, bookmarks, etc.).
+        g.clear_runtime_setting("simkl_sync.migrations.done")
+        reset_sync_database()
         self.set_base_activities()
         self.refresh_activities()
 
-        from resources.lib.database.simkl_sync import activities
+        from resources.lib.database.session import get_sync_database
 
-        if sync_errors := activities.SimklSyncDatabase().sync_activities(silent):
+        if sync_errors := get_sync_database().sync_activities(silent):
             g.notification(self.notification_prefix, g.get_language_string(30332), time=5000)
         elif sync_errors is None:
             self.refresh_activities()
@@ -731,6 +1039,9 @@ class SimklSyncDatabase(Database):
         elif provider_type == "fanart":
             obj = MetadataHandler.fanart_object
             meta_hash = self.metadataHandler.fanarttv_api.meta_hash
+        elif provider_type == "imdb":
+            obj = MetadataHandler.imdb_object
+            meta_hash = "imdb_v1"
 
         if obj is None or meta_hash is None:
             raise UnsupportedProviderType(provider_type)
@@ -740,19 +1051,21 @@ class SimklSyncDatabase(Database):
         singular = meta_type.rstrip("s") if meta_type.endswith("s") else meta_type
         media_hint = "movie" if singular == "movie" else "episode" if singular == "episode" else "season" if singular == "season" else "tvshow"
 
-        self.execute_sql(
-            sql_statement,
-            (
-                (
-                    i.get(id_column),
-                    provider_type,
-                    meta_hash,
-                    self.clean_meta(obj(i), provider_type=provider_type, media_type=media_hint),
-                )
-                for i in items
-                if (i and obj(i) and i.get(id_column) and meta_ok(meta_type, obj(i)))
-            ),
-        )
+        meta_rows: list[tuple] = []
+        for i in items:
+            if not (i and obj(i) and i.get(id_column) and meta_ok(meta_type, obj(i))):
+                continue
+            lookup_id = (
+                self._meta_table_lookup_id(provider_type, i.get(id_column))
+                if provider_type == "imdb"
+                else i.get(id_column)
+            )
+            cleaned = self.clean_meta(obj(i), provider_type=provider_type, media_type=media_hint)
+            if cleaned is None:
+                continue
+            meta_rows.append((lookup_id, provider_type, meta_hash, cleaned))
+        if meta_rows:
+            self.execute_sql(sql_statement, meta_rows)
 
         if include_children:
             for i in items:
@@ -820,8 +1133,22 @@ class SimklSyncDatabase(Database):
             int(simkl_id), {}
         )
 
+    _PROVIDER_META_BATCH_SIZE = 40
+
     def load_cached_provider_meta_batch(self, media_table: str, rows: list[dict]) -> dict[int, dict]:
         """Batch-load provider meta blobs for list rows; keyed by simkl_id."""
+        if not rows:
+            return {}
+        if len(rows) <= self._PROVIDER_META_BATCH_SIZE:
+            return self._load_cached_provider_meta_batch_chunk(media_table, rows)
+
+        result: dict[int, dict] = {}
+        for start in range(0, len(rows), self._PROVIDER_META_BATCH_SIZE):
+            chunk = rows[start : start + self._PROVIDER_META_BATCH_SIZE]
+            result.update(self._load_cached_provider_meta_batch_chunk(media_table, chunk))
+        return result
+
+    def _load_cached_provider_meta_batch_chunk(self, media_table: str, rows: list[dict]) -> dict[int, dict]:
         if not rows:
             return {}
 
@@ -881,13 +1208,19 @@ class SimklSyncDatabase(Database):
         if not item:
             return None
 
-        from resources.lib.modules.meta_storage import slim_provider_blob
+        from resources.lib.meta.storage import slim_provider_blob
 
-        result = {
-            "info": {key: value for key, value in item.get("info", {}).items() if key not in ["seasons", "episodes"]},
-            "art": item.get("art"),
-            "cast": item.get("cast"),
-        }
+        if provider_type in ("tmdb", "tvdb", "fanart", "imdb"):
+            result = {
+                "art": item.get("art"),
+                "cast": item.get("cast"),
+            }
+        else:
+            result = {
+                "info": {key: value for key, value in item.get("info", {}).items() if key not in ["seasons", "episodes"]},
+                "art": item.get("art"),
+                "cast": item.get("cast"),
+            }
 
         if result.get("info") or result.get("art") or result.get("cast"):
             return slim_provider_blob(result, provider_type=provider_type, media_type=media_type)
@@ -928,6 +1261,74 @@ class SimklSyncDatabase(Database):
             if isinstance(item, dict):
                 sync_sql_columns_from_info(item)
 
+    def ensure_catalog_refs_seeded(self, refs: list[dict], catalog: str, media_type: str) -> None:
+        """Seed movies/shows from catalog_items so provider enrichment can resolve TMDB/TVDB IDs."""
+        if not refs or catalog not in ("movie", "tv", "anime"):
+            return
+        from resources.lib.discover.catalog_store import sync_items_for_refs
+
+        page_refs: list[dict] = []
+        for ref in refs:
+            if not isinstance(ref, dict) or ref.get("simkl_id") is None:
+                continue
+            page_refs.append(
+                {"simkl_id": int(ref["simkl_id"]), "catalog": ref.get("catalog") or catalog}
+            )
+        if not page_refs:
+            return
+
+        items = sync_items_for_refs(catalog, page_refs)
+        if not items:
+            return
+
+        simkl_ids = [int(item["simkl_id"]) for item in items if item.get("simkl_id") is not None]
+        if simkl_ids:
+            table = "movies" if media_type == "movie" or catalog == "movie" else "shows"
+            ids_sql = ",".join(str(sid) for sid in simkl_ids)
+            existing = self.fetchall(
+                f"SELECT simkl_id, tmdb_id, tvdb_id, imdb_id FROM {table} WHERE simkl_id IN ({ids_sql})"
+            ) or []
+            seeded_ids = {
+                int(row["simkl_id"])
+                for row in existing
+                if isinstance(row, dict)
+                and row.get("simkl_id") is not None
+                and any(row.get(key) for key in ("tmdb_id", "tvdb_id", "imdb_id"))
+            }
+        else:
+            seeded_ids = set()
+
+        sync_items: list[dict] = []
+        for item in items:
+            if not isinstance(item, dict) or item.get("simkl_id") is None:
+                continue
+            sid = int(item["simkl_id"])
+            if sid in seeded_ids:
+                continue
+            if any(item.get(key) for key in ("tmdb_id", "tvdb_id", "imdb_id")):
+                continue
+            simkl_obj = item.get("simkl_object")
+            if not isinstance(simkl_obj, dict):
+                simkl_obj = {"info": item.get("info") or {}, "art": item.get("art") or {}}
+            sync_items.append(
+                {
+                    "simkl_id": int(item["simkl_id"]),
+                    "catalog": item.get("catalog") or catalog,
+                    "simkl_object": simkl_obj,
+                    "tmdb_id": item.get("tmdb_id"),
+                    "tvdb_id": item.get("tvdb_id"),
+                    "imdb_id": item.get("imdb_id"),
+                    "needs_update": True,
+                }
+            )
+        if not sync_items:
+            return
+
+        if media_type == "movie" or catalog == "movie":
+            self.insert_simkl_movies(sync_items, force_meta=True)
+        else:
+            self.insert_simkl_shows(sync_items, force_meta=True)
+
     def insert_simkl_movies(self, movies, force_meta=False):
         if not movies:
             return
@@ -943,7 +1344,7 @@ class SimklSyncDatabase(Database):
         self._prepare_sync_inserts(to_insert)
         self._preserve_library_status_on_items(to_insert, "movies")
         g.log(f"Inserting Movies into sync database: {len(to_insert)}")
-        from resources.lib.modules.meta_storage import slim_art_dict, slim_info_dict
+        from resources.lib.meta.storage import slim_art_dict, slim_info_dict
 
         get = MetadataHandler.get_simkl_info
         simkl_obj = MetadataHandler.simkl_object
@@ -955,7 +1356,6 @@ class SimklSyncDatabase(Database):
                     slim_info_dict(MetadataHandler.simkl_info(i) or {}, simkl=True) or None,
                     slim_art_dict(MetadataHandler.art(simkl_obj(i)) or {}, "movie") or None,
                     None,
-                    get(i, "collected"),
                     get(i, "watched"),
                     g.validate_date(get(i, "aired")),
                     g.validate_date(get(i, "dateadded")),
@@ -964,7 +1364,6 @@ class SimklSyncDatabase(Database):
                     get(i, "imdb_id"),
                     None,
                     self._create_args(i),
-                    g.validate_date(get(i, "collected_at")),
                     g.validate_date(get(i, "last_watched_at")),
                     get(i, "user_rating"),
                     self._library_status_from_item(i),
@@ -1006,7 +1405,7 @@ class SimklSyncDatabase(Database):
         self._prepare_sync_inserts(to_insert)
         self._preserve_library_status_on_items(to_insert, "shows")
         g.log(f"Inserting Shows into sync database: {len(to_insert)}")
-        from resources.lib.modules.meta_storage import slim_art_dict, slim_info_dict
+        from resources.lib.meta.storage import slim_art_dict, slim_info_dict
 
         get = MetadataHandler.get_simkl_info
         simkl_obj = MetadataHandler.simkl_object
@@ -1035,7 +1434,6 @@ class SimklSyncDatabase(Database):
                     self._create_args(i),
                     get(i, "is_airing"),
                     g.validate_date(get(i, "last_watched_at")),
-                    g.validate_date(get(i, "last_collected_at")),
                     get(i, "user_rating"),
                     self._library_status_from_item(i),
                 )
@@ -1121,7 +1519,6 @@ class SimklSyncDatabase(Database):
                     i.get("simkl_show_id"),
                     i.get("simkl_season_id"),
                     get(i, "playcount"),
-                    get(i, "collected"),
                     g.validate_date(get(i, "aired")),
                     g.validate_date(get(i, "dateadded")),
                     get(i, "season"),
@@ -1134,7 +1531,6 @@ class SimklSyncDatabase(Database):
                     None,
                     self._create_args(i),
                     g.validate_date(get(i, "last_watched_at")),
-                    g.validate_date(get(i, "collected_at")),
                     get(i, "user_rating"),
                     self.simkl_api.meta_hash,
                 )
@@ -1180,7 +1576,6 @@ class SimklSyncDatabase(Database):
                     get(i, "season"),
                     self._create_args(i),
                     g.validate_date(get(i, "last_watched_at")),
-                    g.validate_date(get(i, "last_collected_at")),
                     get(i, "user_rating"),
                 )
                 for i in to_insert
@@ -1324,7 +1719,15 @@ class SimklSyncDatabase(Database):
             mill_episodes,
         )
 
-    def force_mill_shows(self, shows, mill_episodes=True):
+    def force_mill_shows(
+        self,
+        shows,
+        mill_episodes=True,
+        *,
+        skip_provider_episode_updates=False,
+        defer_episode_format: bool = False,
+        mill_season_filter: set[int] | frozenset[int] | None = None,
+    ):
         """Parallel Simkl catalogue pull — skips needs_milling gate and show meta enrichment."""
         if not shows:
             return
@@ -1352,9 +1755,24 @@ class SimklSyncDatabase(Database):
             rows = [{"simkl_id": show_id} for show_id in show_ids]
         g.log(f"Parallel force-mill: {len(rows)} show(s)", "debug")
         self.insert_simkl_shows(rows)
-        self.mill_seasons(rows, self._queue_mill_tasks, mill_episodes=mill_episodes)
+        self.mill_seasons(
+            rows,
+            self._queue_mill_tasks,
+            mill_episodes=mill_episodes,
+            skip_provider_episode_updates=skip_provider_episode_updates,
+            defer_episode_format=defer_episode_format,
+            mill_season_filter=mill_season_filter,
+        )
 
-    def mill_seasons(self, show_collection, queue_wrapper, mill_episodes=False):
+    def mill_seasons(
+        self,
+        show_collection,
+        queue_wrapper,
+        mill_episodes=False,
+        skip_provider_episode_updates=False,
+        defer_episode_format: bool = False,
+        mill_season_filter: set[int] | frozenset[int] | None = None,
+    ):
         with SyncLock(
             f"mill_seasons_episodes_{mill_episodes}",
             {show.get("simkl_show_id", show.get("simkl_id")) for show in show_collection},
@@ -1366,7 +1784,10 @@ class SimklSyncDatabase(Database):
                 get = MetadataHandler.get_simkl_info
                 simkl_info = MetadataHandler.simkl_info
 
-                queue_wrapper(self._pull_show_seasons, [(i, mill_episodes) for i in sync_lock.running_ids])
+                queue_wrapper(
+                    self._pull_show_seasons,
+                    [(i, mill_episodes, mill_season_filter) for i in sync_lock.running_ids],
+                )
                 results = self.mill_task_queue.wait_completion()
 
                 seasons = []
@@ -1441,6 +1862,12 @@ class SimklSyncDatabase(Database):
 
                         extended_episodes = {get(x, "episode"): x for x in get(extended_season, "episodes", [])}
                         season_episodes = season.get("episodes") or get(season, "episodes") or []
+                        if (
+                            mill_season_filter is not None
+                            and s_num is not None
+                            and int(s_num) not in mill_season_filter
+                        ):
+                            season_episodes = []
                         for episode in season_episodes:
                             e_num = episode.get("episode", get(episode, "episode"))
                             simkl_info(episode).update({"simkl_show_id": get(show, "simkl_id")})
@@ -1471,12 +1898,15 @@ class SimklSyncDatabase(Database):
 
                 self.insert_simkl_seasons(seasons)
                 self.insert_simkl_episodes(episodes)
-                if mill_episodes and episodes:
+                if mill_episodes and episodes and not defer_episode_format:
                     episode_refs = [{"simkl_id": get(ep, "simkl_id")} for ep in episodes if get(ep, "simkl_id")]
-                    self._update_episodes(episode_refs)
-                    self._format_episodes(episode_refs)
+                    if skip_provider_episode_updates:
+                        self._format_episodes(episode_refs)
+                    else:
+                        self._update_episodes(episode_refs)
+                        self._format_episodes(episode_refs)
 
-                if mill_episodes:
+                if mill_episodes and mill_season_filter is None:
                     self.execute_sql(
                         [
                             f"""
@@ -1484,6 +1914,7 @@ class SimklSyncDatabase(Database):
                             WHERE simkl_show_id = {simkl_id} AND simkl_id NOT IN ({','.join(map(str, episode))})
                             """
                             for simkl_id, episode in episode_ids.items()
+                            if episode
                         ]
                     )
 
@@ -1573,7 +2004,7 @@ class SimklSyncDatabase(Database):
 
         return [_requested_record(item) for item, simkl_id in resolved if simkl_id in result]
 
-    def _pull_show_seasons(self, show_id, mill_episodes):
+    def _pull_show_seasons(self, show_id, mill_episodes, mill_season_filter=None):
         from resources.lib.database.simkl_sync.milling import pull_show_seasons
         from resources.lib.simkl.catalog import is_anime_movie_info
 
@@ -1585,20 +2016,17 @@ class SimklSyncDatabase(Database):
         catalog = self._infer_show_catalog(show_id)
         slug = self._meta_slug(show_id, "shows")
         g.log(f"[season trace] _pull_show_seasons show={show_id} inferred_catalog={catalog} slug={slug}", "debug")
-        return {show_id: pull_show_seasons(int(show_id), catalog, mill_episodes, slug=slug)}
+        return {
+            show_id: pull_show_seasons(
+                int(show_id),
+                catalog,
+                mill_episodes,
+                slug=slug,
+                mill_season_filter=mill_season_filter,
+            )
+        }
 
-    def _infer_show_catalog(self, show_id):
-        if show_id is None:
-            return "tv"
-        row = self.fetchone(
-            """
-            SELECT m.value AS simkl_object, s.info AS show_info
-            FROM shows AS s
-            LEFT JOIN shows_meta AS m ON m.id = s.simkl_id AND m.type = 'simkl'
-            WHERE s.simkl_id = ?
-            """,
-            (int(show_id),),
-        )
+    def _catalog_from_show_row(self, row) -> str:
         if not row:
             return "tv"
         for info in (
@@ -1613,6 +2041,43 @@ class SimklSyncDatabase(Database):
             if info.get("catalog") == "anime" or info.get("type") == "anime":
                 return "anime"
         return "tv"
+
+    def _infer_show_catalog(self, show_id):
+        if show_id is None:
+            return "tv"
+        row = self.fetchone(
+            """
+            SELECT m.value AS simkl_object, s.info AS show_info
+            FROM shows AS s
+            LEFT JOIN shows_meta AS m ON m.id = s.simkl_id AND m.type = 'simkl'
+            WHERE s.simkl_id = ?
+            """,
+            (int(show_id),),
+        )
+        return self._catalog_from_show_row(row)
+
+    def _show_ids_for_catalog(self, catalog: str | None) -> list[int] | None:
+        """Return show simkl_ids for a catalog (tv/anime), cached on the session DB singleton."""
+        if not catalog:
+            return None
+        cache = getattr(self, "_show_ids_by_catalog", None)
+        if isinstance(cache, dict) and catalog in cache:
+            return cache[catalog]
+        rows = self.fetchall(
+            """
+            SELECT s.simkl_id, m.value AS simkl_object, s.info AS show_info
+            FROM shows AS s
+            LEFT JOIN shows_meta AS m ON m.id = s.simkl_id AND m.type = 'simkl'
+            """
+        )
+        grouped: dict[str, list[int]] = {"tv": [], "anime": []}
+        for row in rows or []:
+            if row.get("simkl_id") is None:
+                continue
+            cat = self._catalog_from_show_row(row)
+            grouped.setdefault(cat, []).append(int(row["simkl_id"]))
+        self._show_ids_by_catalog = grouped
+        return grouped.get(catalog, [])
 
     @staticmethod
     def _create_args(item):
@@ -1803,6 +2268,18 @@ class SimklSyncDatabase(Database):
             return True
         return False
 
+    def _entry_has_per_episode_watch_rows(self, entry: dict) -> bool:
+        """True when Simkl returned explicit per-episode watch rows (not count-only)."""
+        if not isinstance(entry, dict):
+            return False
+        for season in entry.get("seasons") or []:
+            if not isinstance(season, dict):
+                continue
+            for episode in season.get("episodes") or []:
+                if self._episode_marked_watched(episode, entry):
+                    return True
+        return False
+
     def apply_show_watch_counters(self, entries):
         """Apply Simkl summary progress (watched/total episode counts) to show rows for list indicators."""
         rows = []
@@ -1883,6 +2360,10 @@ class SimklSyncDatabase(Database):
                         "simkl_show_id": show_id,
                         "simkl_object": {"info": season_info},
                     }
+                else:
+                    existing_info = season_items[(show_id, season_num)]["simkl_object"]["info"]
+                    if len(episodes) > int(existing_info.get("episode_count") or 0):
+                        existing_info["episode_count"] = len(episodes)
 
                 for episode in episodes:
                     ep_num = episode.get("number") if episode.get("number") is not None else episode.get("episode")
@@ -1938,6 +2419,18 @@ class SimklSyncDatabase(Database):
             self.insert_simkl_seasons(seasons)
         if episodes:
             self.insert_simkl_episodes(episodes)
+        for (show_id, season_num), item in season_items.items():
+            info = (item.get("simkl_object") or {}).get("info") or {}
+            ep_count = int(info.get("episode_count") or 0)
+            if ep_count > 0:
+                self.execute_sql(
+                    """
+                    UPDATE seasons
+                    SET episode_count = MAX(COALESCE(episode_count, 0), ?)
+                    WHERE simkl_show_id = ? AND season = ?
+                    """,
+                    (ep_count, int(show_id), int(season_num)),
+                )
         if seasons or episodes:
             g.log(
                 f"Simkl sync stubs: {len(seasons)} season(s), {len(episodes)} episode(s)",
@@ -2078,6 +2571,8 @@ class SimklSyncDatabase(Database):
             )
 
         tvdb_id = ep_ids.get("tvdb_id")
+        from resources.lib.simkl.field_map import _unescape
+
         ep_info = {
             "simkl_id": ep_simkl_id,
             "mediatype": "episode",
@@ -2087,6 +2582,10 @@ class SimklSyncDatabase(Database):
             "number": ep_num,
             "playcount": 0,
         }
+        ep_title = _unescape(episode.get("title"))
+        if ep_title:
+            ep_info["title"] = ep_title
+            ep_info.setdefault("sorttitle", ep_title)
         if tvdb_id is not None:
             ep_info["tvdb_id"] = int(tvdb_id)
         attach_tv_context(
@@ -2114,9 +2613,12 @@ class SimklSyncDatabase(Database):
         import re
 
         match = re.match(r"[Ss](\d+)[Ee](\d+)", value.strip())
-        if not match:
-            return None
-        return int(match.group(1)), int(match.group(2))
+        if match:
+            return int(match.group(1)), int(match.group(2))
+        match = re.match(r"[Ee](\d+)$", value.strip())
+        if match:
+            return 1, int(match.group(1))
+        return None
 
     def apply_next_watch_stubs_from_entries(self, entries, shows, catalog: str | None = None):
         """Seed the next unwatched episode per watching show from Simkl next_watch_info (no milling)."""
@@ -2290,8 +2792,87 @@ class SimklSyncDatabase(Database):
                 ]
             )
 
-        self.update_shows_statistics({"simkl_id": show_id} for show_id in show_ids.keys())
+        for show_id in show_ids.keys():
+            self._refresh_show_and_season_statistics(int(show_id))
         self.apply_show_watch_counters(entries)
+
+    def _refresh_show_and_season_statistics(self, simkl_show_id: int) -> None:
+        """Recompute show + season counters from episode watch rows."""
+        show_id = int(simkl_show_id)
+        self.update_shows_statistics([{"simkl_id": show_id}])
+        seasons = self.fetchall("SELECT simkl_id FROM seasons WHERE simkl_show_id=?", (show_id,))
+        if seasons:
+            self.update_season_statistics(seasons)
+            self.execute_sql(
+                """
+                UPDATE seasons
+                SET unwatched_episodes = MAX(
+                    0,
+                    COALESCE(episode_count, 0) - COALESCE(watched_episodes, 0)
+                )
+                WHERE simkl_show_id = ?
+                """,
+                (show_id,),
+            )
+
+    def apply_watched_progress_from_entry(self, entry: dict) -> int:
+        """Mark episodes watched up to Simkl last_watched when seasons[] is missing or sparse."""
+        show_id = self._entry_show_simkl_id(entry)
+        if show_id is None:
+            return 0
+        show_id = int(show_id)
+
+        watched_count = int(entry.get("watched_episodes_count") or 0)
+        if watched_count <= 0:
+            return 0
+
+        last = self._parse_next_to_watch_string(entry.get("last_watched"))
+        last_watched_at = entry.get("last_watched_at")
+
+        if last is not None:
+            last_season, last_episode = last
+            up_to_last = self.fetchall(
+                """
+                SELECT season, number
+                FROM episodes
+                WHERE simkl_show_id=? AND season > 0
+                  AND (season < ? OR (season = ? AND number <= ?))
+                ORDER BY season, number
+                """,
+                (show_id, last_season, last_season, last_episode),
+            )
+            if len(up_to_last) > watched_count:
+                rows = up_to_last[-watched_count:]
+            else:
+                rows = up_to_last
+        else:
+            rows = self.fetchall(
+                """
+                SELECT season, number
+                FROM episodes
+                WHERE simkl_show_id=? AND season > 0
+                ORDER BY season, number
+                LIMIT ?
+                """,
+                (show_id, watched_count),
+            )
+
+        if not rows:
+            return 0
+
+        stamp = last_watched_at or self._get_aired_cutoff()
+        for row in rows:
+            self.execute_sql(
+                (
+                    "UPDATE episodes SET watched=1, "
+                    "last_watched_at=COALESCE(last_watched_at, ?) "
+                    "WHERE simkl_show_id=? AND season=? AND number=?"
+                ),
+                (stamp, show_id, int(row["season"]), int(row["number"])),
+            )
+
+        self._refresh_show_and_season_statistics(show_id)
+        return len(rows)
 
     def apply_completed_show_watch_flags(self, entries):
         """Completed Simkl list entries should appear fully watched in Kodi lists."""
@@ -2328,7 +2909,15 @@ class SimklSyncDatabase(Database):
                 (show_id,),
             )
             episode_count = int(episode_rows.get("episode_count") or 0) if episode_rows else 0
-            if episode_count > 0:
+            watched_rows = self.fetchone(
+                "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0 AND COALESCE(watched, 0) > 0",
+                (show_id,),
+            )
+            local_watched = int((watched_rows or {}).get("c") or 0)
+            total_int = int(total) if total is not None else 0
+            watched_int = int(watched) if watched is not None else 0
+            force_all = total_int > 0 and watched_int >= total_int
+            if episode_count > 0 and force_all and local_watched < episode_count:
                 self.execute_sql(
                     """
                     UPDATE episodes
@@ -2453,8 +3042,7 @@ class SimklSyncDatabase(Database):
         self.apply_show_library_status(entries)
         self.apply_sync_episode_stubs_from_entries(entries, sync_items, catalog)
         self.apply_next_watch_stubs_from_entries(entries, sync_items, catalog)
-        self.apply_watched_episodes_from_entries(entries, sync_items)
-        self.apply_completed_show_watch_flags(entries)
+        self.sync_show_watch_state_from_entries(entries, sync_items)
 
     def update_shows_statistics(self, media_list):
         self.__update_shows_statisics(media_list)
@@ -2474,7 +3062,7 @@ class SimklSyncDatabase(Database):
             SET (
                     air_date, is_airing,
                     season_count, episode_count, watched_episodes, unwatched_episodes,
-                    last_watched_at, last_collected_at
+                    last_watched_at
                     ) = (SELECT coalesce(CASE
                                              WHEN min(coalesce(e.air_date, datetime('9999-12-31T00:00:00'))
                                                       ) <> datetime('9999-12-31T00:00:00')
@@ -2542,12 +3130,7 @@ class SimklSyncDatabase(Database):
                                     WHEN max(e.simkl_id) IS NOT NULL
                                         THEN max(e.last_watched_at)
                                     ELSE s.last_watched_at
-                                    END                            AS last_watched_at,
-                                CASE
-                                    WHEN max(e.simkl_id) IS NOT NULL
-                                        THEN max(e.collected_at)
-                                    ELSE s.last_collected_at
-                                    END                            AS last_collected_at
+                                    END                            AS last_watched_at
                          FROM shows AS s
                                   LEFT JOIN episodes AS e
                                             ON e.simkl_show_id = s.simkl_id
@@ -2575,7 +3158,7 @@ class SimklSyncDatabase(Database):
             SET (
                     air_date, is_airing,
                     episode_count, watched_episodes, unwatched_episodes,
-                    last_watched_at, last_collected_at
+                    last_watched_at
                     ) = (SELECT coalesce(
                                         CASE
                                             WHEN min(coalesce(e.air_date, datetime('9999-12-31T00:00:00'))
@@ -2615,7 +3198,8 @@ class SimklSyncDatabase(Database):
                                                 WHEN max(e.simkl_id) is not null
                                                     THEN sum(
                                                         CASE
-                                                            WHEN datetime(e.air_date) < datetime('{now}')
+                                                            WHEN e.air_date IS NULL
+                                                                OR datetime(e.air_date) < datetime('{now}')
                                                                 THEN 1
                                                             ELSE 0
                                                             END
@@ -2623,20 +3207,24 @@ class SimklSyncDatabase(Database):
                                                 END,
                                             seasons.episode_count
                                         ) IS NOT NULL
-                                        THEN coalesce(
-                                            CASE
-                                                WHEN max(e.simkl_id) is not null
-                                                    THEN sum(
-                                                        CASE
-                                                            WHEN datetime(e.air_date) < datetime('{now}')
-                                                                THEN 1
-                                                            ELSE 0
-                                                            END
-                                                    )
-                                                END,
-                                            seasons.episode_count
+                                        THEN MAX(
+                                            COALESCE(seasons.episode_count, 0),
+                                            COALESCE(
+                                                CASE
+                                                    WHEN max(e.simkl_id) is not null
+                                                        THEN sum(
+                                                            CASE
+                                                                WHEN e.air_date IS NULL
+                                                                    OR datetime(e.air_date) < datetime('{now}')
+                                                                    THEN 1
+                                                                ELSE 0
+                                                                END
+                                                        )
+                                                    END,
+                                                0
+                                            )
                                         )
-                                    ELSE 0
+                                    ELSE COALESCE(seasons.episode_count, 0)
                                     END AS episode_count,
                                 CASE
                                     WHEN coalesce(
@@ -2645,7 +3233,6 @@ class SimklSyncDatabase(Database):
                                                     THEN sum(
                                                         CASE
                                                             WHEN e.watched > 0
-                                                                    AND datetime(e.air_date) < datetime('{now}')
                                                                 THEN 1
                                                             ELSE 0
                                                             END
@@ -2659,7 +3246,6 @@ class SimklSyncDatabase(Database):
                                                     THEN sum(
                                                         CASE
                                                             WHEN e.watched > 0
-                                                                    AND datetime(e.air_date) < datetime('{now}')
                                                                 THEN 1
                                                             ELSE 0
                                                             END
@@ -2676,7 +3262,10 @@ class SimklSyncDatabase(Database):
                                                     THEN sum(
                                                         CASE
                                                             WHEN e.watched == 0
-                                                                    AND datetime(e.air_date) < datetime('{now}')
+                                                                    AND (
+                                                                        e.air_date IS NULL
+                                                                        OR datetime(e.air_date) < datetime('{now}')
+                                                                    )
                                                                 THEN 1
                                                             ELSE 0
                                                             END
@@ -2690,7 +3279,10 @@ class SimklSyncDatabase(Database):
                                                     THEN sum(
                                                         CASE
                                                             WHEN e.watched == 0
-                                                                    AND datetime(e.air_date) < datetime('{now}')
+                                                                    AND (
+                                                                        e.air_date IS NULL
+                                                                        OR datetime(e.air_date) < datetime('{now}')
+                                                                    )
                                                                 THEN 1
                                                             ELSE 0
                                                             END
@@ -2704,12 +3296,7 @@ class SimklSyncDatabase(Database):
                                     WHEN max(e.simkl_id) IS NOT NULL
                                         THEN max(e.last_watched_at)
                                     ELSE seasons.last_watched_at
-                                    END AS last_watched_at,
-                                CASE
-                                    WHEN max(e.simkl_id) IS NOT NULL
-                                        THEN max(e.collected_at)
-                                    ELSE seasons.last_collected_at
-                                    END AS last_collected_at
+                                    END AS last_watched_at
                          FROM episodes AS e
                          WHERE e.simkl_season_id = seasons.simkl_id
                          GROUP BY e.simkl_season_id)
@@ -2773,21 +3360,20 @@ class SimklSyncDatabase(Database):
     @property
     def upsert_movie_query(self):
         return """
-                WITH new(simkl_id, info, art, cast, collected, watched, air_date,
+                WITH new(simkl_id, info, art, cast, watched, air_date,
                          last_updated, tmdb_id, tvdb_id, imdb_id, meta_hash, args,
-                         collected_at, last_watched_at, user_rating, simkl_status,
+                         last_watched_at, user_rating, simkl_status,
                          needs_update
-                    ) AS (values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE))
+                    ) AS (values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE))
                 INSERT
-                INTO movies(simkl_id, info, art, cast, collected, watched, air_date,
+                INTO movies(simkl_id, info, art, cast, watched, air_date,
                             last_updated, tmdb_id, tvdb_id, imdb_id, meta_hash, args,
-                            collected_at, last_watched_at, user_rating, simkl_status,
+                            last_watched_at, user_rating, simkl_status,
                             needs_update)
                 SELECT simkl_id,
                        info,
                        art,
                        [cast],
-                       coalesce(collected, 0),
                        coalesce(watched, 0),
                        air_date,
                        coalesce(last_updated, '1970-01-01T00:00:00'),
@@ -2796,7 +3382,6 @@ class SimklSyncDatabase(Database):
                        imdb_id,
                        meta_hash,
                        coalesce(args, FALSE),
-                       collected_at,
                        last_watched_at,
                        user_rating,
                        simkl_status,
@@ -2804,13 +3389,12 @@ class SimklSyncDatabase(Database):
                 FROM new
                 WHERE TRUE
                 ON CONFLICT(simkl_id) DO UPDATE
-                    SET (info, art, cast, collected, watched, air_date,
+                    SET (info, art, cast, watched, air_date,
                             last_updated, tmdb_id, tvdb_id, imdb_id, meta_hash,
-                            args, collected_at, last_watched_at, user_rating, simkl_status,
+                            args, last_watched_at, user_rating, simkl_status,
                             needs_update) = (SELECT coalesce(new.info, old.info),
                                                     coalesce(new.art, old.art),
                                                     coalesce(new.cast, old.cast),
-                                                    coalesce(new.collected, old.collected),
                                                     coalesce(new.watched, old.watched),
                                                     coalesce(new.air_date, old.air_date),
                                                     coalesce(new.last_updated, old.last_updated),
@@ -2819,7 +3403,6 @@ class SimklSyncDatabase(Database):
                                                     coalesce(new.imdb_id, old.imdb_id),
                                                     coalesce(new.meta_hash, old.meta_hash),
                                                     coalesce(new.args, old.args),
-                                                    coalesce(new.collected_at, old.collected_at),
                                                     coalesce(new.last_watched_at, old.last_watched_at),
                                                     coalesce(new.user_rating, old.user_rating),
                                                     coalesce(new.simkl_status, old.simkl_status),
@@ -2849,15 +3432,15 @@ class SimklSyncDatabase(Database):
                      tmdb_id, tvdb_id, imdb_id, meta_hash,
                      season_count, episode_count,
                      args, is_airing,
-                     last_watched_at, last_collected_at, user_rating, simkl_status,
+                     last_watched_at, user_rating, simkl_status,
                      needs_update, needs_milling)
-                     AS (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, TRUE))
+                     AS (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, TRUE))
             INSERT
             INTO shows(simkl_id, info, art, cast, air_date, last_updated,
                        tmdb_id, tvdb_id, imdb_id, meta_hash,
                        season_count, episode_count,
                        args, is_airing,
-                       last_watched_at, last_collected_at, user_rating, simkl_status,
+                       last_watched_at, user_rating, simkl_status,
                        needs_update, needs_milling)
             SELECT simkl_id,
                    info,
@@ -2874,7 +3457,6 @@ class SimklSyncDatabase(Database):
                    coalesce(args, FALSE),
                    is_airing,
                    last_watched_at,
-                   last_collected_at,
                    user_rating,
                    simkl_status,
                    needs_update,
@@ -2886,7 +3468,7 @@ class SimklSyncDatabase(Database):
                         tmdb_id, tvdb_id, imdb_id, meta_hash,
                         season_count, episode_count, watched_episodes, unwatched_episodes,
                         args, is_airing,
-                        last_watched_at, last_collected_at, user_rating, simkl_status,
+                        last_watched_at, user_rating, simkl_status,
                         needs_update,
                         needs_milling) = (SELECT coalesce(new.info, old.info),
                                                  coalesce(new.art, old.art),
@@ -2904,7 +3486,6 @@ class SimklSyncDatabase(Database):
                                                  coalesce(new.args, old.args),
                                                  coalesce(new.is_airing, old.is_airing),
                                                  coalesce(new.last_watched_at, old.last_watched_at),
-                                                 coalesce(new.last_collected_at, old.last_collected_at),
                                                  coalesce(new.user_rating, old.user_rating),
                                                  coalesce(new.simkl_status, old.simkl_status),
                                                  CASE
@@ -2941,14 +3522,14 @@ class SimklSyncDatabase(Database):
                      air_date, last_updated,
                      tmdb_id, tvdb_id, meta_hash, episode_count,
                      season, args,
-                     last_watched_at, last_collected_at, user_rating,
-                     needs_update) AS (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE))
+                     last_watched_at, user_rating,
+                     needs_update) AS (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE))
             INSERT
             INTO seasons(simkl_show_id, simkl_id, info, art, cast,
                          air_date, last_updated,
                          tmdb_id, tvdb_id, meta_hash, episode_count,
                          season, args,
-                         last_watched_at, last_collected_at, user_rating,
+                         last_watched_at, user_rating,
                          needs_update)
             SELECT simkl_show_id,
                    simkl_id,
@@ -2964,7 +3545,6 @@ class SimklSyncDatabase(Database):
                    season,
                    coalesce(args, FALSE),
                    last_watched_at,
-                   last_collected_at,
                    user_rating,
                    needs_update
             FROM new
@@ -2974,7 +3554,7 @@ class SimklSyncDatabase(Database):
                         air_date, last_updated,
                         tmdb_id, tvdb_id, meta_hash, episode_count,
                         args,
-                        last_watched_at, last_collected_at, user_rating,
+                        last_watched_at, user_rating,
                         needs_update) = (SELECT new.simkl_id,
                                                 coalesce(new.info, old.info),
                                                 coalesce(new.art, old.art),
@@ -2987,7 +3567,6 @@ class SimklSyncDatabase(Database):
                                                 coalesce(new.episode_count, old.episode_count),
                                                 coalesce(new.args, old.args),
                                                 coalesce(new.last_watched_at, old.last_watched_at),
-                                                coalesce(new.last_collected_at, old.last_collected_at),
                                                 coalesce(new.user_rating, old.user_rating),
                                                 CASE
                                                     WHEN old.needs_update
@@ -3013,28 +3592,27 @@ class SimklSyncDatabase(Database):
     def upsert_episode_query(self):
         return """
             WITH new(simkl_id, simkl_show_id, simkl_season_id,
-                     watched, collected,
+                     watched,
                      air_date, last_updated,
                      season, number,
                      tmdb_id, tvdb_id, imdb_id,
                      info, art, cast,
-                     args, last_watched_at, collected_at,
+                     args, last_watched_at,
                      user_rating, meta_hash,
-                     needs_update) AS (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE))
+                     needs_update) AS (VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE))
             INSERT
             INTO episodes(simkl_id, simkl_show_id, simkl_season_id,
-                          watched, collected,
+                          watched,
                           air_date, last_updated,
                           season, number,
                           tmdb_id, tvdb_id, imdb_id,
                           info, art, cast,
-                          args, last_watched_at, collected_at,
+                          args, last_watched_at,
                           user_rating, meta_hash, needs_update)
             SELECT simkl_id,
                    simkl_show_id,
                    simkl_season_id,
                    coalesce(watched, 0),
-                   coalesce(collected, 0),
                    air_date,
                    coalesce(last_updated, '1970-01-01T00:00:00'),
                    season,
@@ -3047,7 +3625,6 @@ class SimklSyncDatabase(Database):
                    [cast],
                    coalesce(args, FALSE),
                    last_watched_at,
-                   collected_at,
                    user_rating,
                    meta_hash,
                    needs_update
@@ -3055,16 +3632,15 @@ class SimklSyncDatabase(Database):
             WHERE TRUE
             ON CONFLICT(simkl_show_id, season, number) DO UPDATE
                 SET (simkl_id, simkl_season_id,
-                        watched, collected,
+                        watched,
                         air_date, last_updated,
                         tmdb_id, tvdb_id, imdb_id,
                         info, art, cast,
-                        args, last_watched_at, collected_at,
+                        args, last_watched_at,
                         user_rating, meta_hash,
                         needs_update) = (SELECT new.simkl_id,
                                                 coalesce(new.simkl_season_id, old.simkl_season_id),
-                                                coalesce(new.watched, old.watched),
-                                                coalesce(new.collected, old.collected),
+                                                MAX(coalesce(new.watched, 0), coalesce(old.watched, 0)),
                                                 coalesce(new.air_date, old.air_date),
                                                 coalesce(new.last_updated, old.last_updated),
                                                 coalesce(new.tmdb_id, old.tmdb_id),
@@ -3075,7 +3651,6 @@ class SimklSyncDatabase(Database):
                                                 coalesce(new.cast, old.cast),
                                                 coalesce(new.args, old.args),
                                                 coalesce(new.last_watched_at, old.last_watched_at),
-                                                coalesce(new.collected_at, old.collected_at),
                                                 coalesce(new.user_rating, old.user_rating),
                                                 coalesce(new.meta_hash, old.meta_hash),
                                                 CASE

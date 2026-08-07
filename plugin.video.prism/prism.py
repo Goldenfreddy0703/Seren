@@ -27,12 +27,28 @@ def _sleeping_retry_handler():
 
 
 def prism_endpoint():
+    foreground_menu = False
     try:
         g.init_globals(sys.argv)
+        foreground_menu = g.PLUGIN_HANDLE > 0 and not g.FROM_WIDGET
 
         if _sleeping_retry_handler() and not g.abort_requested():
             from resources.lib.modules.widget_loader import WidgetLoadGate
 
+            action = (g.REQUEST_PARAMS or {}).get("action")
+            drilldown_nav = (
+                g.PLUGIN_HANDLE > 0
+                and not g.FROM_WIDGET
+                and action in ("seasonEpisodes", "flatEpisodes")
+            )
+            if drilldown_nav:
+                from resources.lib.modules.drilldown_prefetch import set_drilldown_navigation_active
+
+                set_drilldown_navigation_active(True)
+            if foreground_menu:
+                from resources.lib.modules.page_prefetch import set_foreground_menu_active
+
+                set_foreground_menu_active(True)
             with WidgetLoadGate(), TimeLogger(f"{g.REQUEST_PARAMS.get('action', '')}"):
                 router.dispatch(g.REQUEST_PARAMS)
 
@@ -41,6 +57,25 @@ def prism_endpoint():
         raise
 
     finally:
+        if foreground_menu:
+            try:
+                from resources.lib.modules.page_prefetch import set_foreground_menu_active
+
+                set_foreground_menu_active(False)
+            except Exception:
+                pass
+        try:
+            action = (g.REQUEST_PARAMS or {}).get("action")
+            if (
+                g.PLUGIN_HANDLE > 0
+                and not g.FROM_WIDGET
+                and action in ("seasonEpisodes", "flatEpisodes")
+            ):
+                from resources.lib.modules.drilldown_prefetch import set_drilldown_navigation_active
+
+                set_drilldown_navigation_active(False)
+        except Exception:
+            pass
         g.deinit()
 
 

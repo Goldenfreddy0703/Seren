@@ -1,5 +1,6 @@
 import sqlite3
 import sys
+import threading
 from random import randint
 
 import xbmc
@@ -18,6 +19,9 @@ from resources.lib.modules.update_news import do_update_news
 from resources.lib.modules.manual_timezone import validate_timezone_detected
 
 g.init_globals(sys.argv)
+from resources.lib.common.backup_restore import apply_deferred_db_restore
+
+apply_deferred_db_restore()
 do_version_change()
 
 g.log("##################  STARTING SERVICE  ######################")
@@ -44,7 +48,59 @@ try:
         )
 
     xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=torrentCacheCleanup")')
-    xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=prefetchCalendars")')
+
+    try:
+        from resources.lib.modules.cache_maintenance import mark_service_boot_started
+
+        mark_service_boot_started()
+
+        def _deferred_warm_menu_caches() -> None:
+            try:
+                import time
+
+                from resources.lib.modules.cache_maintenance import warm_menu_caches
+                from resources.lib.modules.page_prefetch import foreground_browse_busy
+
+                if g.wait_for_abort(8):
+                    return
+                for _ in range(48):
+                    if g.abort_requested():
+                        return
+                    if not foreground_browse_busy():
+                        break
+                    time.sleep(0.25)
+                if foreground_browse_busy():
+                    g.log("Boot menu cache warm deferred — menu active", "debug")
+                    return
+                warm_menu_caches()
+                if not foreground_browse_busy():
+                    xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=pluginWarmup")')
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=_deferred_warm_menu_caches,
+            daemon=True,
+            name="prism-boot-warm",
+        ).start()
+    except Exception:
+        pass
+
+    def _deferred_calendar_prefetch() -> None:
+        try:
+            import time
+
+            from resources.lib.calendar.simkl_calendar import maybe_prefetch_calendars
+            from resources.lib.modules.page_prefetch import foreground_browse_busy
+
+            if not g.wait_for_abort(90):
+                if foreground_browse_busy():
+                    return
+                maybe_prefetch_calendars()
+        except Exception:
+            pass
+
+    threading.Thread(target=_deferred_calendar_prefetch, daemon=True, name="prism-calendar-defer").start()
 
     def _service_db_idle() -> bool:
         try:
@@ -63,6 +119,8 @@ try:
             except Exception:
                 pass
         if _service_db_idle():
+            if g.get_bool_runtime_setting("maintenance.deferred"):
+                g.log("Running deferred maintenance", "debug")
             xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=runMaintenance")')
         if not g.wait_for_abort(15):  # Sleep to make sure tokens refreshed during maintenance
             if _service_db_idle():

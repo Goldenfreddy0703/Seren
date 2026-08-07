@@ -22,6 +22,7 @@ class MetaProviderRouter:
         profile: str = MetaProfile.LIST,
         persist: bool = True,
         reason: str = "list_open",
+        catalog: str | None = None,
     ) -> list:
         """Fetch missing provider meta for list refs; LIST skips child provider blobs."""
         if not refs:
@@ -62,6 +63,7 @@ class MetaProviderRouter:
                 media_type,
                 db=db,
                 persist=persist,
+                catalog=catalog,
             )
 
     @staticmethod

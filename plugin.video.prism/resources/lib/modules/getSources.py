@@ -355,7 +355,9 @@ class Sources:
         import requests
 
         try:
-            resp = self._imdb_suggestions(imdb_id)
+            from resources.lib.indexers.imdb import ImdbAPI
+
+            resp = ImdbAPI.suggestion_title_by_id(imdb_id)
             year = resp.get('y', self.item_information['info']['year'])
             if year is not None and year != self.item_information['info']['year']:
                 self.item_information['info']['year'] = str(year)
@@ -365,21 +367,9 @@ class Sources:
 
     @staticmethod
     def _imdb_suggestions(imdb_id):
-        try:
-            import requests
-            from requests.adapters import HTTPAdapter
-            from urllib3 import Retry
+        from resources.lib.indexers.imdb import ImdbAPI
 
-            session = requests.Session()
-            retries = Retry(total=5, backoff_factor=0.1, status_forcelist=[429, 500, 502, 503, 504])
-            session.mount("https://", HTTPAdapter(max_retries=retries, pool_maxsize=100))
-
-            resp = session.get(f'https://v2.sg.media-imdb.com/suggestion/t/{imdb_id}.json')
-            resp = json.loads(resp.text)['d'][0]
-            return resp
-        except (ValueError, KeyError, IndexError):
-            g.log("Failed to get IMDB suggestion", "warning")
-            return {}
+        return ImdbAPI.suggestion_title_by_id(imdb_id)
 
     def _send_provider_stop_event(self):
         for provider in self.running_providers:

@@ -130,9 +130,9 @@ def resolve_catalog_from_item_information(item_information):
 
             show_id = show_id_for_episode_action(action_args)
         if show_id is not None:
-            from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+            from resources.lib.database.session import get_sync_database
 
-            catalog = SimklSyncDatabase().show_catalog(int(show_id))
+            catalog = get_sync_database().show_catalog(int(show_id))
             if catalog in CATALOGS:
                 return catalog
 

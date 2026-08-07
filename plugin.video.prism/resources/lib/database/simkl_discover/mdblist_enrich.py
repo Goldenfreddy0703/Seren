@@ -61,7 +61,7 @@ def _parse_rate_limit_headers(headers: Message | Any) -> MdblistRateLimitState:
 def resolve_mdblist_api_key(explicit: str | None = None) -> str:
     if explicit:
         return explicit
-    from resources.lib.modules.metadata_providers import mdblist_runtime_enabled
+    from resources.lib.meta.provider_settings import mdblist_runtime_enabled
 
     if not mdblist_runtime_enabled():
         return ""
@@ -418,71 +418,34 @@ def build_batch_plan(rows: list[tuple[int, str, str | None]]) -> dict[str, list[
 
 
 def apply_mdblist_item(conn: sqlite3.Connection, simkl_id: int, catalog: str, item: dict[str, Any]) -> None:
+    """Write MDBList ranking/scoring fields only — Simkl CDN owns display metadata."""
     mdblist_ratings = mdblist_ratings_to_map(item.get("ratings"))
-    genres = item.get("genres")
     streams = item.get("streams")
     providers = item.get("watch_providers")
-    mdblist_ids = item.get("ids") if isinstance(item.get("ids"), dict) else None
-
-    cur = conn.execute(
-        """
-        SELECT title, poster, fanart, overview, release_date, runtime, status,
-               country, trailer, genres_json, ids_json, ratings_json
-        FROM simkl_rows WHERE simkl_id = ? AND catalog = ?
-        """,
-        (simkl_id, catalog),
-    ).fetchone()
-    title = cur[0] if cur else None
-    poster = cur[1] if cur else None
-    fanart = cur[2] if cur else None
-    overview = cur[3] if cur else None
-    release_date = cur[4] if cur else None
-    runtime = cur[5] if cur else None
-    status = cur[6] if cur else None
-    country = cur[7] if cur else None
-    trailer = cur[8] if cur else None
-    genres_json = cur[9] if cur else None
-    ids_json = cur[10] if cur else None
-    ratings_json = cur[11] if cur else None
-
-    title = _coalesce_str(title, item.get("title"))
-    poster = _coalesce_str(poster, item.get("poster"))
-    fanart = _coalesce_str(fanart, item.get("backdrop"))
-    overview = _coalesce_str(overview, item.get("description"))
-    release_date = _coalesce_str(release_date, _release_date_fallback(item))
-    runtime = _coalesce_str(runtime, _format_runtime_minutes(item.get("runtime")))
-    status = _coalesce_str(status, item.get("status"))
-    country = _coalesce_str(country, item.get("country"))
-    trailer = _coalesce_str(trailer, item.get("trailer"))
-    ratings_json = merge_ratings_json(ratings_json, mdblist_ratings) if mdblist_ratings else ratings_json
-    genres_json = merge_genres_json(genres_json, genres)
-    ids_json = merge_ids_json(ids_json, mdblist_ids)
     extras_json = build_extras_json(item)
     mdblist_score = item.get("score")
     if mdblist_score is None:
         mdblist_score = item.get("score_average")
 
+    ratings_json = None
+    if mdblist_ratings:
+        cur = conn.execute(
+            "SELECT ratings_json FROM simkl_rows WHERE simkl_id = ? AND catalog = ?",
+            (simkl_id, catalog),
+        ).fetchone()
+        ratings_json = merge_ratings_json(cur[0] if cur else None, mdblist_ratings)
+
     conn.execute(
         """
         UPDATE simkl_rows SET
-          title = ?, poster = ?, fanart = ?, overview = ?, release_date = ?,
-          runtime = ?, status = ?, country = ?, trailer = ?,
-          genres_json = ?, ids_json = ?, ratings_json = ?,
-          mdblist_score = ?, streams_json = ?, watch_providers_json = ?, extras_json = ?
+          ratings_json = COALESCE(?, ratings_json),
+          mdblist_score = COALESCE(?, mdblist_score),
+          streams_json = COALESCE(?, streams_json),
+          watch_providers_json = COALESCE(?, watch_providers_json),
+          extras_json = COALESCE(?, extras_json)
         WHERE simkl_id = ? AND catalog = ?
         """,
         (
-            title,
-            poster,
-            fanart,
-            overview,
-            release_date,
-            runtime,
-            status,
-            country,
-            trailer,
-            genres_json,
-            ids_json,
             ratings_json,
             mdblist_score,
             json.dumps(streams, ensure_ascii=False) if streams is not None else None,

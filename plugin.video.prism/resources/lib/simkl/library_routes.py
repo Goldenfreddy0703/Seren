@@ -79,10 +79,8 @@ def _run_library_route(route: str, catalog: str) -> None:
         return
 
     if catalog == "movie":
-        if route == "recently_watched":
+        if route in ("recently_watched", "watched_movies"):
             lm.render_recently_watched_movies()
-        elif route == "watched_movies":
-            lm.render_watched_movies()
         return
 
     if route == "next_up":

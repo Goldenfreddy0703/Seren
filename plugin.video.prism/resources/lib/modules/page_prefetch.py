@@ -11,13 +11,127 @@ from resources.lib.modules.globals import g
 
 _DONE_KEY = "page_prefetch.done_keys"
 _IN_FLIGHT_KEY = "page_prefetch.in_flight"
+_MENU_ACTIVE_KEY = "browse.menu_active"
 _MAX_DONE_KEYS = 256
 _prefetch_events: dict[str, threading.Event] = {}
 _prefetch_events_lock = threading.Lock()
 
 
 def prefetch_next_page_enabled() -> bool:
-    return True
+    """Follow general menu caching — prefetch is only useful when cacheToDisc is on."""
+    from resources.lib.modules.globals import g
+
+    return g.kodi_menu_caching_enabled()
+
+
+def set_foreground_menu_active(active: bool) -> None:
+    """Mark a user-facing directory build so background work yields."""
+    g.set_runtime_setting(_MENU_ACTIVE_KEY, bool(active))
+
+
+def _menu_active() -> bool:
+    return g.get_bool_runtime_setting(_MENU_ACTIVE_KEY)
+
+
+def _schedule_background_prefetch(page_params: dict[str, Any]) -> None:
+    """Wait for the foreground menu to close, then RunPlugin prefetch in a fresh process."""
+    key = _prefetch_key(page_params)
+
+    def _launch() -> None:
+        try:
+            for _ in range(48):
+                if not _menu_active():
+                    break
+                time.sleep(0.25)
+            if _menu_active():
+                g.log(
+                    f"page_prefetch deferred action={page_params.get('action')} page={page_params.get('page')}",
+                    "debug",
+                )
+                return
+            if key in _done_keys() or key in _in_flight_keys():
+                return
+            import xbmc
+
+            launch = dict(page_params)
+            launch["prefetch_action"] = launch["action"]
+            launch["action"] = "pagePrefetch"
+            launch["prefetch_key"] = key
+            url = g.create_url(g.BASE_URL, launch)
+            xbmc.executebuiltin(f'RunPlugin("{url}")')
+        except Exception:
+            g.log_stacktrace()
+
+    threading.Thread(target=_launch, daemon=True, name="prism-prefetch-launch").start()
+
+
+def run_page_prefetch_invoke(page_params: dict[str, Any] | None) -> None:
+    """Router entry for background pagePrefetch action (-1 handle)."""
+    if not isinstance(page_params, dict):
+        return
+    action = page_params.get("prefetch_action") or page_params.get("action")
+    if not action:
+        return
+    work_params = {
+        key: value
+        for key, value in page_params.items()
+        if key not in ("prefetch_action", "prefetch_key")
+    }
+    work_params["action"] = action
+    key = str(page_params.get("prefetch_key") or _prefetch_key(work_params))
+    if key in _done_keys():
+        return
+    if _menu_active():
+        g.log(
+            f"page_prefetch skipped action={action} page={work_params.get('page')} menu_active=1",
+            "debug",
+        )
+        return
+    if key in _in_flight_keys():
+        return
+    _set_in_flight(key, True)
+    try:
+        stamped = run_page_prefetch(work_params)
+        if not stamped:
+            warm_kodi_menu_page(work_params)
+        _mark_done(key)
+    except Exception:
+        g.log_stacktrace()
+    finally:
+        _set_in_flight(key, False)
+        _signal_prefetch_done(key)
+
+
+def warm_kodi_menu_page(page_params: dict[str, Any]) -> None:
+    """
+    POV-style: silently build the next page via RunPlugin so Kodi cacheToDisc
+    serves it instantly when the user clicks Next Page (no loading bar).
+    """
+    if not isinstance(page_params, dict) or not page_params.get("action"):
+        return
+    if not g.kodi_menu_caching_enabled():
+        return
+
+    for _ in range(40):
+        if not foreground_browse_busy():
+            break
+        time.sleep(0.25)
+    if foreground_browse_busy():
+        g.log(
+            f"menu_warmup deferred action={page_params.get('action')} page={page_params.get('page')}",
+            "debug",
+        )
+        return
+    import xbmc
+
+    warm_params = dict(page_params)
+    warm_params["menu_warmup"] = "1"
+    url = g.create_url(g.BASE_URL, warm_params)
+    g.log(
+        f"menu_warmup action={page_params.get('action')} page={page_params.get('page')}",
+        "debug",
+    )
+    xbmc.executebuiltin(f'RunPlugin("{url}")')
 
 
 def _prefetch_key(page_params: dict[str, Any]) -> str:
@@ -156,18 +270,90 @@ def _signal_prefetch_done(key: str) -> None:
                 _prefetch_events.pop(stale_key, None)
 
 
-def _prefetch_discover(page_params: dict[str, Any]) -> None:
-    from resources.lib.discover.renderer import DiscoverRenderer
+def _prefetch_paint_catalog_page(
+    catalog: str,
+    page_refs: list[dict],
+    *,
+    payload_rows: list[dict] | None = None,
+    paint_profile: str = "browse",
+) -> bool:
+    """Blocking list paint into display_meta for prefetch (cast + art on blocking scope)."""
+    if not page_refs:
+        return False
+    from resources.lib.meta.menu_paint_profile import page_paint_flags_for_profile
+    from resources.lib.meta.paint_stamp import page_refs_display_stamped
+    from resources.lib.meta.paint_cache import page_cache_catalog
 
+    cache_catalog = page_cache_catalog(catalog, page_refs)
+    if page_refs_display_stamped(page_refs):
+        return True
+    from resources.lib.database.session import get_sync_database
+    from resources.lib.discover.catalog_store import sync_items_for_refs
+    from resources.lib.meta.list_paint import sync_items_for_mixed_refs
+    from resources.lib.meta.paint_cache import (
+        get_session_page_paint,
+        page_paint_cache_key,
+        paint_catalog_page_rows,
+    )
+
+    paint_flags = page_paint_flags_for_profile(paint_profile)
+    hide_unaired = paint_flags["hide_unaired"]
+    hide_watched = paint_flags["hide_watched"]
+    prefer_rich = paint_flags["prefer_rich_payload"]
+    cache_key = page_paint_cache_key(
+        cache_catalog,
+        page_refs,
+        hide_unaired=hide_unaired,
+        hide_watched=hide_watched,
+        paint_profile=paint_profile,
+        prefer_rich_payload=prefer_rich,
+    )
+    if get_session_page_paint(cache_key) is not None:
+        return page_refs_display_stamped(page_refs)
+
+    if payload_rows:
+        page_sync = list(payload_rows)
+    elif cache_catalog == "mixed":
+        page_sync = sync_items_for_mixed_refs(page_refs)
+    else:
+        page_sync = sync_items_for_refs(catalog, page_refs)
+    if not page_sync:
+        return False
+
+    if paint_profile in ("library", "search"):
+        from resources.lib.simkl.enrich import enrich_page_for_paint
+
+        page_sync = enrich_page_for_paint(
+            catalog,
+            page_sync,
+            force_detail=(paint_profile == "search"),
+        )
+
+    paint_catalog_page_rows(
+        page_refs,
+        page_sync,
+        hide_unaired=hide_unaired,
+        hide_watched=hide_watched,
+        prefer_rich_payload=prefer_rich,
+        paint_profile=paint_profile,
+        page_cache={"catalog": cache_catalog},
+    )
+    db = get_sync_database()
+    for refs, _media_type in db.consume_list_enrichment_batches():
+        schedule_refs_enrichment(refs, catalog, reason="prefetch_paint")
+    return page_refs_display_stamped(page_refs)
+
+
+def _prefetch_discover(page_params: dict[str, Any]) -> bool:
     catalog = page_params.get("catalog")
     list_id = page_params.get("list_id")
     page = int(page_params.get("page") or 1)
     if not catalog or not list_id:
-        return
-    DiscoverRenderer().prefetch_page(catalog, list_id, page)
+        return False
+    return _prefetch_discover_list(str(catalog), str(list_id), page)
 
 
-def _prefetch_search(page_params: dict[str, Any]) -> None:
+def _prefetch_search(page_params: dict[str, Any]) -> bool:
     from resources.lib.simkl.media_ref import persist_search_results
     from resources.lib.simkl.search import search_page
     from resources.lib.simkl.search_menus import filter_search_results, normalize_search_query
@@ -180,22 +366,89 @@ def _prefetch_search(page_params: dict[str, Any]) -> None:
     }
     mapped = search_map.get(action)
     if not mapped:
-        return
+        return False
     catalog, url, media_type = mapped
     query = normalize_search_query(page_params.get("action_args"))
     if not query:
-        return
+        return False
     page = int(page_params.get("page") or 1)
     page_limit = g.get_int_setting("item.limit", 25)
     items = search_page(url, media_type, page, page_limit, query)
     filtered = filter_search_results(items)
     if not filtered:
-        return
+        return False
     refs = persist_search_results(catalog, filtered, enrich=False)
-    enrich_refs_blocking(refs, catalog, reason="prefetch_search")
+    from resources.lib.discover.catalog_store import sync_items_for_refs
+    from resources.lib.meta.menu_paint_profile import MenuPaintProfile
+    from resources.lib.simkl.enrich import enrich_page_for_paint
+
+    page_sync = sync_items_for_refs(catalog, refs)
+    if page_sync:
+        enrich_page_for_paint(catalog, page_sync, force_detail=True)
+    return _prefetch_paint_catalog_page(
+        catalog,
+        refs,
+        payload_rows=page_sync,
+        paint_profile=MenuPaintProfile.SEARCH.value,
+    )
 
 
-def _prefetch_genre_slug(page_params: dict[str, Any]) -> None:
+_MEDIA_TYPE_CATALOG = {
+    "movies": "movie",
+    "shows": "tv",
+    "anime": "anime",
+}
+
+_BROWSE_ACTION_ENDPOINTS: dict[str, tuple[str, str]] = {
+    "moviesUpdated": ("movie", "updated"),
+    "moviesRecommended": ("movie", "anticipated"),
+    "moviePopularRecent": ("movie", "popular"),
+    "movieTrendingRecent": ("movie", "trending"),
+    "showsUpdated": ("tv", "updated"),
+    "showsNew": ("tv", "new"),
+    "showsRecommended": ("tv", "anticipated"),
+    "showsPopularRecent": ("tv", "popular"),
+    "showsTrendingRecent": ("tv", "trending"),
+    "animePopularRecent": ("anime", "popular_recent"),
+    "animeTrendingRecent": ("anime", "trending_recent"),
+}
+
+
+def _prefetch_discover_list(catalog: str, list_id: str, page: int) -> bool:
+    from resources.lib.discover.renderer import DiscoverRenderer
+
+    return DiscoverRenderer().prefetch_page(catalog, list_id, page)
+
+
+def _prefetch_browse_endpoint(page_params: dict[str, Any]) -> bool:
+    mapped = _BROWSE_ACTION_ENDPOINTS.get(str(page_params.get("action") or ""))
+    if not mapped:
+        return False
+    catalog, endpoint = mapped
+    from resources.lib.simkl.browse import DISCOVER_ENDPOINTS
+
+    list_id = DISCOVER_ENDPOINTS.get(catalog, {}).get(endpoint)
+    if not list_id:
+        return False
+    page = int(page_params.get("page") or 1)
+    return _prefetch_discover_list(catalog, list_id, page)
+
+
+def _prefetch_generic_endpoint(page_params: dict[str, Any]) -> bool:
+    endpoint = page_params.get("endpoint")
+    catalog = _MEDIA_TYPE_CATALOG.get(str(page_params.get("mediatype") or ""))
+    if not catalog or not endpoint:
+        return False
+    from resources.lib.simkl.browse import DISCOVER_ENDPOINTS
+
+    list_id = DISCOVER_ENDPOINTS.get(catalog, {}).get(str(endpoint))
+    if not list_id:
+        return False
+    page = int(page_params.get("page") or 1)
+    return _prefetch_discover_list(catalog, list_id, page)
+
+
+def _prefetch_genre_slug(page_params: dict[str, Any]) -> bool:
     from urllib import parse
 
     from resources.lib.simkl import browse
@@ -209,19 +462,22 @@ def _prefetch_genre_slug(page_params: dict[str, Any]) -> None:
     }
     catalog = catalog_map.get(action)
     if not catalog:
-        return
+        return False
     slug = parse.unquote(str(page_params.get("action_args") or "")).strip().lower()
     if not slug:
-        return
+        return False
     page = int(page_params.get("page") or 1)
     page_limit = g.get_int_setting("item.limit", 25)
     result = browse.discover_by_genre_slug(catalog, slug, page, page_limit)
     if not result.items:
-        return
-    persist_genre_page(catalog, result.items, blocking_enrich=True, enrich_reason="prefetch_genre")
+        return False
+    refs = persist_genre_page(catalog, result.items, blocking_enrich=False, enrich_reason="prefetch_genre")
+    if not refs:
+        return False
+    return _prefetch_paint_catalog_page(catalog, refs)
 
 
-def _prefetch_multi_genre(page_params: dict[str, Any]) -> None:
+def _prefetch_multi_genre(page_params: dict[str, Any]) -> bool:
     from resources.lib.simkl import browse
     from resources.lib.simkl.genre_menus import (
         _parse_tenrai_multi_genre_action_args,
@@ -236,7 +492,7 @@ def _prefetch_multi_genre(page_params: dict[str, Any]) -> None:
     if action == "animeGenresMultiGet":
         genre_ids, tenrai_page, tenrai_offset = _parse_tenrai_multi_genre_action_args(action_args)
         if not genre_ids:
-            return
+            return False
         result = browse.discover_by_tenrai_genres(
             genre_ids,
             page_limit,
@@ -247,7 +503,7 @@ def _prefetch_multi_genre(page_params: dict[str, Any]) -> None:
     elif action in ("movieGenresMultiGet", "showGenresMultiGet"):
         genre_ids, tmdb_page, tmdb_offset = _parse_tmdb_multi_genre_action_args(action_args)
         if not genre_ids:
-            return
+            return False
         catalog = "movie" if action == "movieGenresMultiGet" else "tv"
         result = browse.discover_by_tmdb_genres(
             catalog,
@@ -257,11 +513,14 @@ def _prefetch_multi_genre(page_params: dict[str, Any]) -> None:
             tmdb_offset=tmdb_offset,
         )
     else:
-        return
+        return False
 
     if not result.items:
-        return
-    persist_genre_page(catalog, result.items, blocking_enrich=True, enrich_reason="prefetch_genre")
+        return False
+    refs = persist_genre_page(catalog, result.items, blocking_enrich=False, enrich_reason="prefetch_genre")
+    if not refs:
+        return False
+    return _prefetch_paint_catalog_page(catalog, refs)
 
 
 def _library_catalog_status(page_params: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -279,6 +538,25 @@ def _library_catalog_status(page_params: dict[str, Any]) -> tuple[str | None, st
     else:
         catalog = "tv"
     return catalog, str(status or "plantowatch")
+
+
+def _schedule_prefetch_simkl_ids(
+    simkl_ids: list[int],
+    media_type: str,
+    *,
+    catalog: str | None,
+    reason: str,
+) -> None:
+    if not simkl_ids:
+        return
+    refs = [{"simkl_id": int(simkl_id), "needs_update": True} for simkl_id in simkl_ids]
+    schedule_refs_enrichment(refs, catalog or "movie", reason=reason, blocking=False)
+
+
+def _schedule_prefetch_refs(refs: list[dict], *, default_catalog: str, reason: str) -> None:
+    if not refs:
+        return
+    schedule_refs_enrichment(refs, default_catalog, reason=reason, blocking=False)
 
 
 def _blocking_enrich_simkl_ids(
@@ -320,24 +598,31 @@ def _blocking_enrich_refs(refs: list[dict], *, default_catalog: str, reason: str
         _blocking_enrich_simkl_ids(show_ids, "tvshow", catalog=default_catalog, reason=reason)
 
 
-def _prefetch_library(page_params: dict[str, Any]) -> None:
+def _prefetch_library(page_params: dict[str, Any]) -> bool:
     catalog, status = _library_catalog_status(page_params)
     if not catalog or not status:
-        return
+        return False
     from resources.lib.simkl.library_cache import load_library_list_refs
     from resources.lib.simkl.menu_helpers import paginate_refs_for_page
 
     refs = load_library_list_refs(catalog, status)
     if not refs:
-        return
+        return False
     page = int(page_params.get("page") or 1)
     page_refs = paginate_refs_for_page(refs, page)
     if not page_refs:
-        return
-    _blocking_enrich_refs(page_refs, default_catalog=catalog, reason="prefetch_library")
+        return False
+    from resources.lib.meta.menu_paint_profile import MenuPaintProfile
+
+    return _prefetch_paint_catalog_page(
+        catalog,
+        page_refs,
+        paint_profile=MenuPaintProfile.LIBRARY.value,
+    )
 
 
-def _prefetch_actor(page_params: dict[str, Any]) -> None:
+def _prefetch_actor(page_params: dict[str, Any]) -> bool:
+    from resources.lib.meta.paint_cache import page_cache_catalog
     from resources.lib.simkl.enrich import enrich_sync_items
     from resources.lib.simkl.media_ref import enrich_and_persist
     from resources.lib.simkl.person_ref import fetch_filmography_page, normalize_person_ref
@@ -345,24 +630,38 @@ def _prefetch_actor(page_params: dict[str, Any]) -> None:
     args = normalize_person_ref(page_params.get("action_args"))
     person_id = args.get("person_id")
     if person_id is None:
-        return
+        return False
     catalog_hint = args.get("catalog") or "movie"
     page = int(page_params.get("page") or 1)
     page_limit = g.get_int_setting("item.limit", 25)
     items = fetch_filmography_page(int(person_id), page, page_limit)
     if not items:
-        return
+        return False
     items = enrich_sync_items(items, fast=True)
-    refs = enrich_and_persist(
-        catalog_hint,
-        items,
-        force_simkl_meta=True,
-        enrich=False,
+    refs: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_catalog = item.get("catalog") or catalog_hint
+        refs.extend(
+            enrich_and_persist(
+                item_catalog,
+                [item],
+                force_simkl_meta=True,
+                enrich=False,
+            )
+        )
+    if not refs:
+        return False
+    cache_catalog = page_cache_catalog(catalog_hint, refs, mixed_list=True)
+    return _prefetch_paint_catalog_page(
+        cache_catalog,
+        refs,
+        payload_rows=items,
     )
-    _blocking_enrich_refs(refs, default_catalog=catalog_hint, reason="prefetch_actor")
 
 
-def _prefetch_year(page_params: dict[str, Any]) -> None:
+def _prefetch_year(page_params: dict[str, Any]) -> bool:
     from resources.lib.simkl import browse
     from resources.lib.simkl.media_ref import enrich_and_persist
 
@@ -371,25 +670,41 @@ def _prefetch_year(page_params: dict[str, Any]) -> None:
     try:
         year = int(page_params.get("action_args") or 0)
     except (TypeError, ValueError):
-        return
+        return False
     if year <= 0:
-        return
+        return False
     page = int(page_params.get("page") or 1)
     page_limit = g.get_int_setting("item.limit", 25)
     items = browse.discover_by_year(catalog, year, page, page_limit)
     if not items:
-        return
+        return False
     refs = enrich_and_persist(catalog, items, enrich=False)
-    _blocking_enrich_refs(refs, default_catalog=catalog, reason="prefetch_year")
+    if not refs:
+        return False
+    return _prefetch_paint_catalog_page(catalog, refs)
 
 
 def _prefetch_db_movie_page(page_params: dict[str, Any], *, method: str, reason: str) -> None:
     page = int(page_params.get("page") or 1)
     from resources.lib.database.session import get_sync_database
+    from resources.lib.discover.catalog_store import sync_items_for_refs
+    from resources.lib.simkl.enrich import enrich_page_for_paint
 
-    rows = getattr(get_sync_database(), method)(page) or []
+    db = get_sync_database()
+    rows = getattr(db, method)(page) or []
+    for row in rows:
+        if isinstance(row, dict):
+            row.setdefault("catalog", "movie")
     simkl_ids = sorted({int(row["simkl_id"]) for row in rows if row.get("simkl_id") is not None})
-    _blocking_enrich_simkl_ids(simkl_ids, "movie", catalog="movie", reason=reason)
+    if not simkl_ids:
+        return
+    from resources.lib.meta.list_paint import prepare_catalog_refs
+
+    refs = prepare_catalog_refs("movie", rows)
+    page_sync = sync_items_for_refs("movie", refs)
+    if page_sync:
+        enrich_page_for_paint("movie", page_sync)
+    _schedule_prefetch_simkl_ids(simkl_ids, "movie", catalog="movie", reason=reason)
 
 
 def _prefetch_db_show_page(
@@ -407,9 +722,9 @@ def _prefetch_db_show_page(
     if method == "get_recently_watched_shows":
         rows = db.get_recently_watched_shows(page, catalog=catalog) or []
     else:
-        rows = getattr(db, method)(page) or []
+        rows = getattr(db, method)(page, catalog=catalog) or []
     simkl_ids = sorted({int(row["simkl_id"]) for row in rows if row.get("simkl_id") is not None})
-    _blocking_enrich_simkl_ids(simkl_ids, "tvshow", catalog=catalog, reason=reason)
+    _schedule_prefetch_simkl_ids(simkl_ids, "tvshow", catalog=catalog, reason=reason)
 
 
 def _prefetch_continue_watching(page_params: dict[str, Any]) -> None:
@@ -419,28 +734,96 @@ def _prefetch_continue_watching(page_params: dict[str, Any]) -> None:
     prefetch_continue_watching(catalog, page_params)
 
 
+def _prefetch_episode_library_page(page_params: dict[str, Any], *, loader) -> None:
+    """Warm session paint cache for library episode menus (Next Up, Watched Episodes)."""
+    catalog = page_params.get("catalog") or "tv"
+    from resources.lib.database.session import get_sync_database
+    from resources.lib.meta.list_paint import (
+        attach_preloaded_episode_paint,
+        upsert_episode_parent_shows,
+    )
+    from resources.lib.meta.menu_paint_profile import MenuPaintProfile, profile_list_kwargs
+    from resources.lib.modules.list_builder import ListBuilder
+    from resources.lib.simkl.menu_helpers import list_filter_kwargs
+
+    episode_rows = loader(catalog, page_params) or []
+    if not episode_rows:
+        return
+    upsert_episode_parent_shows(episode_rows, catalog)
+    list_kwargs = profile_list_kwargs(MenuPaintProfile.LIBRARY_EPISODES, catalog_hint=catalog)
+    list_kwargs.update(list_filter_kwargs())
+    builder = ListBuilder()
+    filter_params = builder._apply_list_filters(dict(list_kwargs))
+    attach_preloaded_episode_paint(
+        catalog,
+        episode_rows,
+        list_kwargs,
+        get_sync_database(),
+        filter_params=filter_params,
+    )
+
+
+def _prefetch_next_up(page_params: dict[str, Any]) -> None:
+    from resources.lib.database.session import get_sync_database
+    from resources.lib.modules.globals import g
+
+    def _load(cat: str, _params: dict[str, Any]) -> list[dict]:
+        episodes = get_sync_database().get_nextup_episodes(
+            g.get_int_setting("nextup.sort") == 1,
+            catalog=cat,
+        )
+        if g.get_bool_setting("limit.nextup"):
+            episodes = episodes[: g.get_int_setting("item.limit")]
+        return episodes
+
+    _prefetch_episode_library_page(page_params, loader=_load)
+
+
 def _prefetch_watched_episodes(page_params: dict[str, Any]) -> None:
+    from resources.lib.database.session import get_sync_database
+    from resources.lib.simkl.menu_helpers import paginate_simkl_lists
+
+    def _load(cat: str, params: dict[str, Any]) -> list[dict]:
+        page = int(params.get("page") or 1)
+        return get_sync_database().get_watched_episodes(page, catalog=cat) or []
+
+    if paginate_simkl_lists():
+        _prefetch_episode_library_page(page_params, loader=_load)
+        return
+    _prefetch_episode_library_page({**page_params, "page": 1}, loader=_load)
+
+
+def _prefetch_recently_watched_shows(page_params: dict[str, Any]) -> None:
     catalog = page_params.get("catalog") or "tv"
     page = int(page_params.get("page") or 1)
     from resources.lib.database.session import get_sync_database
-    from resources.lib.simkl.ids import show_id_from_item
+    from resources.lib.meta.list_paint import prepare_catalog_refs
+    from resources.lib.meta.menu_paint_profile import MenuPaintProfile
+    from resources.lib.simkl.menu_helpers import paginate_refs_for_page
 
-    items = get_sync_database().get_watched_episodes(page, catalog=catalog) or []
-    show_ids = sorted({int(show_id_from_item(item)) for item in items if show_id_from_item(item) is not None})
-    _blocking_enrich_simkl_ids(show_ids, "tvshow", catalog=catalog, reason="prefetch_watched")
+    rows = get_sync_database().get_recently_watched_shows(page, catalog=catalog) or []
+    refs = prepare_catalog_refs(catalog, rows)
+    page_refs = paginate_refs_for_page(refs, page) if refs else []
+    if not page_refs:
+        return
+    _prefetch_paint_catalog_page(
+        catalog,
+        page_refs,
+        paint_profile=MenuPaintProfile.LIBRARY.value,
+    )
 
 
 def _library_prefetch_handler(route: str, catalog: str):
     if route == "on_deck":
         return lambda p, cat=catalog: _prefetch_continue_watching({**p, "catalog": cat})
+    if route == "next_up":
+        return lambda p, cat=catalog: _prefetch_next_up({**p, "catalog": cat})
     if route in ("watched_movies", "recently_watched") and catalog == "movie":
         return lambda p: _prefetch_db_movie_page(p, method="get_watched_movies", reason="prefetch_watched")
     if route == "watched_episodes":
         return lambda p, cat=catalog: _prefetch_watched_episodes({**p, "catalog": cat})
     if route == "recently_watched":
-        return lambda p, cat=catalog: _prefetch_db_show_page(
-            p, method="get_recently_watched_shows", reason="prefetch_watched", catalog=cat
-        )
+        return lambda p, cat=catalog: _prefetch_recently_watched_shows({**p, "catalog": cat})
     return None
 
 
@@ -463,8 +846,20 @@ def _build_library_prefetch_handlers() -> dict[str, Callable[[dict[str, Any]], N
     return handlers
 
 
-_PREFETCH_HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {
+_PREFETCH_HANDLERS: dict[str, Callable[[dict[str, Any]], bool]] = {
     "simklDiscoverList": _prefetch_discover,
+    "genericEndpoint": _prefetch_generic_endpoint,
+    "moviesUpdated": _prefetch_browse_endpoint,
+    "moviesRecommended": _prefetch_browse_endpoint,
+    "moviePopularRecent": _prefetch_browse_endpoint,
+    "movieTrendingRecent": _prefetch_browse_endpoint,
+    "showsUpdated": _prefetch_browse_endpoint,
+    "showsNew": _prefetch_browse_endpoint,
+    "showsRecommended": _prefetch_browse_endpoint,
+    "showsPopularRecent": _prefetch_browse_endpoint,
+    "showsTrendingRecent": _prefetch_browse_endpoint,
+    "animePopularRecent": _prefetch_browse_endpoint,
+    "animeTrendingRecent": _prefetch_browse_endpoint,
     "moviesSearchResults": _prefetch_search,
     "showsSearchResults": _prefetch_search,
     "animeSearchResults": _prefetch_search,
@@ -478,11 +873,6 @@ _PREFETCH_HANDLERS: dict[str, Callable[[dict[str, Any]], None]] = {
     "actorCredits": _prefetch_actor,
     "movieYearsMovies": _prefetch_year,
     "showYears": _prefetch_year,
-    "moviesMyCollection": lambda p: _prefetch_db_movie_page(p, method="get_collected_movies", reason="prefetch_collection"),
-    "showsMyCollection": lambda p: _prefetch_db_show_page(p, method="get_collected_shows", reason="prefetch_collection"),
-    "showsMyProgress": lambda p: _prefetch_db_show_page(
-        p, method="get_unfinished_collected_shows", reason="prefetch_collection"
-    ),
     **_build_library_prefetch_handlers(),
 }
 
@@ -493,7 +883,9 @@ def prefetch_threads_active() -> bool:
 
 
 def foreground_browse_busy() -> bool:
-    """True while prefetch, meta-enrich, or playback pipeline is active."""
+    """True while prefetch, meta-enrich, playback, or a foreground menu is active."""
+    if _menu_active():
+        return True
     if prefetch_threads_active():
         return True
     if g.get_bool_runtime_setting("meta_enrich.in_flight"):
@@ -510,25 +902,29 @@ def foreground_browse_busy() -> bool:
     return False
 
 
-def run_page_prefetch(page_params: dict[str, Any]) -> None:
+def run_page_prefetch(page_params: dict[str, Any]) -> bool:
+    """Run background page paint prefetch. Returns True when the page is stamp-ready."""
     if not prefetch_next_page_enabled() or not isinstance(page_params, dict):
-        return
+        return False
     g.ensure_addon()
     action = page_params.get("action")
     if not action:
-        return
+        return False
     handler = _PREFETCH_HANDLERS.get(str(action))
     if handler is None:
-        return
+        return False
     start = time.time()
+    stamped = False
     try:
-        handler(page_params)
+        result = handler(page_params)
+        stamped = bool(result)
         g.log(
-            f"page_prefetch_ms={(time.time() - start) * 1000:.0f} action={action} page={page_params.get('page')}",
+            f"page_prefetch_ms={(time.time() - start) * 1000:.0f} action={action} page={page_params.get('page')} stamped={int(stamped)}",
             "debug",
         )
     except Exception:
         g.log_stacktrace()
+    return stamped
 
 
 class PagePrefetch:
@@ -538,21 +934,4 @@ class PagePrefetch:
             return
         if not page_params.get("action"):
             return
-        key = _prefetch_key(page_params)
-        if key in _done_keys() or key in _in_flight_keys():
-            return
-
-        def _run() -> None:
-            event = _prefetch_event(key)
-            event.clear()
-            _set_in_flight(key, True)
-            try:
-                run_page_prefetch(page_params)
-                _mark_done(key)
-            except Exception:
-                g.log_stacktrace()
-            finally:
-                _set_in_flight(key, False)
-                _signal_prefetch_done(key)
-
-        threading.Thread(target=_run, daemon=True, name=f"prism-prefetch-{key[:8]}").start()
+        _schedule_background_prefetch(page_params)

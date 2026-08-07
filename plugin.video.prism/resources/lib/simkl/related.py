@@ -29,9 +29,9 @@ def _infer_show_detail_catalog(action_args: dict[str, Any], show_id: int) -> str
     if "anime" in path or "myanime" in path:
         return "anime"
 
-    from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+    from resources.lib.database.session import get_sync_database
 
-    if SimklSyncDatabase().show_catalog(show_id) == "anime":
+    if get_sync_database().show_catalog(show_id) == "anime":
         return "anime"
     return "tv"
 

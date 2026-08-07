@@ -107,11 +107,6 @@ def dispatch(params):
 
         actorMenus.ActorMenus().open_actor_credit(action_args)
 
-    elif action == "moviesMyCollection":
-        from resources.lib.gui import movieMenus
-
-        movieMenus.Menus().my_movie_collection()
-
     elif action == "moviesRelated":
         from resources.lib.simkl.related import render_recommendations
 
@@ -328,16 +323,6 @@ def dispatch(params):
         from resources.lib.gui.animeMenus import Menus
 
         Menus.discover_anime()
-
-    elif action == "showsMyCollection":
-        from resources.lib.gui import tvshowMenus
-
-        tvshowMenus.Menus().my_shows_collection()
-
-    elif action == "showsMyProgress":
-        from resources.lib.gui import tvshowMenus
-
-        tvshowMenus.Menus().my_show_progress()
 
     elif action == "showsMyRecentEpisodes":
         from resources.lib.gui import tvshowMenus
@@ -637,10 +622,10 @@ def dispatch(params):
         movieMenus.Menus().movie_years_results(action_args)
 
     elif action == "syncSimklActivities":
-        from resources.lib.database.simkl_sync import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
         force = str(params.get("force", "")).lower() in ("1", "true", "yes")
-        SimklSyncDatabase().sync_activities(silent=not force, force=force)
+        get_sync_database().sync_activities(silent=not force, force=force)
 
     elif action == "simklSyncTools":
         from resources.lib.gui import homeMenu
@@ -648,9 +633,9 @@ def dispatch(params):
         homeMenu.Menus().simkl_sync_tools()
 
     elif action == "flushSimklActivities":
-        from resources.lib.database.simkl_sync import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        SimklSyncDatabase().flush_activities()
+        get_sync_database().flush_activities()
 
     elif action == "myFiles":
         from resources.lib.gui import myFiles
@@ -668,21 +653,21 @@ def dispatch(params):
         myFiles.Menus().my_files_play(action_args)
 
     elif action == "forceSimklSync":
-        from resources.lib.database.simkl_sync import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        simkl_db = SimklSyncDatabase()
+        simkl_db = get_sync_database()
         simkl_db.flush_activities()
-        simkl_db.sync_activities(force=True)
+        simkl_db.sync_activities(silent=False, force=True)
 
     elif action == "rebuildSimklDatabase":
-        from resources.lib.database.simkl_sync import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        SimklSyncDatabase().re_build_database()
+        get_sync_database().re_build_database()
 
     elif action == "cleanOrphanedMetadata":
-        from resources.lib.database.simkl_sync import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        SimklSyncDatabase().clean_orphaned_metadata()
+        get_sync_database().clean_orphaned_metadata()
 
     elif action == "myUpcomingEpisodes":
         from resources.lib.gui import tvshowMenus
@@ -886,9 +871,13 @@ def dispatch(params):
         run_maintenance()
 
     elif action == "prefetchCalendars":
-        from resources.lib.calendar.simkl_calendar import prefetch_all_calendars, prefetch_calendars_enabled
+        from resources.lib.calendar.simkl_calendar import (
+            prefetch_all_calendars,
+            prefetch_calendars_enabled,
+            weekly_cache_warm,
+        )
 
-        if prefetch_calendars_enabled():
+        if prefetch_calendars_enabled() and not weekly_cache_warm():
             prefetch_all_calendars()
 
     elif action == "processMetaEnrichmentQueue":
@@ -912,6 +901,21 @@ def dispatch(params):
         from resources.lib.database import torrentCache
 
         torrentCache.TorrentCache().do_cleanup()
+
+    elif action == "pagePrefetch":
+        from resources.lib.modules.page_prefetch import run_page_prefetch_invoke
+
+        run_page_prefetch_invoke(params)
+
+    elif action == "drilldownPrefetch":
+        from resources.lib.modules.drilldown_prefetch import run_drilldown_prefetch_invoke
+
+        run_drilldown_prefetch_invoke(params)
+
+    elif action == "pluginWarmup":
+        from resources.lib.modules.plugin_warmup import run_plugin_warmup
+
+        run_plugin_warmup()
 
     elif action == "chooseTimeZone":
         from resources.lib.modules.manual_timezone import choose_timezone

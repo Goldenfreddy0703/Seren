@@ -4328,6 +4328,26 @@ msgctxt "#30776"
 msgid "Search for titles by actor name"
 msgstr "Search for titles by actor name"
 
+#: /resources/lib/simkl/library_menus.py
+msgctxt "#30775"
+msgid "TV shows you have collected on Simkl"
+msgstr "TV shows you have collected on Simkl"
+
+#: /resources/lib/simkl/library_menus.py
+msgctxt "#30779"
+msgid "TV shows in your collection with unfinished episodes"
+msgstr "TV shows in your collection with unfinished episodes"
+
+#: /resources/lib/simkl/library_menus.py
+msgctxt "#30780"
+msgid "Anime you have collected on Simkl"
+msgstr "Anime you have collected on Simkl"
+
+#: /resources/lib/simkl/library_menus.py
+msgctxt "#30781"
+msgid "Anime in your collection with unfinished episodes"
+msgstr "Anime in your collection with unfinished episodes"
+
 #: /resources/lib/gui/windows/skip_segment.py
 msgctxt "#30801"
 msgid "Skip Intro"
@@ -5059,51 +5079,51 @@ msgstr "Shows Erotica in movie and TV genre menus, and Ecchi/Hentai/Erotica in t
 
 msgctxt "#30955"
 msgid "Enable TMDB metadata"
-msgstr "Enable TMDB metadata"
+msgstr "Enable TMDB cast and artwork"
 
 msgctxt "#30956"
 msgid "Enable TVDB metadata"
-msgstr "Enable TVDB metadata"
+msgstr "Enable TVDB cast and artwork"
 
 msgctxt "#30957"
-msgid "Enable Fanart.tv metadata"
-msgstr "Enable Fanart.tv metadata"
+msgid "Enable Fanart.tv artwork"
+msgstr "Enable Fanart.tv artwork"
 
 msgctxt "#30958"
 msgid "Enable MDBList metadata"
-msgstr "Enable MDBList metadata"
+msgstr "Enable MDBList discover ranking"
 
 msgctxt "#30959"
 msgid "TMDB metadata is disabled in settings"
-msgstr "TMDB metadata is disabled in settings"
+msgstr "TMDB cast and artwork is disabled in settings"
 
 msgctxt "#30960"
-msgid "Fetch cast, artwork, ratings, and browse menus from TMDB when Simkl data is incomplete."
-msgstr "Fetch cast, artwork, ratings, and browse menus from TMDB when Simkl data is incomplete."
+msgid "Fetch cast and artwork from TMDB when Simkl data is incomplete. Title, plot, and ratings always come from Simkl."
+msgstr "Fetch cast and artwork from TMDB when Simkl data is incomplete. Title, plot, and ratings always come from Simkl."
 
 msgctxt "#30961"
-msgid "Fetch artwork and metadata from TVDB when Simkl data is incomplete."
-msgstr "Fetch artwork and metadata from TVDB when Simkl data is incomplete."
+msgid "Fetch cast and artwork from TVDB when Simkl data is incomplete. Title, plot, and ratings always come from Simkl."
+msgstr "Fetch cast and artwork from TVDB when Simkl data is incomplete. Title, plot, and ratings always come from Simkl."
 
 msgctxt "#30962"
-msgid "Fetch clearlogo, clearart, discart, and other extended artwork from Fanart.tv."
-msgstr "Fetch clearlogo, clearart, discart, and other extended artwork from Fanart.tv."
+msgid "Fetch disc art, landscape, and character art from Fanart.tv. Disabling stops all Fanart.tv requests; clearlogo, clearart, and banner remain available from TMDB or TVDB."
+msgstr "Fetch disc art, landscape, and character art from Fanart.tv. Disabling stops all Fanart.tv requests; clearlogo, clearart, and banner remain available from TMDB or TVDB."
 
 msgctxt "#30963"
 msgid "Use MDBList for the airing calendar and MDBList discover lists. Offline discover database scores remain available when disabled."
-msgstr "Use MDBList for the airing calendar and MDBList discover lists. Offline discover database scores remain available when disabled."
+msgstr "Use MDBList scores for discover list ranking (Top MDBList, Hidden Gems) and calendar. Does not replace Simkl metadata."
 
 msgctxt "#30964"
 msgid "MDBList metadata is disabled in settings"
 msgstr "MDBList metadata is disabled in settings"
 
 msgctxt "#30965"
-msgid "When the chosen provider is disabled, Prism uses the next available source, then Simkl artwork."
-msgstr "When the chosen provider is disabled, Prism uses the next available source, then Simkl artwork."
+msgid "When the chosen provider is disabled, Prism uses the next available source, then Simkl artwork. Fanart.tv as a source requires Enable Fanart.tv artwork."
+msgstr "When the chosen provider is disabled, Prism uses the next available source, then Simkl artwork. Fanart.tv as a source requires Enable Fanart.tv artwork."
 
 msgctxt "#30966"
-msgid "When the chosen provider is disabled, Prism uses the next available source, then Simkl artwork."
-msgstr "When the chosen provider is disabled, Prism uses the next available source, then Simkl artwork."
+msgid "When the chosen provider is disabled, Prism uses the next available source, then Simkl artwork. Fanart.tv as a source requires Enable Fanart.tv artwork."
+msgstr "When the chosen provider is disabled, Prism uses the next available source, then Simkl artwork. Fanart.tv as a source requires Enable Fanart.tv artwork."
 
 msgctxt "#30967"
 msgid "Stagger widget loads"
@@ -5128,13 +5148,18 @@ msgstr "Anime Artwork"
 
 #: /resources/settings.xml
 msgctxt "#30972"
-msgid "When the chosen provider is disabled, Prism uses the next available source, then Simkl artwork."
-msgstr "When the chosen provider is disabled, Prism uses the next available source, then Simkl artwork."
+msgid "When the chosen provider is disabled, Prism uses the next available source, then Simkl artwork. Fanart.tv as a source requires Enable Fanart.tv artwork."
+msgstr "When the chosen provider is disabled, Prism uses the next available source, then Simkl artwork. Fanart.tv as a source requires Enable Fanart.tv artwork."
 
 #: /resources/settings.xml
 msgctxt "#30973"
 msgid "Show Advanced Anime Artwork Settings"
 msgstr "Show Advanced Anime Artwork Settings"
+
+#: /resources/settings.xml
+msgctxt "#30983"
+msgid "Prefer Anime artwork from"
+msgstr "Prefer Anime artwork from"
 
 #: /resources/settings.xml
 msgctxt "#30978"
@@ -5160,6 +5185,41 @@ msgstr "Build movie, TV, and anime weekly airing calendars in the background so 
 msgctxt "#30982"
 msgid "Hide the Next page row in skin widgets and skip prefetching page 2. Recommended for faster home screen widget loads."
 msgstr "Hide the Next page row in skin widgets and skip prefetching page 2. Recommended for faster home screen widget loads."
+
+#: /resources/settings.xml
+msgctxt "#30984"
+msgid "Enable IMDb metadata"
+msgstr "Enable IMDb cast, genre multi-select, and actor search"
+
+#: /resources/settings.xml
+msgctxt "#30985"
+msgid "Use IMDb for genre multi-select, search by actor, and cast when Simkl data is incomplete. Title, plot, and ratings always come from Simkl."
+msgstr "Use IMDb for genre multi-select, search by actor, and cast when Simkl data is incomplete. Title, plot, and ratings always come from Simkl."
+
+#: /resources/settings.xml
+msgctxt "#30986"
+msgid "IMDb cookie (at-main)"
+msgstr "IMDb cookie (at-main)"
+
+#: /resources/settings.xml
+msgctxt "#30987"
+msgid "Optional IMDb authentication cookie for GraphQL requests. Leave empty to try without signing in."
+msgstr "Optional IMDb authentication cookie for GraphQL requests. Leave empty to try without signing in."
+
+#: /resources/lib/meta/provider_settings.py
+msgctxt "#30974"
+msgid "IMDb metadata is disabled in settings"
+msgstr "IMDb metadata is disabled in settings"
+
+#: /resources/settings.xml
+msgctxt "#30988"
+msgid "Enable AniList metadata"
+msgstr "Enable AniList metadata"
+
+#: /resources/settings.xml
+msgctxt "#30989"
+msgid "Use AniList GraphQL for anime cast when IMDb has no cast. Requires MAL or AniList id on the title."
+msgstr "Use AniList GraphQL for anime cast when IMDb has no cast. Requires MAL or AniList id on the title."
 
 #: /resources/lib/simkl/all_items_sync.py
 msgctxt "#31000"
@@ -5260,3 +5320,28 @@ msgstr "Prefetch episode info during sync"
 msgctxt "#31019"
 msgid "After syncing your watchlist, download episode titles and artwork for Next Up, Continue Watching, and related menus. Disable for faster syncs; menus will load episode info on demand instead."
 msgstr "After syncing your watchlist, download episode titles and artwork for Next Up, Continue Watching, and related menus. Disable for faster syncs; menus will load episode info on demand instead."
+
+#: /resources/settings.xml
+msgctxt "#31020"
+msgid "Cache opened plugin menus in Kodi (cacheToDisc) and prefetch the next list page in the background. Reopening the same folder is much faster; disable only if a menu shows stale artwork."
+msgstr "Cache opened plugin menus in Kodi (cacheToDisc) and prefetch the next list page in the background. Reopening the same folder is much faster; disable only if a menu shows stale artwork."
+
+#: /resources/settings.xml
+msgctxt "#31021"
+msgid "Smart scroll episode lists"
+msgstr "Smart scroll episode lists"
+
+#: /resources/settings.xml
+msgctxt "#31022"
+msgid "Refresh airing episode metadata (days)"
+msgstr "Refresh airing episode metadata (days)"
+
+#: /resources/settings.xml
+msgctxt "#31023"
+msgid "For currently airing shows, re-download episode titles from Simkl when local data is older than this many days. Set to 0 to disable. Finished shows are not refreshed on drilldown."
+msgstr "For currently airing shows, re-download episode titles from Simkl when local data is older than this many days. Set to 0 to disable. Finished shows are not refreshed on drilldown."
+
+#: /resources/lib/simkl/all_items_sync.py
+msgctxt "#31024"
+msgid "Formatting episode catalogs ({0}/{1})"
+msgstr "Formatting episode catalogs ({0}/{1})"

@@ -81,7 +81,9 @@ class PrismPlayer(xbmc.Player):
 
     @cached_property
     def bookmark_sync(self):
-        return bookmark.SimklSyncDatabase()
+        from resources.lib.database.session import get_sync_database
+
+        return get_sync_database()
 
     def play_source(self, stream_link, item_information, resume_time=None):
         """Method for handling playing of sources.
@@ -536,19 +538,19 @@ class PrismPlayer(xbmc.Player):
         self.marked_watched = True
 
         if self.mediatype == "episode":
-            from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+            from resources.lib.database.session import get_sync_database
             from resources.lib.simkl.ids import show_id_from_info
 
             show_id = show_id_from_info(self.item_information["info"])
-            SimklSyncDatabase().mark_episode_watched(
+            get_sync_database().mark_episode_watched(
                 show_id,
                 self.item_information["info"]["season"],
                 self.item_information["info"]["episode"],
             )
         if self.mediatype == "movie":
-            from resources.lib.database.simkl_sync.movies import SimklSyncDatabase
+            from resources.lib.database.session import get_sync_database
 
-            SimklSyncDatabase().mark_movie_watched(self.simkl_id)
+            get_sync_database().mark_movie_watched(self.simkl_id)
         from resources.lib.simkl.library_status import apply_local_status_after_watch
 
         apply_local_status_after_watch(self.item_information)

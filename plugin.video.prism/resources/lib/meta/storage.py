@@ -79,7 +79,6 @@ _DISPLAY_INFO_KEYS = frozenset(
         "score",
         "rank",
         "mdblist_score",
-        "collected",
         "watched",
         "uniqueid",
         "dbid",
@@ -206,6 +205,9 @@ def _slim_releases(releases: Any) -> dict | None:
 def slim_info_dict(info: dict[str, Any] | None, *, simkl: bool = False) -> dict[str, Any]:
     if not isinstance(info, dict):
         return {}
+    from resources.lib.simkl.field_map import sanitize_list_info
+
+    info = sanitize_list_info(info, catalog=info.get("catalog"))
     allowed = _DISPLAY_INFO_KEYS | (_SIMKL_EXTRA_INFO_KEYS if simkl else frozenset())
     out: dict[str, Any] = {}
     for key, value in info.items():
@@ -296,22 +298,28 @@ def slim_provider_blob(
 
     info = blob.get("info") if isinstance(blob.get("info"), dict) else {}
     mediatype = info.get("mediatype") or media_type
+    limits_type = mediatype if mediatype in ("movie", "tvshow") else "tvshow"
 
-    if provider_type in ("tmdb", "tvdb", "fanart") and mediatype in ("season", "episode"):
-        from resources.lib.simkl.field_map import simkl_child_external_patch
+    if provider_type in ("tmdb", "tvdb", "fanart"):
+        if mediatype in ("season", "episode"):
+            from resources.lib.simkl.field_map import simkl_child_external_patch
 
-        return simkl_child_external_patch(blob) or None
+            return simkl_child_external_patch(blob) or None
+        result: dict[str, Any] = {"art": slim_art_dict(blob.get("art"), limits_type)}
+        if provider_type in ("tmdb", "tvdb"):
+            cast = slim_cast_list(blob.get("cast"))
+            if cast:
+                result["cast"] = cast
+        if not result.get("art") and not result.get("cast"):
+            return None
+        return result
 
     simkl = provider_type == "simkl"
     result = {
         "info": slim_info_dict(info, simkl=simkl),
-        "art": slim_art_dict(blob.get("art"), mediatype if mediatype in ("movie", "tvshow") else "tvshow"),
+        "art": slim_art_dict(blob.get("art"), limits_type),
     }
-    if provider_type in ("tmdb", "tvdb") and not simkl:
-        cast = slim_cast_list(blob.get("cast"))
-        if cast:
-            result["cast"] = cast
-    elif simkl and blob.get("cast"):
+    if simkl and blob.get("cast"):
         cast = slim_cast_list(blob.get("cast"))
         if cast:
             result["cast"] = cast

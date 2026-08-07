@@ -16,7 +16,14 @@ _AIRING_TTL = datetime.timedelta(days=4)
 _ENDED_TTL = datetime.timedelta(days=182)
 _ENRICH_MISS_TTL = datetime.timedelta(hours=48)
 _PROVIDER_MISS_TTL = datetime.timedelta(hours=48)
-_PREFETCH_LIMIT = 500
+
+def _prefetch_limit() -> int:
+    try:
+        from resources.lib.modules.cache_maintenance import SYNC_META_PREFETCH_LIMIT
+
+        return int(SYNC_META_PREFETCH_LIMIT)
+    except Exception:
+        return 250
 
 
 def meta_expiry(media_type: str, row: dict[str, Any] | None) -> datetime.timedelta:
@@ -202,18 +209,26 @@ class SyncMetaCache:
     def clear_provider_miss(self, media_type: str, simkl_id: int) -> None:
         self.clear_gap_misses(media_type, int(simkl_id))
 
-    def prefetch(self, limit: int = _PREFETCH_LIMIT) -> int:
+    def clear_session(self) -> None:
+        """Drop all session-scoped sync row caches."""
+        self._cache.clear_all()
+        self._miss_cache.clear_all()
+        self._provider_miss_cache.clear_all()
+
+    def prefetch(self, limit: int | None = None) -> int:
         """Warm recent movies/shows metadata into window properties."""
+        if limit is None:
+            limit = _prefetch_limit()
         if limit <= 0:
             return 0
         warmed = 0
         half = max(1, limit // 2)
 
         try:
-            from resources.lib.database.simkl_sync.movies import SimklSyncDatabase as MoviesDB
-            from resources.lib.database.simkl_sync.shows import SimklSyncDatabase as ShowsDB
+            from resources.lib.database.session import get_sync_database
 
-            movie_rows = MoviesDB().fetchall(
+            db = get_sync_database()
+            movie_rows = db.fetchall(
                 """
                 SELECT simkl_id, info, art, [cast], tmdb_id, tvdb_id, imdb_id, air_date
                 FROM movies
@@ -223,7 +238,7 @@ class SyncMetaCache:
                 """,
                 (half,),
             )
-            show_rows = ShowsDB().fetchall(
+            show_rows = db.fetchall(
                 """
                 SELECT simkl_id, info, art, [cast], tmdb_id, tvdb_id, imdb_id, air_date, is_airing
                 FROM shows
@@ -246,17 +261,21 @@ def row_has_display_meta(row: dict[str, Any] | None) -> bool:
     return SyncMetaCache.row_has_display_meta(row)
 
 
+def row_has_plot_meta(row: dict[str, Any] | None) -> bool:
+    """True when a paint row includes overview/plot text."""
+    if not isinstance(row, dict):
+        return False
+    info = row.get("info") if isinstance(row.get("info"), dict) else {}
+    return bool(info.get("plot") or info.get("overview"))
+
+
 def maybe_prefetch_sync_meta() -> None:
     """Prefetch once per Kodi session."""
     if g.get_bool_runtime_setting("sync_meta.prefetch.done"):
         return
-    g.set_runtime_setting("sync_meta.prefetch.done", True)
-    count = SyncMetaCache().prefetch()
     try:
-        from resources.lib.meta.display_store import get_display_meta_store
+        from resources.lib.modules.cache_maintenance import warm_menu_caches
 
-        count += get_display_meta_store().prefetch()
+        warm_menu_caches()
     except Exception:
         g.log_stacktrace()
-    if count:
-        g.log(f"Sync meta cache prefetched {count} rows", "debug")

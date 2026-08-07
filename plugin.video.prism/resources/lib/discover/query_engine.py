@@ -85,6 +85,21 @@ def _sort_key_desc(field: str):
     return key
 
 
+def query_all_rows(
+    rows: list[dict[str, Any]],
+    query_name: str,
+    *,
+    catalog: str,
+) -> list[dict[str, Any]]:
+    """Return the full filtered/sorted discover list (pool caps only, no page slice)."""
+    filtered = _filter_rows(rows, query_name, catalog=catalog)
+    sorted_rows = _sort_rows(filtered, query_name, catalog=catalog)
+    pool_limit = _pool_limit_for(query_name)
+    if pool_limit is not None:
+        sorted_rows = sorted_rows[:pool_limit]
+    return sorted_rows
+
+
 def query_rows(
     rows: list[dict[str, Any]],
     query_name: str,
@@ -93,11 +108,7 @@ def query_rows(
     limit: int,
     offset: int,
 ) -> list[dict[str, Any]]:
-    filtered = _filter_rows(rows, query_name, catalog=catalog)
-    sorted_rows = _sort_rows(filtered, query_name, catalog=catalog)
-    pool_limit = _pool_limit_for(query_name)
-    if pool_limit is not None:
-        sorted_rows = sorted_rows[:pool_limit]
+    sorted_rows = query_all_rows(rows, query_name, catalog=catalog)
     return sorted_rows[offset : offset + limit]
 
 

@@ -21,10 +21,22 @@ def simkl_refs(items: list[dict]) -> list[dict]:
     return refs
 
 
-def insert_discover_page(catalog: str, items: list[dict], *, force_simkl_meta: bool = False) -> list[dict]:
+def insert_discover_page(
+    catalog: str,
+    items: list[dict],
+    *,
+    force_simkl_meta: bool = False,
+    catalog_only: bool = False,
+) -> list[dict]:
     """Insert a browse page into simkl_sync.db and return simkl_id refs for list builders."""
     if not items:
         return []
+
+    from resources.lib.discover.catalog_store import upsert_sync_items
+
+    if catalog_only:
+        upsert_sync_items(items, catalog_hint=catalog)
+        return simkl_refs(items)
 
     movies = [i for i in items if i.get("catalog") == "movie"]
     shows = [i for i in items if i.get("catalog") in ("tv", "anime")]
@@ -37,6 +49,8 @@ def insert_discover_page(catalog: str, items: list[dict], *, force_simkl_meta: b
 
     if shows:
         db.insert_simkl_shows(shows, force_meta=force_simkl_meta)
+
+    upsert_sync_items(items, catalog_hint=catalog)
 
     if catalog == "anime" and movies:
         g.log(f"Discover anime page: {len(movies)} movie(s), {len(shows)} series", "debug")

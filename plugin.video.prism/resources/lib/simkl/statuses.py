@@ -139,9 +139,9 @@ def current_simkl_status(info: dict[str, Any]) -> str | None:
         simkl_id = info.get("simkl_id")
         if not simkl_id:
             return None
-        from resources.lib.database.simkl_sync.movies import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        row = SimklSyncDatabase().fetchone(
+        row = get_sync_database().fetchone(
             "SELECT simkl_status, info FROM movies WHERE simkl_id=?",
             (int(simkl_id),),
         )
@@ -149,9 +149,9 @@ def current_simkl_status(info: dict[str, Any]) -> str | None:
         show_id = show_id_from_info(info) if mediatype != "tvshow" else info.get("simkl_id")
         if not show_id:
             return None
-        from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        row = SimklSyncDatabase().fetchone(
+        row = get_sync_database().fetchone(
             "SELECT simkl_status, info FROM shows WHERE simkl_id=?",
             (int(show_id),),
         )

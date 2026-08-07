@@ -14,30 +14,6 @@ _worker_thread = None
 _worker_lock = threading.Lock()
 
 
-def hybrid_widget_local_meta() -> bool:
-    """Widgets: merge cached provider meta only on first paint (no blocking HTTP)."""
-    return bool(g.FROM_WIDGET)
-
-
-def hybrid_apply_list_meta(rows, media_type: str, db, *, catalog: str | None = None) -> list:
-    """Block on provider gap-fill (cast, art, etc.) before Kodi list paint."""
-    from resources.lib.meta.profiles import MetaProfile
-    from resources.lib.simkl.enrich import gapfill_anime_title_rows
-
-    rows = db.metadataHandler.gapfill_list_meta(
-        rows,
-        media_type,
-        db=db,
-        persist=True,
-        profile=MetaProfile.LIST,
-        reason="list_paint",
-    )
-    rows = gapfill_anime_title_rows(rows)
-    rows, remaining_refs = db.metadataHandler.merge_list_meta_local(rows, media_type, db=db)
-    db.set_list_enrichment_refs(remaining_refs, media_type)
-    return rows
-
-
 def _empty_pending() -> dict:
     return {
         "batches": {
@@ -156,6 +132,15 @@ class MetaEnrichmentQueue:
         if g.PLUGIN_HANDLE <= 0:
             cls._start_worker_thread()
             return
+
+        try:
+            from resources.lib.modules.page_prefetch import foreground_browse_busy
+
+            if foreground_browse_busy():
+                cls._touch_defer()
+                return
+        except Exception:
+            pass
 
         import xbmc
 
@@ -373,12 +358,40 @@ class MetaEnrichmentQueue:
         handler = db.metadataHandler
 
         if catalog and (
-            reason in ("discover", "search", "calendar", "library", "genre")
+            reason
+            in ("discover", "search", "calendar", "library", "genre", "actor", "browse")
             or str(reason).startswith("prefetch_")
         ):
-            cls._enrich_discover_simkl_detail(db, simkl_ids, catalog)
+            from resources.lib.simkl.enrich import enrich_sync_ids_persisted
+
+            enrich_sync_ids_persisted(catalog, simkl_ids, db=db)
 
         rows = cls._load_entity_rows(db, simkl_ids, media_type)
+        if catalog:
+            by_id = {
+                int(row["simkl_id"]): row
+                for row in rows
+                if isinstance(row, dict) and row.get("simkl_id") is not None
+            }
+            for paint_row in cls._load_catalog_paint_rows(catalog, simkl_ids, media_type):
+                sid = int(paint_row["simkl_id"])
+                if sid not in by_id:
+                    by_id[sid] = paint_row
+            rows = list(by_id.values())
+
+        from resources.lib.meta.paint_complete import partition_paint_rows
+
+        _complete, incomplete_rows = partition_paint_rows(rows, media_type, gap_scope="full")
+        if not incomplete_rows:
+            return len(simkl_ids)
+        incomplete_ids = {
+            int(row["simkl_id"])
+            for row in incomplete_rows
+            if isinstance(row, dict) and row.get("simkl_id") is not None
+        }
+        rows = incomplete_rows
+        simkl_ids = [sid for sid in simkl_ids if sid in incomplete_ids]
+
         _, enrichment_refs = handler.merge_list_meta_local(rows, media_type, db=db)
         if enrichment_refs:
             targets = enrichment_refs
@@ -409,6 +422,7 @@ class MetaEnrichmentQueue:
                     profile=MetaProfile.LIST,
                     persist=True,
                     reason=reason,
+                    catalog=catalog,
                 )
 
         cls._gapfill_anime_titles(db, simkl_ids, media_type)
@@ -441,34 +455,34 @@ class MetaEnrichmentQueue:
         return db.fetchall(query) or []
 
     @staticmethod
-    def _enrich_discover_simkl_detail(db, simkl_ids: list[int], catalog: str) -> None:
-        from resources.lib.meta.enrichment import enrich_simkl_sync_items
+    def _load_catalog_paint_rows(catalog: str | None, simkl_ids: list[int], media_type: str) -> list[dict]:
+        if not catalog or not simkl_ids:
+            return []
+        from resources.lib.discover.catalog_store import sync_items_for_refs
+        from resources.lib.meta.paint_cache import sync_row_to_paint_row
 
-        ids_sql = ",".join(str(int(simkl_id)) for simkl_id in simkl_ids)
-        table = "movies" if catalog == "movie" else "shows"
-        rows = db.fetchall(
-            f"""
-            SELECT simkl_id, info, art, [cast]
-            FROM {table}
-            WHERE simkl_id IN ({ids_sql})
-            """
-        )
-        if not rows:
-            return
-        sync_items = [
-            {
-                "simkl_id": row["simkl_id"],
-                "catalog": catalog,
-                "simkl_object": {
-                    "info": row.get("info") or {},
-                    "art": row.get("art") or {},
-                    "cast": row.get("cast") or [],
-                },
-            }
-            for row in rows
-            if isinstance(row, dict)
-        ]
-        enrich_simkl_sync_items(sync_items, fast=True)
+        page_refs = [{"simkl_id": int(sid), "catalog": catalog} for sid in simkl_ids]
+        items = sync_items_for_refs(catalog, page_refs)
+        rows: list[dict] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            painted = sync_row_to_paint_row(item)
+            if not painted or painted.get("simkl_id") is None:
+                continue
+            info = painted.get("info") if isinstance(painted.get("info"), dict) else {}
+            rows.append(
+                {
+                    "simkl_id": int(painted["simkl_id"]),
+                    "info": info,
+                    "art": painted.get("art") or {},
+                    "cast": painted.get("cast") or [],
+                    "tmdb_id": painted.get("tmdb_id") or info.get("tmdb_id"),
+                    "tvdb_id": painted.get("tvdb_id") or info.get("tvdb_id"),
+                    "imdb_id": painted.get("imdb_id") or info.get("imdb_id"),
+                }
+            )
+        return rows
 
     @staticmethod
     def _gapfill_anime_titles(db, simkl_ids: list[int], media_type: str) -> None:

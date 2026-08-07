@@ -68,7 +68,3 @@ def filter_pending(media_type: str, simkl_ids: list[int]) -> list[int]:
         _save_registry(registry)
         pending = [int(simkl_id) for simkl_id in simkl_ids if int(simkl_id) not in bucket]
     return sorted(set(pending))
-
-
-def is_recently_enriched(media_type: str, simkl_id: int) -> bool:
-    return simkl_id in filter_pending(media_type, [int(simkl_id)])

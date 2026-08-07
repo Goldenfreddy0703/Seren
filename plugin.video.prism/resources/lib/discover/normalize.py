@@ -229,7 +229,9 @@ def _build_info(item: dict[str, Any], catalog: str, simkl_id: int, ids: dict[str
         info["catalog"] = catalog
     finalize_playback_info(info)
     canonicalize_info_identity(info)
-    return info
+    from resources.lib.simkl.field_map import sanitize_list_info
+
+    return sanitize_list_info(info, catalog=catalog)
 
 
 def cdn_item_to_sync_dict(item: dict[str, Any], catalog: str) -> dict[str, Any] | None:

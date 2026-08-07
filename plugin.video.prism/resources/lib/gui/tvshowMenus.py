@@ -120,26 +120,6 @@ class Menus:
         browse.render_discover_endpoint("tv", "trending")
 
     @simkl_auth_guard
-    def my_shows_collection(self):
-        from resources.lib.discover.renderer import discover_list_kwargs
-
-        self.list_builder.show_list_builder(
-            self.shows_database.get_collected_shows(g.PAGE),
-            no_paging=False,
-            **discover_list_kwargs(),
-        )
-
-    @simkl_auth_guard
-    def my_show_progress(self):
-        from resources.lib.discover.renderer import discover_list_kwargs
-
-        self.list_builder.show_list_builder(
-            self.shows_database.get_unfinished_collected_shows(g.PAGE),
-            no_paging=False,
-            **discover_list_kwargs(),
-        )
-
-    @simkl_auth_guard
     def shows_recommended(self):
         browse.render_discover_endpoint("tv", "anticipated")
 
@@ -148,26 +128,41 @@ class Menus:
 
     @simkl_auth_guard
     def my_recent_episodes(self):
-        from resources.lib.discover.renderer import discover_list_kwargs
+        from resources.lib.meta.list_paint import render_catalog_episodes
+        from resources.lib.meta.menu_paint_profile import MenuPaintProfile, profile_list_kwargs
         from resources.lib.simkl.ids import show_id_from_item
 
         hidden_shows = self.hidden_database.get_hidden_items("calendar", "shows")
         episodes = [
             ep for ep in browse.airing_episodes("today") if show_id_from_item(ep) not in hidden_shows
         ]
-        self.list_builder.mixed_episode_builder(episodes, hide_unaired=False, **discover_list_kwargs())
+        render_catalog_episodes(
+            self._library_catalog(),
+            episodes,
+            self.list_builder,
+            **profile_list_kwargs(
+                MenuPaintProfile.AIRING,
+                hide_unaired=False,
+                no_paging=True,
+            ),
+        )
 
     @simkl_auth_guard
     def my_upcoming_episodes(self):
-        from resources.lib.discover.renderer import discover_list_kwargs
+        from resources.lib.meta.list_paint import render_catalog_episodes
+        from resources.lib.meta.menu_paint_profile import MenuPaintProfile, profile_list_kwargs
 
         episodes = browse.airing_episodes("tomorrow")[: self.page_limit]
-        self.list_builder.mixed_episode_builder(
+        render_catalog_episodes(
+            self._library_catalog(),
             episodes,
-            prepend_date=True,
-            no_paging=True,
-            hide_unaired=False,
-            **discover_list_kwargs(),
+            self.list_builder,
+            **profile_list_kwargs(
+                MenuPaintProfile.AIRING,
+                hide_unaired=False,
+                prepend_date=True,
+                no_paging=True,
+            ),
         )
 
     def shows_networks(self):
@@ -179,7 +174,7 @@ class Menus:
         g.cancel_directory()
 
     def shows_updated(self):
-        browse.render_discover_endpoint("tv", "new")
+        browse.render_discover_endpoint("tv", "updated")
 
     def shows_search_history(self):
         from resources.lib.simkl.search_menus import render_search_history
@@ -225,6 +220,7 @@ class Menus:
         render_search_results_list("tv", query, self.page_limit, self.list_builder)
 
     def show_seasons(self, args):
+        from resources.lib.meta.list_paint import render_catalog_seasons
         from resources.lib.simkl.ids import normalize_action_args, show_id_from_args
 
         args = normalize_action_args(args)
@@ -235,12 +231,10 @@ class Menus:
         if not show_id:
             g.cancel_directory()
             return
-        self.list_builder.season_list_builder(
-            show_id,
-            no_paging=True,
-        )
+        render_catalog_seasons(show_id, self.list_builder, no_paging=True)
 
     def flat_episode_list(self, args):
+        from resources.lib.meta.list_paint import render_catalog_drilldown_episodes
         from resources.lib.simkl.ids import normalize_action_args, show_id_from_args
 
         args = normalize_action_args(args)
@@ -249,12 +243,14 @@ class Menus:
             g.log(f"Invalid show action_args for flat episode list: {args}", "error")
             g.cancel_directory()
             return
-        self.list_builder.episode_list_builder(
+        render_catalog_drilldown_episodes(
             show_id,
-            no_paging=True,
+            self.list_builder,
+            action_args=args,
         )
 
     def season_episodes(self, args):
+        from resources.lib.meta.list_paint import render_catalog_drilldown_episodes
         from resources.lib.simkl.ids import normalize_action_args, season_num_from_args, show_id_from_args
 
         args = normalize_action_args(args)
@@ -264,8 +260,9 @@ class Menus:
             g.log(f"Invalid season action_args for episode list: {args}", "error")
             g.cancel_directory()
             return
-        self.list_builder.episode_list_builder(
+        render_catalog_drilldown_episodes(
             show_id,
+            self.list_builder,
             season=season_num,
             no_paging=True,
         )
@@ -303,12 +300,21 @@ class Menus:
             g.close_directory(g.CONTENT_MENU)
         else:
             items = browse.discover_by_year("tv", int(year), g.PAGE, self.page_limit)
+            from resources.lib.discover.renderer import discover_list_kwargs
+            from resources.lib.meta.list_paint import render_catalog_discover_refs
+            from resources.lib.simkl.media_ref import enrich_and_persist
+
             if not items:
                 g.cancel_directory()
                 return
-            from resources.lib.discover.renderer import discover_list_kwargs
-            from resources.lib.simkl.media_ref import enrich_and_persist
-
             refs = enrich_and_persist("tv", items, enrich=False)
-            self.list_builder.show_discover_builder(refs, **discover_list_kwargs())
+            render_catalog_discover_refs(
+                "tv",
+                refs,
+                self.list_builder,
+                list_kwargs=discover_list_kwargs(),
+                next_action="showYears",
+                next_args=int(year),
+                has_next_page=len(items) >= self.page_limit,
+            )
 

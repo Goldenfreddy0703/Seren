@@ -316,7 +316,7 @@ def persist_genre_page(
     catalog: str,
     items: list[dict[str, Any]],
     *,
-    blocking_enrich: bool = True,
+    blocking_enrich: bool = False,
     enrich_reason: str = "genre",
 ) -> list[dict[str, Any]]:
     """Persist a genre page and optionally block on Simkl detail + provider gap-fill."""
@@ -335,9 +335,9 @@ def persist_library_entries(
 ) -> list[dict[str, Any]]:
     """Insert watchlist/library SyncRows and apply Simkl watch state."""
     refs = insert_discover_page(catalog, sync_items)
-    from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+    from resources.lib.database.session import get_sync_database
 
-    SimklSyncDatabase().apply_library_watch_state(catalog, entries, sync_items)
+    get_sync_database().apply_library_watch_state(catalog, entries, sync_items)
     return refs
 
 
@@ -398,7 +398,11 @@ def render_mixed_sync_list(
     **list_kwargs,
 ) -> None:
     """Enrich, insert, and render a mixed movie + show/anime Kodi directory."""
-    from resources.lib.discover.renderer import discover_list_kwargs
+    from resources.lib.discover.sync_bridge import insert_discover_page
+    from resources.lib.discover.catalog_store import catalog_refs_need_seed
+    from resources.lib.discover.sync_bridge import simkl_refs
+    from resources.lib.meta.list_paint import attach_preloaded_catalog_paint_mixed, browse_list_kwargs
+    from resources.lib.meta.menu_paint_profile import current_action_profile_kwargs
     from resources.lib.modules.globals import g
     from resources.lib.modules.list_builder import ListBuilder
 
@@ -407,21 +411,20 @@ def render_mixed_sync_list(
         return
 
     movies, tv, anime = partition_by_catalog(sync_items)
-    refs: list[dict] = []
-
-    if movies:
-        refs.extend(enrich_and_persist("movie", movies, force_simkl_meta=True, enrich=False))
-    if tv:
-        refs.extend(enrich_and_persist("tv", tv, force_simkl_meta=True, enrich=False))
-    if anime:
-        refs.extend(enrich_and_persist("anime", anime, force_simkl_meta=True, enrich=False))
-
-    if not refs:
-        g.cancel_directory()
-        return
+    for cat, group in (("movie", movies), ("tv", tv), ("anime", anime)):
+        if group:
+            refs = simkl_refs(group)
+            if catalog_refs_need_seed(cat, refs):
+                insert_discover_page(cat, group)
 
     builder = ListBuilder()
-    kwargs = {**discover_list_kwargs(), "no_paging": True, **list_kwargs}
+    paint_overrides = current_action_profile_kwargs()
+    paint_overrides.setdefault("no_paging", True)
+    paint_overrides.update(list_kwargs or {})
+    kwargs = attach_preloaded_catalog_paint_mixed(
+        sync_items,
+        browse_list_kwargs(**paint_overrides),
+    )
 
     if movies and (tv or anime):
         builder._mixed_media_from_sync_dicts(
@@ -432,18 +435,15 @@ def render_mixed_sync_list(
         )
         return
     if movies and not tv and not anime:
-        builder.movie_discover_builder(refs, **kwargs)
+        builder.movie_discover_builder(simkl_refs(movies), **kwargs)
         return
-    if movies:
-        builder.movie_menu_builder(refs, **kwargs)
-        return
-    if anime and not tv:
-        builder.anime_discover_builder(refs, **kwargs)
+    if anime and not tv and not movies:
+        builder.anime_discover_builder(simkl_refs(anime), **kwargs)
         return
     if tv and not movies and not anime:
-        builder.show_discover_builder(refs, **kwargs)
+        builder.show_discover_builder(simkl_refs(tv), **kwargs)
         return
-    builder.show_list_builder(refs, **kwargs)
+    builder.show_discover_builder(simkl_refs(sync_items), **kwargs)
 
 
 __all__ = [

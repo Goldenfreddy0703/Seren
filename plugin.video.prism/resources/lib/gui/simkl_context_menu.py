@@ -1,11 +1,13 @@
 """Simkl context menu — watch history, list status, playback."""
 from __future__ import annotations
 
+import time
 from functools import cached_property
 
 import xbmcgui
 
 from resources.lib.modules.globals import g
+from resources.lib.database.session import get_sync_database
 from resources.lib.simkl.library_status import (
     apply_local_library_status,
     apply_local_status_after_watch,
@@ -116,9 +118,9 @@ class SimklContextMenu:
         return SimklAPI()
 
     def _handle_progress_option(self, item_type, simkl_id):
-        from resources.lib.database.simkl_sync.bookmark import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        if item_type not in ["show", "season"] and SimklSyncDatabase().get_bookmark(simkl_id):
+        if item_type not in ["show", "season"] and get_sync_database().get_bookmark(simkl_id):
             self.dialog_list.append(g.get_language_string(30284))
 
     def _handle_library_options(self, item_information):
@@ -162,9 +164,9 @@ class SimklContextMenu:
         show_id = SimklContextMenu._get_show_id(info)
         if not show_id:
             return None
-        from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        row = SimklSyncDatabase().fetchone(
+        row = get_sync_database().fetchone(
             "SELECT user_rating FROM shows WHERE simkl_id=?",
             (int(show_id),),
         )
@@ -177,9 +179,9 @@ class SimklContextMenu:
         row_id = library_row_id(item_information)
         if not row_id:
             return
-        from resources.lib.database.simkl_sync.database import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        SimklSyncDatabase().set_user_rating(row_id, library_catalog(item_information), rating)
+        get_sync_database().set_user_rating(row_id, library_catalog(item_information), rating)
 
     @staticmethod
     def _ratings_success(response) -> bool:
@@ -273,9 +275,9 @@ class SimklContextMenu:
 
     @staticmethod
     def _refresh_meta_information(simkl_object):
-        from resources.lib.database.simkl_sync.database import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        SimklSyncDatabase().clear_specific_item_meta(simkl_object["simkl_id"], simkl_object["mediatype"])
+        get_sync_database().clear_specific_item_meta(simkl_object["simkl_id"], simkl_object["mediatype"])
         g.container_refresh()
         g.trigger_widget_refresh()
 
@@ -320,34 +322,30 @@ class SimklContextMenu:
         response = self.simkl_api.add_to_history(payload)
 
         if item_information["mediatype"] == "movie":
-            from resources.lib.database.simkl_sync.movies import SimklSyncDatabase
-
             if not self._history_success(response, "movies"):
                 g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30287))
                 return
-            SimklSyncDatabase().mark_movie_watched(item_information["simkl_id"])
+            get_sync_database().mark_movie_watched(item_information["simkl_id"])
         else:
-            from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
-
             if not self._history_success(response, "shows") and not self._history_success(response, "anime"):
                 g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30287))
                 return
             if item_information["mediatype"] == "episode":
                 show_id = self._get_show_id(item_information)
-                SimklSyncDatabase().mark_episode_watched(
+                get_sync_database().mark_episode_watched(
                     show_id,
                     item_information["season"],
                     item_information["episode"],
                 )
             elif item_information["mediatype"] == "season":
                 show_id = self._get_show_id(item_information)
-                SimklSyncDatabase().mark_season_watched(
+                get_sync_database().mark_season_watched(
                     show_id,
                     item_information["season"],
                     1,
                 )
             elif item_information["mediatype"] == "tvshow":
-                SimklSyncDatabase().mark_show_watched(item_information["simkl_id"], 1)
+                get_sync_database().mark_show_watched(item_information["simkl_id"], 1)
 
         resolved = resolved_watched_status_from_response(response, item_information)
         if resolved:
@@ -357,7 +355,10 @@ class SimklContextMenu:
 
         g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30288))
         if not silent:
-            queue_library_sync()
+            show_id = self._get_show_id(item_information)
+            if show_id is not None:
+                g.set_runtime_setting(f"episode_watch_refresh_cooldown_{int(show_id)}", str(int(time.time())))
+            queue_library_sync(user_initiated=False)
             g.container_refresh()
             g.trigger_widget_refresh()
 
@@ -366,40 +367,37 @@ class SimklContextMenu:
         response = self.simkl_api.remove_from_history(payload)
 
         if item_information["mediatype"] == "movie":
-            from resources.lib.database.simkl_sync.movies import SimklSyncDatabase
-
             if not self._remove_success(response, "movies"):
                 g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30287))
                 return
-            SimklSyncDatabase().mark_movie_unwatched(item_information["simkl_id"])
+            get_sync_database().mark_movie_unwatched(item_information["simkl_id"])
         else:
-            from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
-
             if not self._remove_success(response, "episodes"):
                 g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30287))
                 return
             if item_information["mediatype"] == "episode":
                 show_id = self._get_show_id(item_information)
-                SimklSyncDatabase().mark_episode_unwatched(
+                get_sync_database().mark_episode_unwatched(
                     show_id,
                     item_information["season"],
                     item_information["episode"],
                 )
             elif item_information["mediatype"] == "season":
                 show_id = self._get_show_id(item_information)
-                SimklSyncDatabase().mark_season_watched(
+                get_sync_database().mark_season_watched(
                     show_id,
                     item_information["season"],
                     0,
                 )
             elif item_information["mediatype"] == "tvshow":
-                SimklSyncDatabase().mark_show_watched(item_information["simkl_id"], 0)
+                get_sync_database().mark_show_watched(item_information["simkl_id"], 0)
 
-        from resources.lib.database.simkl_sync.bookmark import SimklSyncDatabase
-
-        SimklSyncDatabase().remove_bookmark(item_information["simkl_id"])
+        get_sync_database().remove_bookmark(item_information["simkl_id"])
         g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30289))
-        queue_library_sync()
+        show_id = self._get_show_id(item_information)
+        if show_id is not None:
+            g.set_runtime_setting(f"episode_watch_refresh_cooldown_{int(show_id)}", str(int(time.time())))
+        queue_library_sync(user_initiated=False)
         g.container_refresh()
         g.trigger_widget_refresh()
 
@@ -493,7 +491,7 @@ class SimklContextMenu:
 
         from resources.lib.database.simkl_sync.bookmark import SimklSyncDatabase
 
-        SimklSyncDatabase().remove_bookmark(item_information["simkl_id"])
+        get_sync_database().remove_bookmark(item_information["simkl_id"])
         g.container_refresh()
         g.notification(g.ADDON_NAME, g.get_language_string(30301))
         g.trigger_widget_refresh()

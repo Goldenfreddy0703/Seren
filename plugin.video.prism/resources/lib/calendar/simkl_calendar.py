@@ -107,34 +107,62 @@ def _current_week_start() -> str:
     return start.date().isoformat()
 
 
-def _load_weekly_cache(catalog: str) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]]] | None:
+def _load_weekly_cache(
+    catalog: str,
+    *,
+    _return_reason: bool = False,
+) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]]] | None | tuple[
+    tuple[list[dict[str, Any]], dict[int, dict[str, Any]]] | None,
+    str,
+]:
     path = _weekly_cache_file(catalog)
     if not os.path.exists(path):
-        return None
-    try:
-        with open(path, encoding="utf-8") as handle:
-            payload = json.load(handle)
-        if not isinstance(payload, dict):
-            return None
-        if payload.get("week_start") != _current_week_start():
-            return None
-        if payload.get("cache_version") != WEEKLY_CACHE_VERSION:
-            return None
-        filtered_rows = payload.get("filtered_rows")
-        metadata_raw = payload.get("metadata_cache")
-        if not isinstance(filtered_rows, list) or not isinstance(metadata_raw, dict):
-            return None
-        metadata_cache: dict[int, dict[str, Any]] = {}
-        for key, value in metadata_raw.items():
-            if not isinstance(value, dict):
+        result: tuple[list[dict[str, Any]], dict[int, dict[str, Any]]] | None = None
+        reason = "missing_file"
+        return (result, reason) if _return_reason else result
+
+    last_error = "unknown"
+    for attempt in (1, 2):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if not isinstance(payload, dict):
+                last_error = "payload_not_dict"
+                break
+            if payload.get("week_start") != _current_week_start():
+                last_error = "week_start_mismatch"
+                break
+            if payload.get("cache_version") != WEEKLY_CACHE_VERSION:
+                last_error = "cache_version_mismatch"
+                break
+            filtered_rows = payload.get("filtered_rows")
+            metadata_raw = payload.get("metadata_cache")
+            if not isinstance(filtered_rows, list) or not isinstance(metadata_raw, dict):
+                last_error = "invalid_rows_or_metadata"
+                break
+            metadata_cache: dict[int, dict[str, Any]] = {}
+            for key, value in metadata_raw.items():
+                if not isinstance(value, dict):
+                    continue
+                try:
+                    metadata_cache[int(key)] = value
+                except (TypeError, ValueError):
+                    continue
+            result = filtered_rows, metadata_cache
+            reason = "ok"
+            return (result, reason) if _return_reason else result
+        except json.JSONDecodeError as exc:
+            last_error = f"json_decode_error_attempt_{attempt}:{exc.msg}"
+            if attempt == 1:
+                time.sleep(0.05)
                 continue
-            try:
-                metadata_cache[int(key)] = value
-            except (TypeError, ValueError):
-                continue
-        return filtered_rows, metadata_cache
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return None
+            break
+        except (OSError, TypeError, ValueError) as exc:
+            last_error = f"{type(exc).__name__}:{exc}"
+            break
+
+    result = None
+    return (result, last_error) if _return_reason else result
 
 
 def _save_weekly_cache(
@@ -150,11 +178,18 @@ def _save_weekly_cache(
         "filtered_rows": filtered_rows,
         "metadata_cache": {str(simkl_id): item for simkl_id, item in metadata_cache.items()},
     }
+    tmp_path = f"{path}.tmp"
     try:
-        with open(path, "w", encoding="utf-8") as handle:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle)
+        os.replace(tmp_path, path)
     except OSError:
         g.log_stacktrace()
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
 
 
 def weekly_cache_warm() -> bool:
@@ -741,9 +776,16 @@ def _build_metadata_cache(
         for sid in cache
         if isinstance(cache.get(sid), dict) and (cache[sid].get("ratings") or cache[sid].get("score_average"))
     )
+    discover_hits = len(discover_rows)
+    discover_with_plot = sum(
+        1
+        for row in discover_rows.values()
+        if _enrichment_has_plot(_discover_row_to_enrichment(row))
+    )
     g.log(
-        f"Simkl calendar: overview for {filled}/{len(cache)} titles; "
-        f"ratings for {rated}/{len(cache)} (CDN / discover DB / MDBList gap-fill)",
+        f"Simkl calendar: plot/overview text for {filled}/{len(cache)} titles "
+        f"({len(rows)} calendar rows this week); ratings for {rated}/{len(cache)} "
+        f"(CDN / discover DB / MDBList gap-fill)",
         "info",
     )
     return cache, mdblist_targets
@@ -1068,7 +1110,7 @@ def prefetch_calendar(catalog: str, *, force_refresh: bool = False) -> int:
         return 0
     g.ensure_addon()
     if not force_refresh:
-        cached = _load_weekly_cache(catalog)
+        cached, _load_reason = _load_weekly_cache(catalog, _return_reason=True)
         if cached is not None:
             g.log(
                 f"Simkl calendar prefetch: {catalog} weekly cache already warm ({len(cached[0])} rows)",
@@ -1083,15 +1125,59 @@ def prefetch_calendar(catalog: str, *, force_refresh: bool = False) -> int:
     return len(filtered)
 
 
+def _prefetch_lock_path() -> str:
+    return os.path.join(_cache_dir(), ".prefetch.lock")
+
+
+def _try_acquire_prefetch_lock() -> bool:
+    path = _prefetch_lock_path()
+    try:
+        if os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                age = time.time() - float(payload.get("timestamp") or 0)
+                if age < 900:
+                    return False
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                pass
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"timestamp": time.time()}, handle)
+        return True
+    except OSError:
+        return False
+
+
+def _release_prefetch_lock() -> None:
+    try:
+        os.remove(_prefetch_lock_path())
+    except OSError:
+        pass
+
+
 def prefetch_all_calendars(*, force_refresh: bool = False) -> int:
     g.ensure_addon()
+    if not force_refresh and weekly_cache_warm():
+        g.log("Simkl calendar prefetch: all weekly caches warm — skipping", "debug")
+        total = 0
+        for catalog in ("movie", "tv", "anime"):
+            cached = _load_weekly_cache(catalog)
+            if cached is not None:
+                total += len(cached[0])
+        return total
+    if not _try_acquire_prefetch_lock():
+        g.log("Simkl calendar prefetch: skipped — another prefetch is running", "debug")
+        return 0
     total = 0
-    for catalog in ("movie", "tv", "anime"):
-        try:
-            total += prefetch_calendar(catalog, force_refresh=force_refresh)
-        except Exception:
-            g.log(f"Simkl calendar prefetch failed for {catalog}", "warning")
-            g.log_stacktrace()
+    try:
+        for catalog in ("movie", "tv", "anime"):
+            try:
+                total += prefetch_calendar(catalog, force_refresh=force_refresh)
+            except Exception:
+                g.log(f"Simkl calendar prefetch failed for {catalog}", "warning")
+                g.log_stacktrace()
+    finally:
+        _release_prefetch_lock()
     return total
 
 
@@ -1211,8 +1297,16 @@ def _navigate_calendar_selection(selected: dict[str, Any]) -> None:
 
     if catalog == "movie":
         from resources.lib.discover.renderer import discover_list_kwargs
+        from resources.lib.meta.list_paint import render_catalog_discover_refs
 
-        ListBuilder().movie_menu_builder(refs, **discover_list_kwargs())
+        render_catalog_discover_refs(
+            "movie",
+            refs,
+            ListBuilder(),
+            list_kwargs=discover_list_kwargs(),
+            no_paging=True,
+            enrichment_reason="calendar",
+        )
         g.close_directory(g.CONTENT_MOVIE)
         return
 

@@ -342,8 +342,9 @@ class PersistedSettingsCache(SettingsCache):
                 self._RUNTIME_SETTINGS.clear_setting(self.SETTINGS_LIST_NAME)
         except self.KodiShutdown:
             return
-        from resources.lib.modules.settings_hot_cache import warm_settings_dict
+        from resources.lib.modules.settings_hot_cache import clear_settings_dict, warm_settings_dict
 
+        clear_settings_dict()
         warm_settings_dict()
 
     def get_setting(self, setting_id, default_value=None):

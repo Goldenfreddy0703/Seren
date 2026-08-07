@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import datetime
+from typing import Callable
+
 from resources.lib.common.thread_pool import ThreadPool
 from resources.lib.database.simkl_sync import database
 from resources.lib.modules.globals import g
@@ -24,9 +27,35 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         return [row for row in rows if self.show_catalog(row.get("simkl_id")) == catalog]
 
     def _filter_episode_rows_by_catalog(self, rows, catalog: str | None):
-        if not catalog:
+        if not catalog or not rows:
             return rows
-        return [row for row in rows if self.show_catalog(row.get("simkl_show_id")) == catalog]
+        show_ids = {
+            int(row["simkl_show_id"])
+            for row in rows
+            if row.get("simkl_show_id") is not None
+        }
+        if not hasattr(self, "_catalog_by_show_id") or not isinstance(self._catalog_by_show_id, dict):
+            self._catalog_by_show_id = {}
+        missing = show_ids - set(self._catalog_by_show_id)
+        if missing:
+            placeholders = ",".join("?" * len(missing))
+            batch_rows = self.fetchall(
+                f"""
+                SELECT s.simkl_id, m.value AS simkl_object, s.info AS show_info
+                FROM shows AS s
+                LEFT JOIN shows_meta AS m ON m.id = s.simkl_id AND m.type = 'simkl'
+                WHERE s.simkl_id IN ({placeholders})
+                """,
+                tuple(missing),
+            )
+            for row in batch_rows or []:
+                if row.get("simkl_id") is not None:
+                    self._catalog_by_show_id[int(row["simkl_id"])] = self._catalog_from_show_row(row)
+        return [
+            row
+            for row in rows
+            if self._catalog_by_show_id.get(int(row["simkl_show_id"]), "tv") == catalog
+        ]
 
     @guard_against_none(list)
     def get_shows_by_simkl_status(self, status: str, catalog: str | None = None) -> list[dict]:
@@ -34,13 +63,6 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             "SELECT simkl_id FROM shows WHERE simkl_status = ?",
             (status,),
         )
-        if not rows:
-            all_rows = self.fetchall("SELECT simkl_id, info FROM shows")
-            rows = [
-                {"simkl_id": row["simkl_id"]}
-                for row in all_rows
-                if isinstance(row.get("info"), dict) and row["info"].get("simkl_status") == status
-            ]
         refs = []
         for row in rows:
             simkl_id = row.get("simkl_id")
@@ -67,10 +89,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
 
     @guard_against_none()
     def _update_shows_statistics_from_show_id(self, simkl_show_id):
-        self.update_shows_statistics([{"simkl_id": simkl_show_id}])
-        self.update_season_statistics(
-            self.fetchall("select simkl_id from seasons where simkl_show_id=?", (simkl_show_id,))
-        )
+        self._refresh_show_and_season_statistics(simkl_show_id)
 
     @guard_against_none()
     def mark_show_watched(self, show_id, watched):
@@ -115,24 +134,6 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             ),
         )
         self._update_shows_statistics_from_show_id(show_id)
-
-    @guard_against_none()
-    def mark_show_collected(self, show_id, collected):
-        """
-        Sets collected status for all items of a given show
-        :param show_id: ID of show to update
-        :type show_id: int
-        :param collected: Status of collection (1=True, 0=False)
-        :type collected: int
-        :return: None
-        :rtype: None
-        """
-        g.log(f"Marking show {show_id} as collected in sync database", "debug")
-        self._mill_if_needed([{"simkl_id": show_id}])
-        self.execute_sql(
-            "UPDATE episodes SET collected=?, collected_at=? WHERE simkl_show_id=?",
-            (collected, self._get_datetime_now() if collected > 0 else None, show_id),
-        )
 
     @guard_against_none()
     def mark_episode_watched(self, show_id, season, number):
@@ -187,18 +188,10 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
 
     @guard_against_none()
     def _mark_episode_record(self, column, value, show_id, season, number):
-        if column == "watched":
-            datetime_column = "last_watched_at"
-        elif column == "collected":
-            datetime_column = "collected_at"
-        else:
-            datetime_column = None
-
-        if datetime_column is None:
-            # Just in case we forgot any methods that call this
+        if column != "watched":
             raise ValueError
         self.execute_sql(
-            f"UPDATE episodes SET {column}=?, {datetime_column}=? WHERE simkl_show_id=? AND season=? AND number=?",
+            "UPDATE episodes SET watched=?, last_watched_at=? WHERE simkl_show_id=? AND season=? AND number=?",
             (
                 value,
                 self._get_datetime_now() if value > 0 else None,
@@ -218,15 +211,24 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         :param catalog: ``tv``, ``anime``, or None for all
         """
         query = """
-            SELECT sm.id                   AS simkl_id,
-                   sm.value                AS simkl_object,
-                   MAX(ep.last_watched_at) AS last_watched_at
-            FROM shows_meta AS sm
-                     INNER JOIN episodes AS ep
-                               ON ep.simkl_show_id = sm.id AND sm.type = 'simkl'
-            WHERE ep.watched > 0
-            GROUP BY sm.id
-            ORDER BY last_watched_at DESC
+            SELECT s.simkl_id,
+                   sm.value AS simkl_object,
+                   COALESCE(MAX(ep.last_watched_at), MAX(s.last_watched_at)) AS last_watched_at
+            FROM shows AS s
+                     LEFT JOIN shows_meta AS sm
+                               ON sm.id = s.simkl_id AND sm.type = 'simkl'
+                     LEFT JOIN episodes AS ep
+                               ON ep.simkl_show_id = s.simkl_id
+                                   AND (
+                                       COALESCE(ep.watched, 0) > 0
+                                       OR ep.last_watched_at IS NOT NULL
+                                   )
+            WHERE s.last_watched_at IS NOT NULL
+               OR COALESCE(ep.watched, 0) > 0
+               OR ep.last_watched_at IS NOT NULL
+            GROUP BY s.simkl_id
+            HAVING COALESCE(MAX(ep.last_watched_at), MAX(s.last_watched_at)) IS NOT NULL
+            ORDER BY COALESCE(MAX(ep.last_watched_at), MAX(s.last_watched_at)) DESC
             """
 
         rows = self.fetchall(query)
@@ -237,50 +239,6 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
 
         offset = self.page_limit * (page - 1)
         return rows[offset : offset + self.page_limit]
-
-    @guard_against_none(list)
-    def get_collected_shows(self, page=1, force_all=False):
-        """
-        Returns all shows marked as collected from the database
-        :param page: Page to pull
-        :type page: int
-        :param force_all: Enforce pulling of all items
-        :type force_all: bool
-        :return: List of show records
-        :rtype: list
-        """
-        paginate = True
-        sort = 0
-
-        order_by = "ORDER BY max(e.collected_at) DESC" if sort == 0 else ""
-        limit = (
-            f"LIMIT {self.page_limit} OFFSET {self.page_limit * (page - 1)}"
-            if paginate and not force_all and sort != 1
-            else ""
-        )
-
-        query = f"""
-            SELECT e.simkl_show_id AS simkl_id, m.value AS simkl_object
-            FROM episodes AS e
-                     LEFT JOIN shows AS sh
-                               ON sh.simkl_id = e.simkl_show_id
-                     LEFT JOIN shows_meta AS m
-                               ON m.id = e.simkl_show_id AND m.type = 'simkl'
-            WHERE e.collected = TRUE
-            GROUP BY e.simkl_show_id
-            {order_by}
-            {limit}
-            """
-
-        return self.fetchall(query)
-
-    def get_collected_episodes(self):
-        """
-        Returns a list of all episode objects marked as collected
-        :return: List of episode objects
-        :rtype: list
-        """
-        return self.fetchall("""SELECT simkl_id as simkl_id FROM episodes WHERE collected=1""")
 
     @guard_against_none(list)
     def get_show_list(self, media_list, **params):
@@ -295,6 +253,14 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         media_list = [i for i in media_list if i.get("simkl_id")]
         skip_mill = params.pop("skip_mill", False)
         skip_update = params.pop("skip_update", False)
+        paint_only = params.pop("paint_only", False)
+        if skip_update and paint_only:
+            from resources.lib.meta.paint_cache import try_fast_paint_list
+
+            fast_rows = try_fast_paint_list(media_list, "tvshow", self, **params)
+            if fast_rows is not None:
+                return fast_rows
+
         if not skip_update:
             self._update_mill_format_shows(media_list, False, skip_mill=skip_mill)
         g.log("Show list update and milling complete", "debug")
@@ -322,19 +288,9 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
 
         rows = get_display_meta_store().overlay_rows(rows, "tvshow")
         if skip_update:
-            from resources.lib.meta.enrichment import (
-                hybrid_apply_list_meta,
-                hybrid_widget_local_meta,
-            )
+            from resources.lib.meta.paint_cache import paint_sync_list_rows
 
-            if hybrid_widget_local_meta():
-                rows, enrichment_refs = self.metadataHandler.merge_list_meta_local(rows, "tvshow", db=self)
-                from resources.lib.simkl.enrich import gapfill_anime_title_rows
-
-                rows = gapfill_anime_title_rows(rows)
-                self.set_list_enrichment_refs(enrichment_refs, "tvshow")
-            else:
-                rows = hybrid_apply_list_meta(rows, "tvshow", self)
+            rows = paint_sync_list_rows(rows, media_list, "tvshow", self, **params)
         else:
             self.set_list_enrichment_refs([], "tvshow")
         return MetadataHandler.sort_list_items(rows, media_list)
@@ -397,6 +353,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         """
         g.log("Fetching season list from sync database and updating", "debug")
         skip_update = params.pop("skip_update", False)
+        skip_watch_refresh = params.pop("skip_watch_refresh", False)
         season_row_id = simkl_id
         if season is not None and simkl_id is None:
             from resources.lib.simkl.ids import season_key
@@ -405,17 +362,35 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         simkl_pulled = False
         seasons_need_format = False
         if skip_update:
-            simkl_pulled = self._ensure_simkl_episode_tree(
+            simkl_pulled = self._ensure_simkl_season_tree(
                 simkl_show_id,
                 season_num=season,
+                season_row_id=season_row_id,
             )
+            gap_seasons = self._seasons_with_episode_catalog_gaps(int(simkl_show_id))
+            if gap_seasons:
+                if self._ensure_simkl_episode_tree_for_seasons(int(simkl_show_id), gap_seasons):
+                    simkl_pulled = True
+                    from resources.lib.simkl.ids import season_key as _season_key
+
+                    for season_num in sorted(gap_seasons):
+                        self._format_episodes_local(
+                            int(simkl_show_id),
+                            _season_key(int(simkl_show_id), int(season_num)),
+                        )
             seasons_need_format = self._seasons_need_format(
                 simkl_show_id,
                 season_num=season,
                 season_row_id=season_row_id,
             )
-        if not skip_update or simkl_pulled or seasons_need_format:
+        if skip_update:
+            if simkl_pulled or seasons_need_format:
+                self._format_seasons_local(simkl_show_id, season_row_id)
+        elif simkl_pulled or seasons_need_format:
             self._try_update_seasons(simkl_show_id, season_row_id)
+        if not skip_watch_refresh:
+            self.refresh_show_episode_watch_state(simkl_show_id)
+        self._refresh_show_and_season_statistics(int(simkl_show_id))
         g.log("Updated requested seasons", "debug")
         statement = """SELECT s.simkl_id, s.season, s.info, s.cast, s.art, s.args, s.watched_episodes, s.unwatched_episodes,
         s.episode_count, s.air_date, s.user_rating FROM seasons AS s WHERE """
@@ -444,15 +419,6 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 f"title={info.get('title') if isinstance(info, dict) else None} row_id={row.get('simkl_id')}",
                 "debug",
             )
-        if skip_update:
-            from resources.lib.meta.enrichment import MetaEnrichmentQueue
-
-            if not simkl_pulled and not seasons_need_format:
-                MetaEnrichmentQueue.schedule_show_children(
-                    int(simkl_show_id),
-                    kind="season_list",
-                    season_row_id=season_row_id if (season is not None or simkl_id is not None) else None,
-                )
         return rows
 
     @guard_against_none(list, 1, 2, 4)
@@ -483,24 +449,62 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
 
         g.log("Fetching Episode list from sync database and updating", "debug")
         skip_update = params.pop("skip_update", False)
+        flat_paged = bool(params.pop("flat_paged", False))
+        flat_all = bool(params.pop("flat_all", False))
+        page = int(params.pop("page", 1) or 1)
+        page_limit = int(params.pop("page_limit", 0) or 0)
+        hide_unaired = params.get("hide_unaired", self.hide_unaired)
+        hide_specials = params.get("hide_specials", self.hide_specials)
+        hide_watched = params.get("hide_watched", self.hide_watched)
         simkl_pulled = False
         episodes_need_format = False
+        scope_formatted = False
         if skip_update:
-            simkl_pulled = self._ensure_simkl_episode_tree(
+            scope_formatted = self._refresh_stale_airing_episodes(
                 simkl_show_id,
                 season_num=season_num,
-                simkl_id=simkl_id,
                 season_row_id=season_row_id,
+                flat_all=flat_all,
             )
-            if not simkl_pulled:
-                episodes_need_format = self._episodes_scope_need_format(
+            if flat_all and season_num is None and simkl_id is None:
+                self._ensure_flat_episode_all(
+                    simkl_show_id,
+                    hide_specials=hide_specials,
+                )
+                scope_formatted = True
+            elif flat_paged and season_num is None and simkl_id is None and page_limit > 0:
+                offset = max(0, (page - 1) * page_limit)
+                self._ensure_flat_episode_window(
+                    simkl_show_id,
+                    offset=offset,
+                    limit=page_limit,
+                    hide_unaired=hide_unaired,
+                    hide_specials=hide_specials,
+                    hide_watched=hide_watched,
+                )
+                scope_formatted = True
+            else:
+                simkl_pulled = self._ensure_simkl_episode_tree(
                     simkl_show_id,
                     season_num=season_num,
                     simkl_id=simkl_id,
                     season_row_id=season_row_id,
                 )
-        if not skip_update or simkl_pulled or episodes_need_format:
+                if not simkl_pulled:
+                    episodes_need_format = self._episodes_scope_need_format(
+                        simkl_show_id,
+                        season_num=season_num,
+                        simkl_id=simkl_id,
+                        season_row_id=season_row_id,
+                    )
+        if skip_update:
+            if simkl_pulled or episodes_need_format:
+                self._format_episodes_local(simkl_show_id, season_row_id, simkl_id)
+                scope_formatted = True
+        elif simkl_pulled or episodes_need_format:
             self._try_update_episodes(simkl_show_id, season_row_id, simkl_id)
+        self.refresh_show_episode_watch_state(simkl_show_id)
+        self._refresh_show_and_season_statistics(int(simkl_show_id))
         g.log("Updated required episodes", "debug")
         statement = """SELECT e.simkl_id, e.simkl_show_id, e.simkl_season_id, e.info, e.cast, e.art, e.args, e.watched as play_count,
          b.resume_time as resume_time, b.percent_played as percent_played, e.user_rating FROM episodes as e
@@ -514,35 +518,321 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             statement += f"e.simkl_season_id = {simkl_season_id} "
         else:
             statement += f"e.simkl_show_id = {simkl_show_id} "
-        if params.pop("hide_unaired", self.hide_unaired):
+        if params.pop("hide_unaired", hide_unaired):
             statement += (
                 f" AND (e.air_date IS NULL OR Datetime(e.air_date) < Datetime('{self._get_aired_cutoff()}')) "
             )
-        if params.pop("hide_specials", self.hide_specials):
+        if params.pop("hide_specials", hide_specials):
             statement += " AND e.season != 0"
-        if params.pop("hide_watched", self.hide_watched):
+        if params.pop("hide_watched", hide_watched):
             statement += " AND e.watched = 0"
         if minimum_episode:
             statement += f" AND e.number >= {int(minimum_episode)}"
         statement += " order by e.season, e.number "
+        if flat_paged and season_num is None and simkl_id is None and page_limit > 0:
+            offset = max(0, (page - 1) * page_limit)
+            statement += f" LIMIT {int(page_limit) + 1} OFFSET {offset} "
         rows = self.fetchall(statement)
-        if rows and any(self._episode_row_needs_format(row) for row in rows):
-            self._format_episodes(
-                [{"simkl_id": row["simkl_id"]} for row in rows if self._episode_row_needs_format(row)]
-            )
-            rows = self.fetchall(statement)
-        if skip_update:
-            from resources.lib.meta.enrichment import MetaEnrichmentQueue
-
-            if not simkl_pulled and not episodes_need_format:
-                episode_ids = [int(row["simkl_id"]) for row in rows or [] if row.get("simkl_id") is not None]
-                MetaEnrichmentQueue.schedule_show_children(
-                    int(simkl_show_id),
-                    kind="episode_list",
-                    season_row_id=season_row_id,
-                    episode_ids=episode_ids if simkl_id is not None else None,
+        if (
+            rows
+            and not scope_formatted
+            and any(self._episode_row_needs_format(row) for row in rows)
+        ):
+            if skip_update:
+                if simkl_id is not None:
+                    self._format_episodes_local(simkl_show_id, None, simkl_id)
+                elif season_row_id is not None:
+                    self._format_episodes_local(simkl_show_id, season_row_id)
+                else:
+                    self._format_episodes_local(simkl_show_id)
+            else:
+                self._format_episodes(
+                    [{"simkl_id": row["simkl_id"]} for row in rows if self._episode_row_needs_format(row)]
                 )
+            rows = self.fetchall(statement)
         return rows
+
+    def drilldown_episode_catalog_stamp(
+        self,
+        simkl_show_id: int,
+        *,
+        season_num: int | None = None,
+    ) -> str:
+        """Max episode last_updated for drilldown session-cache invalidation."""
+        if season_num is not None:
+            row = self.fetchone(
+                """
+                SELECT MAX(last_updated) AS lu
+                FROM episodes
+                WHERE simkl_show_id = ? AND season = ?
+                """,
+                (int(simkl_show_id), int(season_num)),
+            )
+        else:
+            row = self.fetchone(
+                """
+                SELECT MAX(last_updated) AS lu
+                FROM episodes
+                WHERE simkl_show_id = ?
+                """,
+                (int(simkl_show_id),),
+            )
+        if not row or not row.get("lu"):
+            return ""
+        return str(row["lu"])
+
+    def drilldown_watch_stamp(
+        self,
+        simkl_show_id: int,
+        *,
+        season_num: int | None = None,
+    ) -> str:
+        """Watch-state fingerprint for drilldown session-cache invalidation."""
+        if season_num is not None:
+            row = self.fetchone(
+                """
+                SELECT COUNT(*) AS watched,
+                       COALESCE(MAX(last_watched_at), '') AS last_watched
+                FROM episodes
+                WHERE simkl_show_id = ? AND season = ?
+                  AND COALESCE(watched, 0) > 0
+                """,
+                (int(simkl_show_id), int(season_num)),
+            )
+        else:
+            row = self.fetchone(
+                """
+                SELECT COALESCE(SUM(s.watched_episodes), 0) AS watched,
+                       COALESCE(MAX(s.last_watched_at), '') AS last_watched
+                FROM seasons AS s
+                WHERE s.simkl_show_id = ?
+                """,
+                (int(simkl_show_id),),
+            )
+        if not row:
+            return "0:"
+        return f"{int(row.get('watched') or 0)}:{row.get('last_watched') or ''}"
+
+    def _episode_refresh_days(self) -> int:
+        return max(0, int(g.get_setting("general.episode.refresh.days") or 7))
+
+    def _show_is_airing_catalog(self, simkl_show_id: int) -> bool:
+        row = self.fetchone(
+            "SELECT is_airing, info FROM shows WHERE simkl_id = ?",
+            (int(simkl_show_id),),
+        )
+        if not isinstance(row, dict):
+            return False
+        if row.get("is_airing"):
+            return True
+        info = row.get("info") if isinstance(row.get("info"), dict) else {}
+        status = (info.get("status") or "").lower()
+        return status in (
+            "continuing",
+            "in production",
+            "returning series",
+            "currently airing",
+        )
+
+    def _episode_scope_last_updated(
+        self,
+        simkl_show_id: int,
+        *,
+        season_num: int | None = None,
+    ) -> str | None:
+        if season_num is not None:
+            row = self.fetchone(
+                """
+                SELECT MAX(last_updated) AS lu
+                FROM episodes
+                WHERE simkl_show_id = ? AND season = ?
+                """,
+                (int(simkl_show_id), int(season_num)),
+            )
+        else:
+            row = self.fetchone(
+                """
+                SELECT MAX(last_updated) AS lu
+                FROM episodes
+                WHERE simkl_show_id = ?
+                """,
+                (int(simkl_show_id),),
+            )
+        if not isinstance(row, dict):
+            return None
+        return row.get("lu")
+
+    def _airing_episode_catalog_stale(
+        self,
+        simkl_show_id: int,
+        *,
+        season_num: int | None = None,
+    ) -> bool:
+        days = self._episode_refresh_days()
+        if days <= 0:
+            return False
+        if not self._show_is_airing_catalog(simkl_show_id):
+            return False
+        last = self._episode_scope_last_updated(simkl_show_id, season_num=season_num)
+        if not last or str(last).startswith("1970"):
+            return False
+        try:
+            updated = datetime.datetime.fromisoformat(str(last).replace("Z", ""))
+        except (TypeError, ValueError):
+            return False
+        return (datetime.datetime.now() - updated).days >= days
+
+    def _refresh_stale_airing_episodes(
+        self,
+        simkl_show_id: int,
+        *,
+        season_num: int | None = None,
+        season_row_id=None,
+        flat_all: bool = False,
+    ) -> bool:
+        """Re-mill Simkl episode rows for airing shows when local catalog is older than TTL."""
+        check_season = None if flat_all or season_num is None else int(season_num)
+        if not self._airing_episode_catalog_stale(simkl_show_id, season_num=check_season):
+            return False
+        show_meta = self._get_single_show_meta(simkl_show_id) or {"simkl_id": int(simkl_show_id)}
+        season_filter = None
+        if season_num is not None and not flat_all:
+            season_filter = {int(season_num)}
+        g.log(
+            f"Refreshing stale airing episode catalog for show {simkl_show_id} "
+            f"scope={'flat' if flat_all else season_num}",
+            "debug",
+        )
+        self.force_mill_shows(
+            show_meta,
+            mill_episodes=True,
+            skip_provider_episode_updates=True,
+            mill_season_filter=season_filter,
+        )
+        if season_row_id is not None and season_num is not None and not flat_all:
+            self._format_episodes_local(simkl_show_id, season_row_id)
+        else:
+            self._format_episodes_local(simkl_show_id)
+        return True
+
+    FORMAT_WARMED_SHOW_BATCH = 64
+
+    def _episode_rows_for_local_format_by_ids(self, simkl_ids: list[int]) -> list[dict]:
+        if not simkl_ids:
+            return []
+        ids = tuple(int(i) for i in simkl_ids)
+        placeholders = ",".join("?" * len(ids))
+        query = f"""
+            SELECT m.value      AS simkl_object,
+                   e.simkl_id,
+                   e.simkl_show_id,
+                   e.simkl_season_id,
+                   e.season,
+                   e.number          AS episode,
+                   sh.tmdb_id AS tmdb_show_id,
+                   sh.tvdb_id AS tvdb_show_id,
+                   sh.info    AS show_info,
+                   sh.art     AS show_art,
+                   sh.cast    AS show_cast,
+                   se.info    AS season_info,
+                   se.art     AS season_art,
+                   se.cast    AS season_cast
+            FROM episodes AS e
+                     INNER JOIN shows AS sh ON e.simkl_show_id = sh.simkl_id
+                     INNER JOIN episodes_meta AS m ON m.id = e.simkl_id AND m.type = 'simkl'
+                     LEFT JOIN seasons AS se ON se.simkl_id = e.simkl_season_id
+            WHERE e.simkl_id IN ({placeholders})
+            """
+        return self.fetchall(query, ids) or []
+
+    def hydrate_mixed_episode_rows_for_paint(self, rows: list[dict]) -> list[dict]:
+        """Build display-ready episode rows in memory from cached Simkl meta (no DB upsert)."""
+        if not rows:
+            return rows
+        from resources.lib.simkl.ids import episode_num_from_info
+
+        thin_ids = [
+            int(row["simkl_id"])
+            for row in rows
+            if row.get("simkl_id") is not None and self._episode_row_needs_format(row)
+        ]
+        if not thin_ids:
+            return rows
+
+        paint_source = self._episode_rows_for_local_format_by_ids(thin_ids)
+        formatted_items = self._format_objects(paint_source)
+        if not formatted_items:
+            return rows
+
+        formatted_by_id: dict[int, dict] = {}
+        for item in formatted_items:
+            info = item.get("info") or {}
+            simkl_id = info.get("simkl_id")
+            if simkl_id is not None and episode_num_from_info(info) is not None:
+                formatted_by_id[int(simkl_id)] = item
+
+        hydrated: list[dict] = []
+        for row in rows:
+            simkl_id = row.get("simkl_id")
+            if simkl_id is not None and int(simkl_id) in formatted_by_id:
+                painted = dict(formatted_by_id[int(simkl_id)])
+                for key in (
+                    "play_count",
+                    "resume_time",
+                    "percent_played",
+                    "user_rating",
+                    "args",
+                    "watched_episodes",
+                    "unwatched_episodes",
+                    "episode_count",
+                ):
+                    if key in row and row[key] is not None:
+                        painted[key] = row[key]
+                play_count = row.get("play_count")
+                if play_count is not None:
+                    painted.setdefault("info", {})["playcount"] = play_count
+                hydrated.append(painted)
+            else:
+                hydrated.append(row)
+        return hydrated
+
+    def format_warmed_episode_catalogs(
+        self,
+        show_ids: list[int],
+        *,
+        assume_unformatted: bool = False,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> int:
+        """Simkl-only local format for post-sync episode catalog warm (no provider HTTP)."""
+        if not show_ids:
+            return 0
+
+        if assume_unformatted:
+            needing = [int(show_id) for show_id in show_ids]
+        else:
+            needing = []
+            for show_id in show_ids:
+                sid = int(show_id)
+                if not self._has_episode_rows(sid):
+                    continue
+                if not self._episodes_scope_need_format(sid):
+                    continue
+                needing.append(sid)
+        if not needing:
+            return 0
+
+        total = len(needing)
+        formatted = 0
+        batch_size = self.FORMAT_WARMED_SHOW_BATCH
+        for start in range(0, total, batch_size):
+            chunk = needing[start : start + batch_size]
+            rows = self._episode_rows_for_local_format_bulk(chunk)
+            if rows:
+                self._format_episodes(rows, preloaded=True)
+            formatted += len(chunk)
+            if on_progress:
+                on_progress(formatted, total)
+        return formatted
 
     def _episode_coords_from_list_item(self, item: dict) -> tuple[int, int, int] | None:
         if not isinstance(item, dict):
@@ -716,6 +1006,75 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         )
         return any(self._episode_row_needs_format(row) for row in rows)
 
+    def _seasons_with_episode_catalog_gaps(self, simkl_show_id: int) -> set[int]:
+        """Seasons where watch stubs exist but the local episode catalog is incomplete."""
+        show_id = int(simkl_show_id)
+        gaps: set[int] = set()
+        rows = self.fetchall(
+            """
+            SELECT season AS season_num,
+                   COUNT(*) AS local_cnt,
+                   MAX(number) AS max_num
+            FROM episodes
+            WHERE simkl_show_id = ?
+              AND season > 0
+            GROUP BY season
+            HAVING local_cnt > 0 AND max_num > local_cnt
+            """,
+            (show_id,),
+        )
+        for row in rows or []:
+            if row.get("season_num") is not None:
+                gaps.add(int(row["season_num"]))
+
+        sparse = self.fetchall(
+            """
+            SELECT se.season
+            FROM seasons AS se
+            WHERE se.simkl_show_id = ?
+              AND se.season > 0
+              AND COALESCE(se.watched_episodes, 0) > 0
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM episodes AS e
+                    WHERE e.simkl_show_id = se.simkl_show_id
+                      AND e.season = se.season
+                )
+            """,
+            (show_id,),
+        )
+        for row in sparse or []:
+            if row.get("season") is not None:
+                gaps.add(int(row["season"]))
+        return gaps
+
+    def _ensure_simkl_episode_tree_for_seasons(
+        self,
+        simkl_show_id,
+        season_nums: set[int] | frozenset[int],
+    ) -> bool:
+        """Mill full episode rows for specific seasons (stub catalog repair)."""
+        season_nums = {int(season) for season in (season_nums or []) if season is not None}
+        if not season_nums:
+            return False
+        if not self._has_season_rows(simkl_show_id):
+            self._ensure_simkl_season_tree(simkl_show_id)
+        show_meta = self._get_single_show_meta(simkl_show_id)
+        if not show_meta:
+            show_meta = {"simkl_id": int(simkl_show_id)}
+        g.log(
+            f"Drill-in Simkl episode pull for show {simkl_show_id} "
+            f"(seasons {sorted(season_nums)})",
+            "info",
+        )
+        self.force_mill_shows(
+            show_meta,
+            mill_episodes=True,
+            skip_provider_episode_updates=True,
+            mill_season_filter=frozenset(season_nums),
+        )
+        return True
+
     def _needs_simkl_episode_pull(
         self,
         simkl_show_id,
@@ -750,7 +1109,90 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             expected = int(show_row["episode_count"] or 0) if show_row else 0
             if expected > 0 and len(rows) < expected:
                 return True
+            if self._seasons_with_episode_catalog_gaps(int(simkl_show_id)):
+                return True
+        if season_num is not None:
+            gap_rows = self.fetchall(
+                """
+                SELECT season AS season_num,
+                       COUNT(*) AS local_cnt,
+                       MAX(number) AS max_num
+                FROM episodes
+                WHERE simkl_show_id = ?
+                  AND season = ?
+                GROUP BY season
+                HAVING local_cnt > 0 AND max_num > local_cnt
+                """,
+                (int(simkl_show_id), int(season_num)),
+            )
+            if gap_rows:
+                return True
         return False
+
+    def _needs_simkl_season_pull(
+        self,
+        simkl_show_id,
+        *,
+        season_num=None,
+        season_row_id=None,
+    ) -> bool:
+        """True when season folder rows are missing or unformatted (no episode mill)."""
+        if not self._has_season_rows(
+            simkl_show_id,
+            season=season_num,
+            simkl_id=season_row_id,
+        ):
+            return True
+        rows = self._fetch_season_scope_rows(
+            simkl_show_id,
+            season_num=season_num,
+            season_row_id=season_row_id,
+        )
+        if not rows:
+            return True
+        return any(self._season_row_needs_format(row) for row in rows)
+
+    def _ensure_simkl_season_tree(
+        self,
+        simkl_show_id,
+        *,
+        season_num=None,
+        season_row_id=None,
+    ) -> bool:
+        """Pull Simkl season folders only — defer episode rows until a season is opened."""
+        if not self._needs_simkl_season_pull(
+            simkl_show_id,
+            season_num=season_num,
+            season_row_id=season_row_id,
+        ):
+            return False
+        show_meta = self._get_single_show_meta(simkl_show_id)
+        if not show_meta:
+            show_meta = {"simkl_id": int(simkl_show_id)}
+        g.log(f"Drill-in Simkl season pull for show {simkl_show_id}", "info")
+        self.force_mill_shows(
+            show_meta,
+            mill_episodes=False,
+            skip_provider_episode_updates=True,
+        )
+        return True
+
+    def _mill_season_filter(
+        self,
+        *,
+        season_num=None,
+        season_row_id=None,
+    ) -> set[int] | None:
+        if season_num is not None:
+            return {int(season_num)}
+        if season_row_id is not None:
+            row = self.fetchone(
+                "SELECT season FROM seasons WHERE simkl_id = ?",
+                (int(season_row_id),),
+            )
+            if row and row.get("season") is not None:
+                return {int(row["season"])}
+        return None
 
     def _ensure_simkl_episode_tree(
         self,
@@ -771,12 +1213,205 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         show_meta = self._get_single_show_meta(simkl_show_id)
         if not show_meta:
             show_meta = {"simkl_id": int(simkl_show_id)}
+        season_filter = self._mill_season_filter(
+            season_num=season_num,
+            season_row_id=season_row_id,
+        )
+        scope = f"season {sorted(season_filter)}" if season_filter else "all seasons"
         g.log(
-            f"Drill-in Simkl episode pull for show {simkl_show_id}",
+            f"Drill-in Simkl episode pull for show {simkl_show_id} ({scope})",
             "info",
         )
-        self.force_mill_shows(show_meta, mill_episodes=True)
+        self.force_mill_shows(
+            show_meta,
+            mill_episodes=True,
+            skip_provider_episode_updates=True,
+            mill_season_filter=season_filter,
+        )
         return True
+
+    def _episode_list_filters_sql(
+        self,
+        *,
+        hide_unaired: bool,
+        hide_specials: bool,
+        hide_watched: bool,
+        alias: str = "e",
+    ) -> str:
+        statement = ""
+        if hide_unaired:
+            statement += (
+                f" AND ({alias}.air_date IS NULL OR Datetime({alias}.air_date) "
+                f"< Datetime('{self._get_aired_cutoff()}')) "
+            )
+        if hide_specials:
+            statement += f" AND {alias}.season != 0"
+        if hide_watched:
+            statement += f" AND {alias}.watched = 0"
+        return statement
+
+    def _count_episode_rows(
+        self,
+        simkl_show_id,
+        *,
+        hide_unaired: bool = False,
+        hide_specials: bool = False,
+        hide_watched: bool = False,
+    ) -> int:
+        statement = f"SELECT COUNT(*) AS cnt FROM episodes AS e WHERE e.simkl_show_id = {int(simkl_show_id)}"
+        statement += self._episode_list_filters_sql(
+            hide_unaired=hide_unaired,
+            hide_specials=hide_specials,
+            hide_watched=hide_watched,
+        )
+        row = self.fetchone(statement)
+        return int(row["cnt"] or 0) if row else 0
+
+    def _next_season_needing_episode_mill(
+        self,
+        simkl_show_id,
+        *,
+        hide_specials: bool = False,
+    ) -> int | None:
+        seasons = self.fetchall(
+            "SELECT season FROM seasons WHERE simkl_show_id = ? ORDER BY season",
+            (int(simkl_show_id),),
+        )
+        for row in seasons or []:
+            season_num = int(row["season"])
+            if hide_specials and season_num == 0:
+                continue
+            if not self._has_episode_rows(simkl_show_id, season_num=season_num):
+                return season_num
+            if self._episodes_scope_need_format(simkl_show_id, season_num=season_num):
+                return season_num
+        return None
+
+    def _ensure_flat_episode_all(
+        self,
+        simkl_show_id,
+        *,
+        hide_specials: bool = False,
+    ) -> None:
+        """Mill every missing season in one Simkl pull (flat episode list)."""
+        if not self._has_season_rows(simkl_show_id):
+            self._ensure_simkl_season_tree(simkl_show_id)
+        if self._next_season_needing_episode_mill(
+            simkl_show_id,
+            hide_specials=hide_specials,
+        ) is None:
+            return
+        show_meta = self._get_single_show_meta(simkl_show_id)
+        if not show_meta:
+            show_meta = {"simkl_id": int(simkl_show_id)}
+        g.log(f"Bulk flat episode mill for show {simkl_show_id}", "debug")
+        self.force_mill_shows(
+            show_meta,
+            mill_episodes=True,
+            skip_provider_episode_updates=True,
+        )
+        if self._episodes_scope_need_format(simkl_show_id):
+            self._format_episodes_local(simkl_show_id)
+
+    def _ensure_flat_episode_window(
+        self,
+        simkl_show_id,
+        *,
+        offset: int = 0,
+        limit: int = 20,
+        hide_unaired: bool = False,
+        hide_specials: bool = False,
+        hide_watched: bool = False,
+    ) -> None:
+        """Mill only the seasons needed to satisfy a flat episode list page."""
+        from resources.lib.simkl.ids import season_key
+
+        if not self._has_season_rows(simkl_show_id):
+            self._ensure_simkl_season_tree(simkl_show_id)
+        target = max(0, int(offset)) + max(1, int(limit)) + 1
+        for _ in range(64):
+            if self._count_episode_rows(
+                simkl_show_id,
+                hide_unaired=hide_unaired,
+                hide_specials=hide_specials,
+                hide_watched=hide_watched,
+            ) >= target:
+                return
+            season_num = self._next_season_needing_episode_mill(
+                simkl_show_id,
+                hide_specials=hide_specials,
+            )
+            if season_num is None:
+                return
+            season_row_id = season_key(int(simkl_show_id), int(season_num))
+            pulled = self._ensure_simkl_episode_tree(
+                simkl_show_id,
+                season_num=season_num,
+                season_row_id=season_row_id,
+            )
+            if pulled or self._episodes_scope_need_format(
+                simkl_show_id,
+                season_num=season_num,
+                season_row_id=season_row_id,
+            ):
+                self._format_episodes_local(simkl_show_id, season_row_id)
+
+    def premill_missing_episode_seasons(
+        self,
+        simkl_show_id,
+        *,
+        catalog: str | None = None,
+        stop_if_busy: bool = True,
+        hide_specials: bool | None = None,
+        max_seasons: int = 0,
+    ) -> int:
+        """Background: mill episodes season-by-season when rows are missing."""
+        from resources.lib.simkl.ids import season_key
+
+        if hide_specials is None:
+            hide_specials = self.hide_specials
+
+        if not self._has_season_rows(simkl_show_id):
+            show_meta = self._get_single_show_meta(simkl_show_id) or {"simkl_id": int(simkl_show_id)}
+            self.force_mill_shows(
+                show_meta,
+                mill_episodes=False,
+                skip_provider_episode_updates=True,
+            )
+
+        milled = 0
+        while True:
+            if stop_if_busy and (
+                g.get_bool_runtime_setting("browse.menu_active")
+                or g.get_bool_runtime_setting("drilldown.user_navigating")
+            ):
+                break
+            season_num = self._next_season_needing_episode_mill(
+                simkl_show_id,
+                hide_specials=hide_specials,
+            )
+            if season_num is None:
+                break
+            season_row_id = season_key(int(simkl_show_id), int(season_num))
+            g.log(
+                f"drilldown_prefetch milling show={simkl_show_id} season={season_num}",
+                "debug",
+            )
+            self._ensure_simkl_episode_tree(
+                simkl_show_id,
+                season_num=season_num,
+                season_row_id=season_row_id,
+            )
+            if self._episodes_scope_need_format(
+                simkl_show_id,
+                season_num=season_num,
+                season_row_id=season_row_id,
+            ):
+                self._format_episodes_local(simkl_show_id, season_row_id)
+            milled += 1
+            if max_seasons > 0 and milled >= max_seasons:
+                break
+        return milled
 
     def _mixed_episodes_missing_rows(self, media_items) -> bool:
         """True when a listed episode has no row in the local episodes table."""
@@ -916,11 +1551,8 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             query += " AND e.watched = 0"
 
         rows = self.fetchall(query)
-        if rows and any(self._episode_row_needs_format(row) for row in rows):
-            self._format_episodes(
-                [{"simkl_id": row["simkl_id"]} for row in rows if self._episode_row_needs_format(row)]
-            )
-            rows = self.fetchall(query)
+        if rows:
+            rows = self.hydrate_mixed_episode_rows_for_paint(rows)
         if skip_update:
             from collections import defaultdict
 
@@ -1119,7 +1751,6 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                     self._create_args(i),
                     i["info"].get("is_airing"),
                     i["info"].get("last_watched_at"),
-                    i["info"].get("last_collected_at"),
                     i["info"].get("user_rating"),
                     self.get_library_status(i["info"]["simkl_id"], "show", i["info"]),
                 )
@@ -1218,7 +1849,6 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                     int(season_num),
                     self._create_args(i),
                     i["info"].get("last_watched_at"),
-                    i["info"].get("last_collected_at"),
                     i["info"].get("user_rating"),
                 )
             )
@@ -1284,10 +1914,17 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         return self._update_objects(db_list_to_update, "episodes")
 
     @guard_against_none_or_empty()
-    def _format_episodes(self, list_to_update):
+    def _format_episodes(self, list_to_update, *, preloaded: bool = False):
         from resources.lib.simkl.ids import episode_num_from_info
 
-        formatted_items = self._format_objects(self._identify_episodes_to_update(list_to_update))
+        if preloaded:
+            source_rows = list_to_update
+        else:
+            source_rows = self._identify_episodes_to_update(list_to_update)
+            if source_rows is None:
+                return
+
+        formatted_items = self._format_objects(source_rows)
 
         if formatted_items is None:
             return
@@ -1307,8 +1944,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                     i["info"]["simkl_id"],
                     i["info"]["simkl_show_id"],
                     i["info"]["simkl_season_id"],
-                    None,
-                    None,
+                    i["info"].get("playcount") or 0,
                     i["info"].get("aired"),
                     i["info"].get("dateadded"),
                     i["info"].get("season"),
@@ -1320,9 +1956,8 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                     i.get("art"),
                     i.get("cast"),
                     self._create_args(i),
-                    None,
-                    None,
-                    None,
+                    i["info"].get("last_watched_at"),
+                    i["info"].get("user_rating"),
                     self.metadataHandler.meta_hash,
                 )
                 for i in episode_rows
@@ -1381,16 +2016,12 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         if not any(_needs_still(row) for row in rows):
             return
 
-        from resources.lib.indexers.simkl import SimklAPI
+        from resources.lib.database.simkl_sync.milling import fetch_raw_show_episodes
         from resources.lib.simkl.images import attach_episode_still
 
         catalog = self._infer_show_catalog(simkl_show_id)
         slug = self._meta_slug(simkl_show_id, "shows")
-        api = SimklAPI()
-        if catalog == "anime":
-            raw_episodes = api.get_anime_episodes(int(simkl_show_id), slug=slug) or []
-        else:
-            raw_episodes = api.get_tv_episodes(int(simkl_show_id), slug=slug) or []
+        raw_episodes = fetch_raw_show_episodes(int(simkl_show_id), catalog, slug=slug)
 
         by_simkl_id = {}
         for ep in raw_episodes:
@@ -1423,6 +2054,98 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         if updates:
             g.log(f"Backfilling Simkl episode stills for show {simkl_show_id}: {len(updates)}", "debug")
             self.save_to_meta_table(updates, "episodes", "simkl", "simkl_id")
+
+    def _episode_rows_for_local_format_bulk(self, simkl_show_ids: list[int]) -> list[dict]:
+        if not simkl_show_ids:
+            return []
+        ids = tuple(int(i) for i in simkl_show_ids)
+        placeholders = ",".join("?" * len(ids))
+        query = f"""
+            SELECT m.value      AS simkl_object,
+                   e.simkl_id,
+                   e.simkl_show_id,
+                   e.simkl_season_id,
+                   e.season,
+                   e.number          AS episode,
+                   sh.tmdb_id AS tmdb_show_id,
+                   sh.tvdb_id AS tvdb_show_id,
+                   sh.info    AS show_info,
+                   sh.art     AS show_art,
+                   sh.cast    AS show_cast,
+                   se.info    AS season_info,
+                   se.art     AS season_art,
+                   se.cast    AS season_cast
+            FROM episodes AS e
+                     INNER JOIN shows AS sh ON e.simkl_show_id = sh.simkl_id
+                     INNER JOIN episodes_meta AS m ON m.id = e.simkl_id AND m.type = 'simkl'
+                     LEFT JOIN seasons AS se ON se.simkl_id = e.simkl_season_id
+            WHERE sh.simkl_id IN ({placeholders})
+            """
+        return self.fetchall(query, ids) or []
+
+    def _episode_rows_for_local_format(self, simkl_show_id, simkl_season_id=None, simkl_id=None) -> list[dict]:
+        if simkl_id is not None:
+            where_clause = f"WHERE e.simkl_id = {simkl_id}"
+        elif simkl_season_id is not None:
+            where_clause = f"WHERE e.simkl_season_id = {simkl_season_id}"
+        else:
+            where_clause = f"WHERE sh.simkl_id = {simkl_show_id}"
+        query = f"""
+            SELECT m.value      AS simkl_object,
+                   e.simkl_id,
+                   e.simkl_show_id,
+                   e.simkl_season_id,
+                   e.season,
+                   e.number          AS episode,
+                   sh.tmdb_id AS tmdb_show_id,
+                   sh.tvdb_id AS tvdb_show_id,
+                   sh.info    AS show_info,
+                   sh.art     AS show_art,
+                   sh.cast    AS show_cast,
+                   se.info    AS season_info,
+                   se.art     AS season_art,
+                   se.cast    AS season_cast
+            FROM episodes AS e
+                     INNER JOIN shows AS sh ON e.simkl_show_id = sh.simkl_id
+                     INNER JOIN episodes_meta AS m ON m.id = e.simkl_id AND m.type = 'simkl'
+                     LEFT JOIN seasons AS se ON se.simkl_id = e.simkl_season_id
+            {where_clause}
+            """
+        return self.fetchall(query) or []
+
+    @guard_against_none(None, 1, 2)
+    def _format_episodes_local(self, simkl_show_id, simkl_season_id=None, simkl_id=None):
+        """Format episode rows from cached Simkl meta + parent show context — no provider HTTP."""
+        episodes_to_format = self._episode_rows_for_local_format(
+            simkl_show_id, simkl_season_id, simkl_id
+        )
+        if episodes_to_format:
+            self._format_episodes(episodes_to_format, preloaded=True)
+
+    @guard_against_none(None, 1, 2)
+    def _format_seasons_local(self, simkl_show_id, simkl_season_id=None):
+        """Format season rows from cached Simkl meta + parent show context — no provider HTTP."""
+        if simkl_season_id is not None:
+            where_clause = f"WHERE s.simkl_id = {simkl_season_id}"
+        else:
+            where_clause = f"WHERE sh.simkl_id = {simkl_show_id}"
+        query = f"""
+            SELECT s.simkl_id,
+                   m.value      AS simkl_object,
+                   s.simkl_show_id,
+                   sh.tmdb_id AS tmdb_show_id,
+                   sh.tvdb_id AS tvdb_show_id,
+                   sh.info    AS show_info,
+                   sh.art     AS show_art,
+                   sh.cast    AS show_cast
+            FROM seasons AS s
+                     INNER JOIN shows AS sh ON s.simkl_show_id = sh.simkl_id
+                     LEFT JOIN seasons_meta AS m ON m.id = s.simkl_id AND m.type = 'simkl'
+            {where_clause}
+            """
+        seasons_to_format = self.fetchall(query) or []
+        if seasons_to_format:
+            self._format_seasons(seasons_to_format)
 
     @guard_against_none(None, 1, 2)
     def _try_update_episodes(self, simkl_show_id, simkl_season_id=None, simkl_id=None):
@@ -1549,17 +2272,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         )
         watching = []
         for row in rows or []:
-            status = row.get("simkl_status")
-            if not status:
-                info = row.get("show_info")
-                if isinstance(info, dict):
-                    status = info.get("simkl_status")
-            if not status:
-                obj = row.get("simkl_object") or {}
-                info = obj.get("info") if isinstance(obj, dict) else {}
-                if isinstance(info, dict):
-                    status = info.get("simkl_status")
-            if status != "watching":
+            if row.get("simkl_status") != "watching":
                 continue
             if catalog and self.show_catalog(row["simkl_id"]) != catalog:
                 continue
@@ -1578,6 +2291,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         :param sort_by_last_watched: Sort by last watched timestamp
         :param catalog: ``tv``, ``anime``, or None for all
         """
+        fallback_rows = self._get_nextup_episodes_fallback(sort_by_last_watched, catalog)
         if sort_by_last_watched:
             order_by = "ORDER BY inner_episodes.last_watched_at DESC"
         else:
@@ -1657,10 +2371,25 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             {order_by}
             """
 
-        rows = self.fetchall(query)
-        rows = self._filter_episode_rows_by_catalog(rows, catalog)
-        if not rows:
-            rows = self._get_nextup_episodes_fallback(sort_by_last_watched, catalog)
+        main_rows = self.fetchall(query)
+        main_rows = self._filter_episode_rows_by_catalog(main_rows, catalog)
+
+        by_show: dict[int, dict] = {}
+        for row in fallback_rows:
+            show_id = row.get("simkl_show_id")
+            if show_id is not None:
+                by_show[int(show_id)] = row
+        for row in main_rows:
+            show_id = row.get("simkl_show_id")
+            if show_id is not None:
+                by_show[int(show_id)] = row
+
+        rows = list(by_show.values())
+        if sort_by_last_watched:
+            rows.sort(key=lambda row: row.get("last_watched_at") or "", reverse=True)
+        else:
+            rows.sort(key=lambda row: row.get("air_date") or "", reverse=True)
+
         return self.wrap_in_simkl_object(rows)
 
     def _get_nextup_episodes_fallback(self, sort_by_last_watched=False, catalog=None):
@@ -1797,63 +2526,60 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         Get watched episodes from database.
         :param catalog: ``tv``, ``anime``, or None for all
         """
-        rows = self.fetchall(
-            f"""
-                SELECT e.simkl_id,
-                       e.number  AS episode_x,
-                       e.season  AS season_x,
-                       e.simkl_show_id,
-                       em.value  AS episode,
-                       sm.value  AS show,
-                       s.tmdb_id AS tmdb_show_id,
-                       s.tvdb_id AS tvdb_show_id,
-                       e.last_watched_at
-                FROM episodes AS e
-                         INNER JOIN shows AS s
-                             ON s.simkl_id = e.simkl_show_id
-                         LEFT JOIN episodes_meta AS em
-                             ON e.simkl_id = em.id
-                         LEFT JOIN shows_meta AS sm
-                             ON e.simkl_show_id = sm.id
-                WHERE e.watched > 0
-                ORDER BY e.last_watched_at DESC
-                """
-        )
-        rows = self._filter_episode_rows_by_catalog(rows, catalog)
-        offset = self.page_limit * (page - 1)
-        rows = rows[offset : offset + self.page_limit]
-        return self.wrap_in_simkl_object(rows)
+        import time
 
-    def get_unfinished_collected_shows(self, page=1):
-        """
-        Returns a list of shows the user has collected but not completed watching
-        :param page: Page to request
-        :type page: int
-        :return: List of show objects
-        :rtype: list
-        """
-        paginate = True
-        sort = 0
+        page_limit = self.page_limit
+        page = max(int(page or 1), 1)
+        offset = page_limit * (page - 1)
+        cache_key = (catalog, page, page_limit)
+        page_cache = getattr(self, "_watched_episodes_page_cache", None)
+        if isinstance(page_cache, dict):
+            entry = page_cache.get(cache_key)
+            if entry and time.time() < entry[0]:
+                return entry[1]
 
-        order_by = "ORDER BY collected_at DESC" if sort == 0 else ""
-        limit = f" LIMIT {self.page_limit} OFFSET {self.page_limit * (page - 1)}" if paginate and sort != 1 else ""
-
-        query = f"""
-            SELECT m.id AS simkl_id, value AS simkl_object
-            FROM shows_meta AS m
-                     INNER JOIN(SELECT ep.simkl_show_id, max(ep.collected_at) AS collected_at
-                                FROM episodes AS ep
-                                WHERE ep.season != 0
-                                  AND ep.watched = 0
-                                  AND ep.collected = 1
-                                GROUP BY ep.simkl_show_id
-                                HAVING count(*) > 0) AS u
-                         ON u.simkl_show_id = m.id AND m.type = 'simkl'
-            {order_by}
-            {limit}
+        base_query = """
+            SELECT e.simkl_id,
+                   e.number  AS episode_x,
+                   e.season  AS season_x,
+                   e.simkl_show_id,
+                   em.value  AS episode,
+                   sm.value  AS show,
+                   s.tmdb_id AS tmdb_show_id,
+                   s.tvdb_id AS tvdb_show_id,
+                   e.last_watched_at
+            FROM episodes AS e
+                     INNER JOIN shows AS s
+                                ON s.simkl_id = e.simkl_show_id
+                     LEFT JOIN episodes_meta AS em
+                               ON e.simkl_id = em.id AND em.type = 'simkl'
+                     LEFT JOIN shows_meta AS sm
+                               ON e.simkl_show_id = sm.id AND sm.type = 'simkl'
+            WHERE (COALESCE(e.watched, 0) > 0 OR e.last_watched_at IS NOT NULL)
             """
-
-        return self.fetchall(query)
+        if not catalog:
+            rows = self.fetchall(
+                f"{base_query} ORDER BY e.last_watched_at DESC LIMIT ? OFFSET ?",
+                (page_limit, offset),
+            )
+        else:
+            show_ids = self._show_ids_for_catalog(catalog) or []
+            if not show_ids:
+                rows = []
+            else:
+                placeholders = ",".join("?" * len(show_ids))
+                rows = self.fetchall(
+                    f"""{base_query}
+                        AND e.simkl_show_id IN ({placeholders})
+                        ORDER BY e.last_watched_at DESC
+                        LIMIT ? OFFSET ?""",
+                    tuple(show_ids) + (page_limit, offset),
+                )
+        result = self.wrap_in_simkl_object(rows)
+        if not hasattr(self, "_watched_episodes_page_cache"):
+            self._watched_episodes_page_cache = {}
+        self._watched_episodes_page_cache[cache_key] = (time.time() + 300.0, result)
+        return result
 
     @guard_against_none()
     def get_season_action_args(self, simkl_show_id, season):

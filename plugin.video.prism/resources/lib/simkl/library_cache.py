@@ -3,16 +3,8 @@ from __future__ import annotations
 
 import time
 
-from resources.lib.indexers.simkl import SimklAPI
-
 ACTIVITY_CHECK_SECONDS = 120
 CACHE_HOURS_FALLBACK = 24
-
-_CATALOG_ACTIVITY_SECTION = {
-    "movie": "movies",
-    "tv": "shows",
-    "anime": "anime",
-}
 
 
 def ensure_library_cache_tables(db=None) -> None:
@@ -156,30 +148,9 @@ def _save_activity_check(catalog: str, activity_timestamp: str | None) -> None:
 
 
 def _remote_library_activity_timestamp(catalog: str) -> str | None:
-    api = SimklAPI()
-    if not api.is_authenticated():
-        return None
-    payload = api.get_activities()
-    if not isinstance(payload, dict):
-        return None
-    section_key = _CATALOG_ACTIVITY_SECTION.get(catalog, "shows")
-    section = payload.get(section_key) or {}
-    if not isinstance(section, dict):
-        return None
-    timestamps = [
-        value
-        for value in (
-            section.get("all"),
-            section.get("rated_at"),
-            section.get("watchlist"),
-            section.get("collected_at"),
-            section.get("dropped_at"),
-            section.get("hold_at"),
-            section.get("completed_at"),
-        )
-        if value
-    ]
-    return max(timestamps) if timestamps else None
+    from resources.lib.simkl.remote_activities import library_activity_timestamp
+
+    return library_activity_timestamp(catalog)
 
 
 def _activity_requires_refresh(catalog: str) -> bool:
@@ -258,24 +229,27 @@ def load_library_list_refs(catalog: str, status: str) -> list[dict]:
     from resources.lib.modules.globals import g
     from resources.lib.modules.widget_loader import mark_widget_session_loaded
     from resources.lib.simkl.library_sort import sort_library_refs
-    from resources.lib.simkl.library_status import stamp_library_list_status
+    from resources.lib.simkl.library_status import queue_library_sync
+
+    activity_stale = _activity_requires_refresh(catalog)
+    if activity_stale:
+        queue_library_sync(user_initiated=False)
 
     if g.FROM_WIDGET and mark_widget_session_loaded(f"library.{catalog}.{status}"):
         cached = _get_cached_refs(catalog, status)
         if cached:
-            refs = sort_library_refs(cached, catalog)
-            stamp_library_list_status(catalog, status, refs)
-            return refs
+            return sort_library_refs(cached, catalog)
 
     cached = _get_cached_refs(catalog, status)
-    if cached and _cache_is_fresh(_get_cached_last_updated(catalog, status)):
-        refs = sort_library_refs(cached, catalog)
-        stamp_library_list_status(catalog, status, refs)
-        return refs
+    cache_fresh = cached and _cache_is_fresh(_get_cached_last_updated(catalog, status))
+    if cache_fresh and not activity_stale:
+        return sort_library_refs(cached, catalog)
 
-    refs = _load_refs_from_sync_db(catalog, status)
-    refs = sort_library_refs(refs, catalog)
-    stamp_library_list_status(catalog, status, refs)
+    if cached and not activity_stale and not cache_fresh:
+        _schedule_library_refresh(catalog, status)
+        return sort_library_refs(cached, catalog)
+
+    refs = sort_library_refs(_load_refs_from_sync_db(catalog, status), catalog)
     if refs:
         _save_cached_refs(catalog, status, refs)
     return refs

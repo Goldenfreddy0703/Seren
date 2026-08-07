@@ -93,8 +93,8 @@ _SEARCH_API = {
 
 def render_search_results_list(catalog: str, query: str, page_limit: int, list_builder) -> None:
     """Render a paginated Simkl title search with hybrid page-1 enrich + prefetch for next page."""
-    from resources.lib.discover.renderer import discover_list_kwargs
-    from resources.lib.simkl.menu_helpers import list_filter_kwargs
+    from resources.lib.meta.list_paint import render_catalog_discover_refs
+    from resources.lib.meta.menu_paint_profile import MenuPaintProfile, profile_list_kwargs
     from resources.lib.simkl.media_ref import persist_search_results
     from resources.lib.simkl.search import search_page
 
@@ -107,21 +107,22 @@ def render_search_results_list(catalog: str, query: str, page_limit: int, list_b
 
     refs = persist_search_results(catalog, filtered)
     has_next = len(filtered) >= page_limit
-    list_kwargs = {
-        **discover_list_kwargs(),
-        **list_filter_kwargs(hide_unaired=False, hide_watched=False),
-        "has_next_page": has_next,
-        "next_action": SEARCH_RESULTS_ACTIONS[catalog],
-        "next_args": {"query": query},
-        "enrichment_reason": "search",
-    }
+    list_kwargs = profile_list_kwargs(
+        MenuPaintProfile.SEARCH,
+        hide_unaired=False,
+        hide_watched=False,
+        has_next_page=has_next,
+        next_action=SEARCH_RESULTS_ACTIONS[catalog],
+        next_args={"query": query},
+    )
 
-    if catalog == "movie":
-        list_builder.movie_discover_builder(refs, **list_kwargs)
-    elif catalog == "anime":
-        list_builder.anime_discover_builder(refs, **list_kwargs)
-    else:
-        list_builder.show_discover_builder(refs, **list_kwargs)
+    render_catalog_discover_refs(
+        catalog,
+        refs,
+        list_builder,
+        list_kwargs=list_kwargs,
+        simkl_detail_paint=True,
+    )
 
 
 
@@ -143,15 +144,6 @@ def normalize_actor_args(action_args: Any) -> dict[str, Any]:
     return normalize_person_ref(action_args)
 
 
-
-
-
-def actor_credit_args(person_id: int, person_name: str, query: str, catalog: str | None = None) -> dict[str, Any]:
-    from resources.lib.simkl.person_ref import person_filmography_args
-
-    return person_filmography_args(person_id, person_name, query, catalog=catalog)
-
-
 def _actor_catalog_hint(action_args: dict[str, Any] | None = None) -> str | None:
     from resources.lib.simkl.person_ref import actor_catalog_hint
 
@@ -161,27 +153,6 @@ def _actor_catalog_hint(action_args: dict[str, Any] | None = None) -> str | None
 def _actor_pagination_catalog() -> dict[str, str]:
     catalog = _actor_catalog_hint()
     return {"catalog": catalog} if catalog else {}
-
-
-
-
-
-def _person_search_info(person: dict) -> dict[str, Any]:
-    from resources.lib.simkl.person_ref import person_menu_info
-
-    return person_menu_info(person)
-
-
-
-
-
-def _enrich_person_from_details(person: dict) -> dict:
-    from resources.lib.simkl.person_ref import enrich_person_from_tmdb
-
-    return enrich_person_from_tmdb(person)
-
-
-
 
 
 def render_person_picker(people: list[dict], query: str) -> None:

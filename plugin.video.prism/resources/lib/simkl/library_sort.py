@@ -97,7 +97,7 @@ def _load_db_sort_meta(refs: list[dict], catalog: str) -> dict[int, dict]:
     if not refs:
         return {}
 
-    from resources.lib.database.simkl_sync.database import SimklSyncDatabase
+    from resources.lib.database.session import get_sync_database
 
     ids = [int(ref["simkl_id"]) for ref in refs if ref.get("simkl_id") is not None]
     if not ids:
@@ -117,7 +117,7 @@ def _load_db_sort_meta(refs: list[dict], catalog: str) -> dict[int, dict]:
         WHERE simkl_id IN ({placeholders})
         """
 
-    rows = SimklSyncDatabase().fetchall(query, tuple(ids))
+    rows = get_sync_database().fetchall(query, tuple(ids))
 
     meta: dict[int, dict] = {}
     for row in rows:

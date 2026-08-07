@@ -65,7 +65,7 @@ class Menus:
 
     @staticmethod
     def search_menu():
-        from resources.lib.modules.metadata_providers import provider_enabled
+        from resources.lib.meta.provider_settings import provider_enabled
 
         if g.get_bool_setting('searchHistory'):
             g.add_directory_item(
@@ -86,7 +86,7 @@ class Menus:
                 description=g.get_language_string(30771),
                 menu_item=g.create_icon_dict("anime_search", g.ICONS_PATH),
             )
-            if provider_enabled("tmdb"):
+            if provider_enabled("imdb") or provider_enabled("tmdb"):
                 g.add_directory_item(
                     g.get_language_string(30327),
                     action='actorSearchHistory',
@@ -112,7 +112,7 @@ class Menus:
                 description=g.get_language_string(30770),
                 menu_item=g.create_icon_dict("anime_search", g.ICONS_PATH),
             )
-            if provider_enabled("tmdb"):
+            if provider_enabled("imdb") or provider_enabled("tmdb"):
                 g.add_directory_item(
                     g.get_language_string(30327),
                     action='searchByActor',

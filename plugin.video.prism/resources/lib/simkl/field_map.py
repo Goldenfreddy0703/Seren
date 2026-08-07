@@ -6,6 +6,32 @@ from typing import Any
 
 from resources.lib.discover.normalize import _int_or_none, _normalize_air_date, ensure_info_duration
 
+# Discover CDN fields that must not be copied into Kodi list info (popularity metrics).
+_DISCOVER_POPULARITY_INFO_KEYS = frozenset({"watched", "plan_to_watch"})
+
+
+def sanitize_list_info(info: dict[str, Any] | None, *, catalog: str | None = None) -> dict[str, Any]:
+    """Strip Simkl CDN popularity metrics and mis-typed status from Kodi list info."""
+    if not isinstance(info, dict):
+        return {}
+    cleaned = dict(info)
+    mediatype = (cleaned.get("mediatype") or "").lower()
+    is_movie = mediatype == "movie" or catalog == "movie"
+
+    watched = cleaned.get("watched")
+    if watched is not None:
+        try:
+            if int(watched) > 1:
+                cleaned.pop("watched", None)
+        except (TypeError, ValueError):
+            cleaned.pop("watched", None)
+
+    status = str(cleaned.get("status") or "").strip().lower()
+    if is_movie and status == "ended":
+        cleaned.pop("status", None)
+
+    return cleaned
+
 
 def _unescape(value):
     """Decode HTML entities (e.g. &#039; -> ') in Simkl-provided text."""
@@ -594,19 +620,10 @@ def merge_season_supplemental_info(target: dict[str, Any], source_info: dict[str
 
 
 def simkl_child_external_patch(external: dict[str, Any] | None) -> dict[str, Any]:
-    """Reduce a TMDB/TVDB season/episode response to art + supplemental info for caching."""
-    if not external:
+    """Reduce external season/episode response to artwork only for caching."""
+    if not external or not external.get("art"):
         return {}
-    patch: dict[str, Any] = {}
-    if external.get("art"):
-        patch["art"] = external["art"]
-    source_info = external.get("info")
-    if source_info:
-        info: dict[str, Any] = {}
-        merge_simkl_child_supplemental_info(info, source_info)
-        if info:
-            patch["info"] = info
-    return patch
+    return {"art": external["art"]}
 
 
 def episode_external_patch(external: dict[str, Any] | None) -> dict[str, Any]:
@@ -619,6 +636,27 @@ def season_external_patch(external: dict[str, Any] | None) -> dict[str, Any]:
 
 # Backwards-compatible alias
 EPISODE_SUPPLEMENTAL_INFO_KEYS = SIMKL_CHILD_SUPPLEMENTAL_INFO_KEYS
+
+
+def ensure_episode_title(info: dict[str, Any]) -> None:
+    """Default episode labels when Simkl stubs lack a per-episode name (playback sync)."""
+    if not info or info.get("mediatype") != "episode" or info.get("title"):
+        return
+    title = _unescape(info.get("name"))
+    if title:
+        info["title"] = title
+        info.setdefault("sorttitle", title)
+        return
+    ep_num = info.get("episode")
+    if ep_num is None:
+        ep_num = info.get("number")
+    if ep_num is None:
+        return
+    from resources.lib.modules.globals import g
+
+    title = g.get_language_string(30529).format(int(ep_num))
+    info["title"] = title
+    info.setdefault("sorttitle", title)
 
 
 def ensure_season_title(info: dict[str, Any]) -> None:
@@ -654,5 +692,6 @@ def finalize_playback_info(info: dict[str, Any]) -> None:
         info["country_origin"] = str(info["country"]).upper()
 
     ensure_info_duration(info)
+    ensure_episode_title(info)
     ensure_season_title(info)
     promote_ratings_for_display(info)

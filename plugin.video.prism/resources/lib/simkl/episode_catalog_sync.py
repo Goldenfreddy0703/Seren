@@ -139,7 +139,6 @@ def resolve_warm_targets(
     *,
     delta_show_ids: set[int] | None = None,
     changes_show_ids: set[int] | None = None,
-    force: bool = False,
 ) -> list[tuple[dict, str]]:
     """Return (show_row, bucket) pairs deduped by simkl_id (first bucket wins)."""
     delta_show_ids = delta_show_ids or set()
@@ -193,9 +192,9 @@ def resolve_warm_targets(
 
     targets: list[tuple[dict, str]] = []
     for show_id, bucket in ordered:
-        if not force and bucket not in (BUCKET_DELTA, BUCKET_CATALOG) and show_catalog_is_warm(db, show_id):
+        if bucket not in (BUCKET_DELTA, BUCKET_CATALOG) and show_catalog_is_warm(db, show_id):
             continue
-        if not force and bucket == BUCKET_CATALOG and show_catalog_is_warm(db, show_id):
+        if bucket == BUCKET_CATALOG and show_catalog_is_warm(db, show_id):
             continue
         row = _show_row(db, show_id)
         if row:
@@ -226,7 +225,7 @@ def warm_episode_catalogs(
     on_progress: Callable[[int, int, str, str], None] | None = None,
     notify_silent: bool = False,
 ) -> int:
-    """Mill episode catalogs for target shows in rate-limited batches. Returns count warmed."""
+    """Mill episode catalogs for target shows (Simkl meta only — paint on menu open)."""
     if not targets:
         return 0
 
@@ -235,16 +234,27 @@ def warm_episode_catalogs(
 
     total = len(targets)
     warmed = 0
+    pull_started = time.time()
     for start in range(0, total, EPISODE_WARM_BATCH_SIZE):
         batch = targets[start : start + EPISODE_WARM_BATCH_SIZE]
+        show_rows = [row for row, _ in batch]
+        db.force_mill_shows(
+            show_rows,
+            mill_episodes=True,
+            skip_provider_episode_updates=True,
+            defer_episode_format=True,
+        )
         for offset, (show_row, bucket) in enumerate(batch):
             current = start + offset + 1
-            title = _show_title(show_row)
             if on_progress:
-                on_progress(current, total, title, bucket)
-        show_rows = [row for row, _ in batch]
-        db.force_mill_shows(show_rows, mill_episodes=True)
+                on_progress(current, total, _show_title(show_row), bucket)
         warmed += len(batch)
+
+    pull_ms = (time.time() - pull_started) * 1000
+    g.log(
+        f"Simkl episode catalog warm complete: pulled={warmed} pull_ms={pull_ms:.0f}",
+        "info",
+    )
     return warmed
 
 
@@ -262,8 +272,12 @@ def run_post_sync_episode_warm(
         db,
         delta_show_ids=delta_ids,
         changes_show_ids=changes_ids,
-        force=force,
     )
     if targets:
         g.log(f"Simkl episode catalog warm: {len(targets)} show(s)", "info")
-    return warm_episode_catalogs(db, targets, on_progress=on_progress, notify_silent=notify_silent)
+    return warm_episode_catalogs(
+        db,
+        targets,
+        on_progress=on_progress,
+        notify_silent=notify_silent,
+    )

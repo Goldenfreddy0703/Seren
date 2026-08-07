@@ -13,8 +13,6 @@ __all__ = (
     "enrich_simkl_sync_items",
     "filter_pending",
     "get_display_meta_store",
-    "hybrid_apply_list_meta",
-    "hybrid_widget_local_meta",
     "mark_enriched",
     "provider_enabled",
 )
@@ -25,7 +23,7 @@ def __getattr__(name: str):
         from resources.lib.meta.enrichment import MetaEnrichmentQueue
 
         return MetaEnrichmentQueue
-    if name in ("hybrid_apply_list_meta", "hybrid_widget_local_meta", "enrich_simkl_sync_items"):
+    if name in ("enrich_simkl_sync_items",):
         from resources.lib.meta import enrichment as mod
 
         return getattr(mod, name)

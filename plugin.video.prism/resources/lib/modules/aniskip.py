@@ -39,9 +39,9 @@ def _resolve_mal_id(info):
     if not show_id:
         return None
     try:
-        from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        show = SimklSyncDatabase().get_show(show_id)
+        show = get_sync_database().get_show(show_id)
         show_info = (show or {}).get("info") if isinstance(show, dict) else None
         if show_info and _valid_int(show_info.get("mal_id")):
             return int(show_info["mal_id"])

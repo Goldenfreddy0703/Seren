@@ -64,38 +64,27 @@ def queue_library_sync(*, user_initiated: bool = True) -> None:
 
 
 def _sync_dict_from_info(info: dict, catalog: str) -> dict | None:
-    from resources.lib.discover.normalize import cdn_item_to_sync_dict
-
+    """Build a Simkl-owned sync dict — never persist TMDB-enriched info blobs."""
     row_id = library_row_id(info)
     if row_id is None:
         return None
 
-    ids = dict(info.get("ids") or {})
-    ids.setdefault("simkl_id", int(row_id))
-    for provider in ("tmdb", "tvdb", "imdb", "mal"):
-        flat = f"{provider}_id"
-        if info.get(flat) is not None and provider not in ids:
-            ids[provider] = info.get(flat)
+    from resources.lib.database.session import get_sync_database
+    from resources.lib.simkl.enrich import _simkl_detail_sync_dict, _sync_dict_from_db_row
 
-    mediatype = (info.get("mediatype") or "").lower()
-    if mediatype == "episode":
-        title = info.get("tvshowtitle") or info.get("title")
-    else:
-        title = info.get("title") or info.get("name")
+    sid = int(row_id)
+    table = "movies" if catalog == "movie" else "shows"
+    db = get_sync_database()
+    row = db.fetchone(
+        f"SELECT simkl_id, info, art, tmdb_id, tvdb_id, imdb_id FROM {table} WHERE simkl_id=?",
+        (sid,),
+    )
+    if row:
+        sync = _sync_dict_from_db_row(row, catalog)
+        if sync:
+            return sync
 
-    art = info.get("art") if isinstance(info.get("art"), dict) else {}
-    raw = {
-        "title": title,
-        "overview": info.get("plot") or info.get("overview"),
-        "release_date": info.get("aired") or info.get("premiered") or info.get("release_date"),
-        "poster": art.get("poster") or info.get("poster"),
-        "fanart": art.get("fanart") or info.get("fanart"),
-        "ids": ids,
-        "type": info.get("type"),
-        "anime_type": info.get("anime_type"),
-        "catalog": info.get("catalog") or catalog,
-    }
-    return cdn_item_to_sync_dict(raw, catalog)
+    return _simkl_detail_sync_dict(sid, catalog)
 
 
 def ensure_library_row(item_or_info: dict) -> int | None:
@@ -141,9 +130,9 @@ def resolve_status_after_watch(item_or_info: dict) -> str | None:
     if show_id is None:
         return "watching"
 
-    from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+    from resources.lib.database.session import get_sync_database
 
-    row = SimklSyncDatabase().fetchone(
+    row = get_sync_database().fetchone(
         "SELECT unwatched_episodes FROM shows WHERE simkl_id=?",
         (int(show_id),),
     )

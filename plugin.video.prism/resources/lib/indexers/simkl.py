@@ -129,10 +129,12 @@ class SimklAPI:
         return headers
 
     def _cdn_query(self) -> dict:
+        g.ensure_addon()
+        version = getattr(g, "VERSION", None) or g.ADDON.getAddonInfo("version")
         return {
             "client_id": self.client_id,
             "app-name": g.ADDON_ID,
-            "app-version": g.ADDON.getAddonInfo("version"),
+            "app-version": version,
         }
 
     @simkl_guard_response
@@ -331,10 +333,6 @@ class SimklAPI:
             params["type"] = media_types
         return self.get_json("/changes", authorized=False, client_id=self.client_id, **params)
 
-    def sync_all_items(self, media_type: str, status: str):
-        """Fetch user list bucket. status: watching, completed, hold, dropped, plantowatch."""
-        return self.get_json(f"/sync/all-items/{media_type}/{status}")
-
     def get_all_items(
         self,
         media_type: str | None = None,
@@ -350,6 +348,7 @@ class SimklAPI:
         query = dict(params)
         if date_from:
             query["date_from"] = date_from
+        query.update(self._cdn_query())
         return self.get_json(url, **query)
 
     @use_cache(cache_hours=24)
@@ -442,3 +441,49 @@ class SimklAPI:
         # Default API hide_watched=true drops playbacks if Simkl also has watch history.
         query.setdefault("hide_watched", "false")
         return self.get_json(url, **query)
+
+    @use_cache(cache_hours=168)
+    def redirect_simkl_id(
+        self,
+        *,
+        imdb: str | None = None,
+        type: str | None = None,
+        tmdb: int | None = None,
+    ) -> tuple[int, str] | None:
+        """Resolve external id via GET /redirect (read Location header, do not follow)."""
+        import re
+
+        params = dict(self._cdn_query())
+        params["to"] = "simkl"
+        if imdb:
+            from resources.lib.simkl.field_map import _normalize_imdb_id
+
+            normalized = _normalize_imdb_id(imdb)
+            if normalized:
+                params["imdb"] = normalized
+        if tmdb is not None:
+            params["tmdb"] = int(tmdb)
+        if type in ("movie", "tv"):
+            params["type"] = type
+        if not any(key in params for key in ("imdb", "tmdb")):
+            return None
+        try:
+            response = self.session.get(
+                parse.urljoin(self.ApiUrl, "/redirect"),
+                params=params,
+                headers=self._get_headers(authorized=False),
+                allow_redirects=False,
+                timeout=15,
+            )
+        except Exception:
+            g.log_stacktrace()
+            return None
+        if response is None or response.status_code not in (301, 302, 303, 307, 308):
+            return None
+        location = response.headers.get("Location") or ""
+        match = re.search(r"/(movies|tv|anime)/(\d+)", location)
+        if not match:
+            return None
+        segment, simkl_id = match.group(1), int(match.group(2))
+        catalog = {"movies": "movie", "tv": "tv", "anime": "anime"}.get(segment, "tv")
+        return simkl_id, catalog

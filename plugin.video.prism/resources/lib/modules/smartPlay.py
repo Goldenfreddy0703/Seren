@@ -72,10 +72,13 @@ class SmartPlay:
         :return:
         :rtype:
         """
-        from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
         seasons = {}
-        for item in SimklSyncDatabase().get_season_list(self.show_simkl_id):
+        for item in get_sync_database().get_season_list(
+            self.show_simkl_id,
+            skip_watch_refresh=True,
+        ):
             info = MetadataHandler.info(item)
             season_num = info.get("season")
             if season_num is None:
@@ -175,20 +178,18 @@ class SmartPlay:
         :return: (Season, Episode) tuple
         :rtype: tuple
         """
-        from resources.lib.database.simkl_sync.bookmark import SimklSyncDatabase as BookmarkDatabase
-        from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        bookmark_db = BookmarkDatabase()
-        show_db = SimklSyncDatabase()
+        db = get_sync_database()
 
-        if bookmarked := bookmark_db.get_bookmarked_episode_for_show(self.show_simkl_id):
+        if bookmarked := db.get_bookmarked_episode_for_show(self.show_simkl_id):
             g.log(
                 f"Quick Resume: continue watching at S{bookmarked[0]:02d}E{bookmarked[1]:02d}",
                 "info",
             )
             return bookmarked
 
-        if local_next := show_db.get_next_episode_for_show(self.show_simkl_id):
+        if local_next := db.get_next_episode_for_show(self.show_simkl_id):
             g.log(
                 f"Quick Resume: next up at S{local_next[0]:02d}E{local_next[1]:02d}",
                 "info",
@@ -250,9 +251,9 @@ class SmartPlay:
         season = int(season)
         episode = int(episode)
 
-        from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        row = SimklSyncDatabase().fetchone(
+        row = get_sync_database().fetchone(
             """
             SELECT season, number FROM episodes
             WHERE simkl_show_id = ? AND air_date IS NOT NULL
@@ -287,8 +288,8 @@ class SmartPlay:
         if not next_season:
             return
 
-        season_id = next_season["simkl_id"]
-        self.build_playlist(season_id, 1)
+        next_season_num = next_season.get("season", int(season) + 1)
+        self.build_playlist(next_season_num, 1)
 
     @staticmethod
     def pre_scrape():
@@ -323,9 +324,9 @@ class SmartPlay:
         window.show()
         window.set_text(g.get_language_string(30062))
 
-        from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-        episode_rows = SimklSyncDatabase().get_episode_list(
+        episode_rows = get_sync_database().get_episode_list(
             self.show_simkl_id,
             hide_unaired=False,
             hide_watched=False,
@@ -491,14 +492,14 @@ class SmartPlay:
         """
         bookmark_style = g.get_int_setting("general.bookmarkstyle")
 
-        if force_resume_check and not resume_switch:
-            from resources.lib.database.simkl_sync.bookmark import SimklSyncDatabase
+        if not resume_switch and not force_resume_off and bookmark_style != 2:
+            action_args = g.REQUEST_PARAMS.get("action_args") or {}
+            simkl_id = action_args.get("simkl_id")
+            if simkl_id:
+                from resources.lib.database.session import get_sync_database
 
-            simkl_id = g.REQUEST_PARAMS.get("action_args").get("simkl_id")
-
-            if bookmark := SimklSyncDatabase().get_bookmark(simkl_id):
-                g.log(f"bookmark: {bookmark}")
-                resume_switch = bookmark["resume_time"]
+                if bookmark := get_sync_database().get_bookmark(simkl_id):
+                    resume_switch = bookmark["resume_time"]
 
         if g.PLAYLIST.size() <= 1 and resume_switch is not None and bookmark_style != 2 and not force_resume_off:
 

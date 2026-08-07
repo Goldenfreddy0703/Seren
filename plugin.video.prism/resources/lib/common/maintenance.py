@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import contextlib
-import json
 import os
 import time
-import zipfile
-from io import BytesIO
 
-import xbmc
 import xbmcgui
 import xbmcvfs
 
@@ -23,330 +18,17 @@ from resources.lib.indexers.tvdb import TVDBAPI
 from resources.lib.modules.globals import g
 from resources.lib.modules.providers.install_manager import ProviderInstallManager
 
-BACKUP_FORMAT = "prism-userdata-backup"
-BACKUP_FORMAT_VERSION = 1
-MANIFEST_NAME = "prism-backup-manifest.json"
-SKIP_BACKUP_FILENAMES = frozenset({"qr_code.png"})
-SKIP_BACKUP_SUFFIXES = (".db-wal", ".db-shm", ".temp")
-
-
-def _vfs_join(base: str, filename: str) -> str:
-    base = (base or "").replace("\\", "/").rstrip("/")
-    return f"{base}/{filename}"
-
-
-def _write_bytes_to_vfs(path: str, data: bytes) -> bool:
-    handle = None
-    try:
-        handle = xbmcvfs.File(tools.validate_path(path), "wb")
-        handle.write(data)
-        return True
-    except OSError:
-        g.log_stacktrace()
-        return False
-    finally:
-        if handle is not None:
-            with contextlib.suppress(Exception):
-                handle.close()
-
-
-def _read_bytes_from_vfs(path: str) -> bytes | None:
-    handle = None
-    try:
-        handle = xbmcvfs.File(tools.validate_path(path))
-        return handle.readBytes()
-    except OSError:
-        return None
-    finally:
-        if handle is not None:
-            with contextlib.suppress(Exception):
-                handle.close()
-
-
-def _open_zip_archive(path: str) -> zipfile.ZipFile:
-    data = _read_bytes_from_vfs(path)
-    if not data:
-        raise OSError(f"Unable to read zip archive: {path}")
-    return zipfile.ZipFile(BytesIO(data))
-
-
-def _backup_export_filename() -> str:
-    stamp = time.strftime("%Y-%m-%d")
-    return f"prism-backup-{stamp}.zip"
-
-
-def _should_skip_backup_path(relative_path: str) -> bool:
-    basename = os.path.basename(relative_path.replace("\\", "/"))
-    if basename in SKIP_BACKUP_FILENAMES:
-        return True
-    if basename.startswith("qr_auth_") and basename.endswith(".png"):
-        return True
-    lowered = relative_path.replace("\\", "/").lower()
-    return lowered.endswith(SKIP_BACKUP_SUFFIXES)
-
-
-def _build_backup_manifest() -> dict:
-    return {
-        "format": BACKUP_FORMAT,
-        "format_version": BACKUP_FORMAT_VERSION,
-        "addon_id": g.ADDON_ID,
-        "addon_version": g.ADDON.getAddonInfo("version"),
-        "kodi_version": getattr(g, "KODI_FULL_VERSION", None) or str(getattr(g, "KODI_VERSION", "")),
-        "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }
-
-
-def _iter_userdata_files(root_path: str):
-    root_path = tools.translate_path(root_path)
-    if not os.path.isdir(root_path):
-        return
-    for dirpath, dirnames, filenames in os.walk(root_path):
-        dirnames[:] = [name for name in dirnames if name != "__pycache__"]
-        for name in filenames:
-            full_path = os.path.join(dirpath, name)
-            relative_path = os.path.relpath(full_path, root_path).replace("\\", "/")
-            if _should_skip_backup_path(relative_path):
-                continue
-            yield full_path, relative_path
-
-
-def _create_userdata_zip(dest_path: str) -> bool:
-    userdata_path = tools.translate_path(g.ADDON_USERDATA_PATH)
-    file_count = 0
-    try:
-        buffer = BytesIO()
-        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr(
-                MANIFEST_NAME,
-                json.dumps(_build_backup_manifest(), indent=2, sort_keys=True),
-            )
-            for full_path, relative_path in _iter_userdata_files(userdata_path):
-                archive.write(full_path, relative_path)
-                file_count += 1
-        if not _write_bytes_to_vfs(dest_path, buffer.getvalue()):
-            return False
-    except OSError:
-        g.log_stacktrace()
-        return False
-
-    return file_count > 0 or os.path.isdir(userdata_path) or xbmcvfs.exists(userdata_path)
-
-
-def _zip_member_is_safe(member: str) -> bool:
-    if not member or member.startswith("/") or ".." in member.replace("\\", "/").split("/"):
-        return False
-    return True
-
-
-def _resolve_zip_target(dest_root: str, member: str) -> str | None:
-    if not _zip_member_is_safe(member):
-        return None
-    normalized_member = member.replace("\\", "/").rstrip("/")
-    if not normalized_member or normalized_member == MANIFEST_NAME:
-        return None
-    dest_root = tools.translate_path(dest_root)
-    dest_root = os.path.abspath(dest_root)
-    target = os.path.abspath(os.path.join(dest_root, normalized_member.replace("/", os.sep)))
-    if target != dest_root and not target.startswith(dest_root + os.sep):
-        return None
-    return target
-
-
-def _is_prism_backup_zip(path: str) -> bool:
-    if not path or not xbmcvfs.exists(path):
-        return False
-    try:
-        with _open_zip_archive(path) as archive:
-            names = archive.namelist()
-            if MANIFEST_NAME in names:
-                manifest = json.loads(archive.read(MANIFEST_NAME).decode("utf-8"))
-                return (
-                    manifest.get("format") == BACKUP_FORMAT
-                    and manifest.get("addon_id") == g.ADDON_ID
-                )
-            if "settings.xml" in names:
-                return _is_prism_settings_file(path, member_name="settings.xml", archive=archive)
-    except (OSError, zipfile.BadZipFile, json.JSONDecodeError, KeyError, ValueError):
-        return False
-    return False
-
-
-def _is_prism_settings_file(path: str, *, member_name: str | None = None, archive=None) -> bool:
-    if not path and archive is None:
-        return False
-    try:
-        if archive is not None and member_name:
-            head = archive.read(member_name)[:4096]
-        else:
-            with xbmcvfs.File(path, "r") as handle:
-                head = handle.read(4096)
-    except OSError:
-        return False
-    if not isinstance(head, str):
-        try:
-            head = head.decode("utf-8", errors="ignore")
-        except Exception:
-            return False
-    return "<settings" in head and 'id="plugin.video.prism"' in head
-
-
-def _should_skip_zip_extract_member(member: str) -> bool:
-    normalized = member.replace("\\", "/").rstrip("/")
-    return normalized == MANIFEST_NAME
-
-
-def _extract_backup_zip(source_path: str, dest_root: str) -> bool:
-    dest_root = tools.translate_path(dest_root)
-    if not xbmcvfs.exists(dest_root):
-        xbmcvfs.mkdir(dest_root)
-
-    try:
-        with _open_zip_archive(source_path) as archive:
-            for member in archive.namelist():
-                if _should_skip_zip_extract_member(member):
-                    continue
-                if member.endswith("/"):
-                    target_dir = _resolve_zip_target(dest_root, member)
-                    if target_dir:
-                        xbmcvfs.mkdirs(target_dir)
-                    continue
-                target_path = _resolve_zip_target(dest_root, member)
-                if not target_path:
-                    raise ValueError(f"Unsafe zip member: {member}")
-                parent = os.path.dirname(target_path)
-                if parent and not xbmcvfs.exists(parent):
-                    xbmcvfs.mkdirs(parent)
-                with archive.open(member) as source, open(target_path, "wb") as target:
-                    target.write(source.read())
-    except (OSError, zipfile.BadZipFile, ValueError):
-        g.log_stacktrace()
-        return False
-    return True
-
-
-def _pre_import_backup_path() -> str:
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    parent = os.path.dirname(tools.validate_path(g.ADDON_USERDATA_PATH))
-    return os.path.join(parent, f"prism-pre-import-{stamp}.zip")
-
-
-def _prompt_restart_after_import() -> None:
-    if xbmcgui.Dialog().yesno(g.ADDON_NAME, g.get_language_string(30904)):
-        xbmc.executebuiltin("RestartApp")
-        return
-    xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30905))
-
 
 def export_settings() -> None:
-    userdata_path = tools.validate_path(g.ADDON_USERDATA_PATH)
-    if not xbmcvfs.exists(userdata_path):
-        xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30906))
-        return
+    from resources.lib.common.backup_restore import export_backup
 
-    export_dir = xbmcgui.Dialog().browse(
-        3,
-        f"{g.ADDON_NAME}: {g.get_language_string(30892)}",
-        "files",
-    )
-    if not export_dir:
-        return
-
-    filename = _backup_export_filename()
-    dest = _vfs_join(export_dir, filename)
-    if not xbmcgui.Dialog().yesno(
-        g.ADDON_NAME,
-        g.get_language_string(30901).format(filename),
-    ):
-        return
-
-    if _create_userdata_zip(dest):
-        xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30902).format(dest))
-    else:
-        xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30898))
+    export_backup()
 
 
 def import_settings() -> None:
-    source = xbmcgui.Dialog().browse(
-        1,
-        f"{g.ADDON_NAME}: {g.get_language_string(30891)}",
-        "files",
-        "",
-        False,
-        False,
-    )
-    if not source:
-        return
+    from resources.lib.common.backup_restore import import_backup
 
-    source = tools.validate_path(source)
-    lowered = source.lower()
-    if lowered.endswith(".zip"):
-        _import_backup_zip(source)
-        return
-    if lowered.endswith(".xml"):
-        _import_settings_xml(source)
-        return
-    xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30903))
-
-
-def _import_backup_zip(source: str) -> None:
-    if not _is_prism_backup_zip(source):
-        xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30903))
-        return
-
-    if not xbmcgui.Dialog().yesno(g.ADDON_NAME, g.get_language_string(30900)):
-        return
-
-    userdata_path = tools.validate_path(g.ADDON_USERDATA_PATH)
-    pre_import_path = None
-    if xbmcvfs.exists(userdata_path) and any(_iter_userdata_files(userdata_path)):
-        pre_import_path = _pre_import_backup_path()
-        if not _create_userdata_zip(pre_import_path):
-            xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30898))
-            return
-
-    if xbmcvfs.exists(userdata_path):
-        xbmcvfs.rmdir(userdata_path, True)
-    xbmcvfs.mkdir(userdata_path)
-
-    if not _extract_backup_zip(source, userdata_path):
-        if pre_import_path and xbmcvfs.exists(pre_import_path):
-            xbmcvfs.rmdir(userdata_path, True)
-            xbmcvfs.mkdir(userdata_path)
-            _extract_backup_zip(pre_import_path, userdata_path)
-        xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30898))
-        return
-
-    _prompt_restart_after_import()
-
-
-def _import_settings_xml(source: str) -> None:
-    if not _is_prism_settings_file(source):
-        xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30893))
-        return
-
-    if not xbmcgui.Dialog().yesno(g.ADDON_NAME, g.get_language_string(30894)):
-        return
-
-    userdata_path = tools.validate_path(g.ADDON_USERDATA_PATH)
-    if not xbmcvfs.exists(userdata_path):
-        xbmcvfs.mkdir(userdata_path)
-
-    backup_path = f"{g.SETTINGS_PATH}.bak"
-    if xbmcvfs.exists(g.SETTINGS_PATH):
-        if xbmcvfs.exists(backup_path):
-            xbmcvfs.delete(backup_path)
-        xbmcvfs.copy(g.SETTINGS_PATH, backup_path)
-
-    if xbmcvfs.exists(g.SETTINGS_PATH):
-        xbmcvfs.delete(g.SETTINGS_PATH)
-
-    if xbmcvfs.copy(source, g.SETTINGS_PATH):
-        xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30897))
-        return
-
-    if xbmcvfs.exists(backup_path):
-        xbmcvfs.copy(backup_path, g.SETTINGS_PATH)
-    xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30898))
+    import_backup()
 
 
 def update_themes():
@@ -381,7 +63,9 @@ def refresh_apis():
     :rtype: None
     """
     if g.get_setting("simkl.auth"):
-        SimklAPI().get_activities()
+        from resources.lib.simkl.remote_activities import get_activities_payload
+
+        get_activities_payload(force=True)
     real_debrid.RealDebrid().try_refresh_token()
     TVDBAPI().try_refresh_token()
 
@@ -543,6 +227,14 @@ def run_maintenance():
     :return: None
     :rtype: None
     """
+    from resources.lib.modules.page_prefetch import foreground_browse_busy
+
+    if foreground_browse_busy():
+        g.log("Deferring maintenance while a menu or browse task is active", "debug")
+        g.set_runtime_setting("maintenance.deferred", True)
+        return
+
+    g.set_runtime_setting("maintenance.deferred", False)
     g.log("Performing Maintenance")
     # ADD COMMON HOUSE KEEPING ITEMS HERE #
 
@@ -554,9 +246,13 @@ def run_maintenance():
         g.log(f"Failed to update API keys: {e}", 'error')
 
     try:
-        from resources.lib.calendar.simkl_calendar import prefetch_all_calendars, prefetch_calendars_enabled
+        from resources.lib.calendar.simkl_calendar import (
+            prefetch_all_calendars,
+            prefetch_calendars_enabled,
+            weekly_cache_warm,
+        )
 
-        if prefetch_calendars_enabled():
+        if prefetch_calendars_enabled() and not weekly_cache_warm():
             warmed = prefetch_all_calendars()
             if warmed:
                 g.log(f"Calendar prefetch warmed {warmed} weekly rows", "debug")
@@ -586,19 +282,20 @@ def run_maintenance():
             g.log(f"Failed to cleanup PM transfers: {e}", 'error')
 
     # clean_deprecated_settings()
-    from resources.lib.modules.page_prefetch import foreground_browse_busy
-
     if foreground_browse_busy():
         g.log("Skipping maintenance DB work while browse prefetch/enrich is active", "debug")
+        g.set_runtime_setting("maintenance.deferred", True)
         return
 
+    g.set_runtime_setting("maintenance.deferred", False)
     cache.Cache().check_cleanup()
     try:
-        from resources.lib.database.sync_meta_cache import SyncMetaCache
+        from resources.lib.modules.cache_maintenance import warm_menu_caches
 
-        SyncMetaCache().prefetch()
+        if not g.get_bool_runtime_setting("sync_meta.prefetch.done"):
+            warm_menu_caches()
     except Exception as e:
-        g.log(f"Failed to prefetch sync meta cache: {e}", "warning")
+        g.log(f"Failed to warm menu caches: {e}", "warning")
     try:
         from resources.lib.meta.enrichment import MetaEnrichmentQueue
 

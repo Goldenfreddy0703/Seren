@@ -14,6 +14,14 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
     @guard_against_none(list)
     def get_movie_list(self, media_list, **params):
         skip_update = params.pop("skip_update", False)
+        paint_only = params.pop("paint_only", False)
+        if skip_update and paint_only:
+            from resources.lib.meta.paint_cache import try_fast_paint_list
+
+            fast_rows = try_fast_paint_list(media_list, "movie", self, **params)
+            if fast_rows is not None:
+                return fast_rows
+
         if not skip_update:
             self._update_movies(media_list)
 
@@ -56,48 +64,27 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         rows = get_display_meta_store().overlay_rows(rows, "movie")
 
         if skip_update:
-            from resources.lib.meta.enrichment import (
-                hybrid_apply_list_meta,
-                hybrid_widget_local_meta,
-            )
+            from resources.lib.meta.paint_cache import paint_sync_list_rows
 
-            if hybrid_widget_local_meta():
-                rows, enrichment_refs = self.metadataHandler.merge_list_meta_local(rows, "movie", db=self)
-                from resources.lib.simkl.enrich import gapfill_anime_title_rows
-
-                rows = gapfill_anime_title_rows(rows)
-                self.set_list_enrichment_refs(enrichment_refs, "movie")
-            else:
-                rows = hybrid_apply_list_meta(rows, "movie", self)
+            rows = paint_sync_list_rows(rows, media_list, "movie", self, **params)
         else:
             self.set_list_enrichment_refs([], "movie")
         return MetadataHandler.sort_list_items(rows, media_list)
 
     @guard_against_none(list)
-    def get_collected_movies(self, page):
-        paginate = True
-
-        query = """
-            SELECT m.simkl_id, meta.value AS simkl_object
-            FROM movies AS m
-                     LEFT JOIN movies_meta AS meta
-                               ON m.simkl_id = meta.id
-            WHERE collected = TRUE
-            """
-
-        if paginate:
-            query += f"ORDER BY collected_at desc LIMIT {self.page_limit} OFFSET {self.page_limit * (page - 1)}"
-
-        return self.fetchall(query)
-
-    @guard_against_none(list)
     def get_watched_movies(self, page):
         return self.fetchall(
             f"""
-            SELECT m.simkl_id, meta.value AS simkl_object
+            SELECT m.simkl_id,
+                   meta.value AS simkl_object,
+                   m.info,
+                   m.art,
+                   m.tmdb_id,
+                   m.tvdb_id,
+                   m.imdb_id
             FROM movies AS m
                      LEFT JOIN movies_meta AS meta
-                               ON m.simkl_id = meta.id
+                               ON m.simkl_id = meta.id AND meta.type = 'simkl'
             WHERE watched = 1
             ORDER BY last_watched_at DESC
             LIMIT {self.page_limit} OFFSET {self.page_limit * (page - 1)}
@@ -124,17 +111,6 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
 
         return sort_library_refs(refs, "movie")
 
-    def get_all_collected_movies(self):
-        return self.fetchall(
-            """
-            SELECT m.simkl_id, meta.value AS simkl_object
-            FROM movies AS m
-                     LEFT JOIN movies_meta AS meta
-                         ON m.simkl_id = meta.id
-            WHERE collected = TRUE
-            """
-        )
-
     @guard_against_none()
     def mark_movie_watched(self, simkl_id):
         play_count = self.fetchone("SELECT watched FROM movies WHERE simkl_id=?", (simkl_id,))["watched"]
@@ -145,26 +121,11 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         self._mark_movie_record("watched", 0, simkl_id)
 
     @guard_against_none()
-    def mark_movie_collected(self, simkl_id):
-        self._mark_movie_record("collected", 1, simkl_id)
-
-    @guard_against_none()
-    def mark_movie_uncollected(self, simkl_id):
-        self._mark_movie_record("collected", 0, simkl_id)
-
-    @guard_against_none()
     def _mark_movie_record(self, column, value, simkl_id):
-        if column == "watched":
-            datetime_column = "last_watched_at"
-        elif column == "collected":
-            datetime_column = "collected_at"
-        else:
-            datetime_column = None
-        if datetime_column is None:
-            # Just in case we forgot any methods that call this
+        if column != "watched":
             raise TypeError("NoneType Error: Date Time Column")
         self.execute_sql(
-            f"UPDATE movies SET {column}=?, {datetime_column}=? WHERE simkl_id=?",
+            "UPDATE movies SET watched=?, last_watched_at=? WHERE simkl_id=?",
             (value, self._get_datetime_now() if value > 0 else None, simkl_id),
         )
 
@@ -253,28 +214,27 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
 
         formatted_items = self.metadataHandler.format_db_object(updated_items)
 
+        movie_rows = [
+            (
+                i["info"]["simkl_id"],
+                i["info"],
+                i.get("art"),
+                i.get("cast"),
+                i["info"].get("playcount") or 0,
+                i["info"].get("aired"),
+                i["info"].get("dateadded"),
+                i["info"].get("tmdb_id"),
+                i["info"].get("tvdb_id"),
+                i["info"].get("imdb_id"),
+                self.metadataHandler.meta_hash,
+                self._create_args(i),
+                i["info"].get("last_watched_at"),
+                i["info"].get("user_rating"),
+                self.get_library_status(i["info"]["simkl_id"], "movie", i["info"]),
+            )
+            for i in formatted_items
+        ]
         self.execute_sql(
             self.upsert_movie_query,
-            [
-                (
-                    i["info"]["simkl_id"],
-                    i["info"],
-                    i.get("art"),
-                    i.get("cast"),
-                    None,
-                    None,
-                    i["info"].get("aired"),
-                    i["info"].get("dateadded"),
-                    i["info"].get("tmdb_id"),
-                    i["info"].get("tvdb_id"),
-                    i["info"].get("imdb_id"),
-                    self.metadataHandler.meta_hash,
-                    self._create_args(i),
-                    None,
-                    None,
-                    None,
-                    self.get_library_status(i["info"]["simkl_id"], "movie", i["info"]),
-                )
-                for i in formatted_items
-            ],
+            movie_rows,
         )

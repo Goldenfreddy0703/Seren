@@ -371,7 +371,7 @@ def set_video_info_tag(item, info, cast=None, unique_ids=None):
         info_tag.setTrailer(str(info["trailer"]))
     if info.get("code"):
         info_tag.setProductionCode(str(info["code"]))
-    if info.get("status"):
+    if info.get("status") and str(info.get("mediatype") or "").lower() in ("tvshow", "season"):
         info_tag.setTvShowStatus(str(info["status"]))
     if info.get("path"):
         info_tag.setPath(str(info["path"]))
@@ -688,25 +688,30 @@ class GlobalVariables:
         """
         timezone_string = None
         try:
-            try:
-                response = self.json_rpc("Settings.GetSettingValue", {"setting": "locale.timezone"})
-                timezone_string = response.get("value", '')
+            cached = self.get_setting("general.localtimezone")
+            if cached:
+                try:
+                    cached_tz = pytz.timezone(cached)
+                    if cached_tz != self.UTC_TIMEZONE:
+                        self.LOCAL_TIMEZONE = cached_tz
+                        return
+                except pytz.UnknownTimeZoneError:
+                    self.log(f"Invalid cached local timezone '{cached}', re-detecting", "debug")
 
-                self.LOCAL_TIMEZONE = pytz.timezone(timezone_string)
-            except pytz.UnknownTimeZoneError:
-                if timezone_string:
+            response = self.json_rpc(
+                "Settings.GetSettingValue",
+                {"setting": "locale.timezone"},
+                log_error=False,
+            )
+            timezone_string = response.get("value")
+            if timezone_string:
+                try:
+                    self.LOCAL_TIMEZONE = pytz.timezone(timezone_string)
+                except pytz.UnknownTimeZoneError:
                     self.log(
                         f"Kodi provided an invalid local timezone '{timezone_string}', trying a different approach",
                         "warning",
                     )
-                else:
-                    self.log(
-                        "Kodi does not support locale.timezone JSON RPC call on your platform, trying a different "
-                        "approach",
-                        "debug",
-                    )
-            except Exception as e:
-                self.log(f"Error detecting local timezone with Kodi, trying a different approach: {e}", "warning")
             # If Kodi detection failed, fall back on tzlocal
             try:
                 if not self.LOCAL_TIMEZONE or self.LOCAL_TIMEZONE == self.UTC_TIMEZONE:
@@ -801,17 +806,17 @@ class GlobalVariables:
             return action_args
 
         if "season" in action_args["item_type"]:
-            from resources.lib.database.simkl_sync import shows
+            from resources.lib.database.session import get_sync_database
 
             action_args.update(
-                shows.SimklSyncDatabase().get_season_action_args(action_args["simkl_id"], action_args["season"])
+                get_sync_database().get_season_action_args(action_args["simkl_id"], action_args["season"])
             )
 
         if "episode" in action_args["item_type"]:
-            from resources.lib.database.simkl_sync import shows
+            from resources.lib.database.session import get_sync_database
 
             action_args.update(
-                shows.SimklSyncDatabase().get_episode_action_args(
+                get_sync_database().get_episode_action_args(
                     action_args["simkl_id"],
                     action_args["season"],
                     action_args["episode"],
@@ -841,10 +846,6 @@ class GlobalVariables:
                 params["action"] = "genericEndpoint"
                 params["endpoint"] = "watched"
                 params["mediatype"] = "movies"
-            if params["action"] == "moviesCollected":
-                params["action"] = "genericEndpoint"
-                params["endpoint"] = "collected"
-                params["mediatype"] = "movies"
             if params["action"] == "moviesAnticipated":
                 params["action"] = "genericEndpoint"
                 params["endpoint"] = "anticipated"
@@ -864,10 +865,6 @@ class GlobalVariables:
             if params["action"] == "showsWatched":
                 params["action"] = "genericEndpoint"
                 params["endpoint"] = "watched"
-                params["mediatype"] = "shows"
-            if params["action"] == "showsCollected":
-                params["action"] = "genericEndpoint"
-                params["endpoint"] = "collected"
                 params["mediatype"] = "shows"
             if params["action"] == "showsAnticipated":
                 params["action"] = "genericEndpoint"
@@ -1349,6 +1346,12 @@ class GlobalVariables:
                 return
         g.CACHE.clear_all()
         g._init_cache()
+        try:
+            from resources.lib.modules.cache_maintenance import invalidate_all_menu_caches
+
+            invalidate_all_menu_caches(include_api_cache=True)
+        except Exception:
+            self.log_stacktrace()
         self.log(f"{self.ADDON_NAME}: Cache Cleared", "debug")
         if not silent:
             xbmcgui.Dialog().notification(self.ADDON_NAME, self.get_language_string(30052))
@@ -1583,13 +1586,16 @@ class GlobalVariables:
             item.setProperty("UnWatchedEpisodes", str(menu_item["unwatched_episodes"]))
         if "watched_episodes" in menu_item:
             item.setProperty("WatchedEpisodes", str(menu_item["watched_episodes"]))
+
         if menu_item.get("episode_count", 0) and menu_item.get("watched_episodes", 0):
-            if menu_item["episode_count"] == menu_item["watched_episodes"]:
+            ep_count = int(menu_item["episode_count"])
+            watched_eps = int(menu_item["watched_episodes"])
+            if ep_count == watched_eps:
                 info["playcount"] = 1
             else:
                 item.setProperty(
                     "WatchedProgress",
-                    str(max(1, int((float(menu_item["watched_episodes"]) / menu_item["episode_count"]) * 100))),
+                    str(max(1, int((float(watched_eps) / float(ep_count)) * 100))),
                 )
         if (
             menu_item.get("watched_episodes", 0) == 0
@@ -1772,6 +1778,10 @@ class GlobalVariables:
 
         return info_dict
 
+    def kodi_menu_caching_enabled(self) -> bool:
+        """When true, Kodi may reuse cached folder listings (instant back navigation)."""
+        return self.get_bool_setting("general.menucaching", True) and not self.FROM_WIDGET
+
     def close_directory(self, content_type, sort=False, cache=None):
         if sort == "title":
             xbmcplugin.addSortMethod(self.PLUGIN_HANDLE, xbmcplugin.SORT_METHOD_LABEL_IGNORE_THE)
@@ -1780,14 +1790,58 @@ class GlobalVariables:
         if not sort:
             xbmcplugin.addSortMethod(self.PLUGIN_HANDLE, xbmcplugin.SORT_METHOD_NONE)
         xbmcplugin.setContent(self.PLUGIN_HANDLE, self.kodi_content_type(content_type))
-        if cache is None:
-            menu_caching = True
-        else:
-            menu_caching = bool(cache)
         if self.FROM_WIDGET:
             menu_caching = False
+        elif not self.get_bool_setting("general.menucaching", True):
+            menu_caching = bool(cache) if cache is not None else False
+        elif cache is False:
+            menu_caching = False
+        else:
+            menu_caching = True
         xbmcplugin.endOfDirectory(self.PLUGIN_HANDLE, cacheToDisc=menu_caching)
         self.set_view_type(content_type)
+        if content_type == self.CONTENT_EPISODE and self.get_bool_setting("general.smart.scroll.enable", True):
+            tools.run_threaded(self._episode_smart_scroll)
+
+    def _episode_smart_scroll(self) -> None:
+        """Scroll episode lists to the next unwatched item (Otaku-style)."""
+        import xbmc
+        import xbmcgui
+
+        if not self.is_addon_visible():
+            return
+        if self.get_bool_setting("general.setViews"):
+            xbmc.sleep(150)
+        for _ in range(56):
+            if self.abort_requested():
+                return
+            window_id = xbmcgui.getCurrentWindowId()
+            if window_id != 10025:
+                xbmc.sleep(80)
+                continue
+            window = xbmcgui.Window(window_id)
+            active_id = window.getFocusId()
+            if not active_id:
+                xbmc.sleep(80)
+                continue
+            try:
+                num_watched = int(xbmc.getInfoLabel("Container.TotalWatched"))
+                total_ep = int(xbmc.getInfoLabel("Container.NumItems"))
+                all_items = int(xbmc.getInfoLabel("Container.NumAllItems"))
+            except (TypeError, ValueError):
+                xbmc.sleep(80)
+                continue
+            if all_items <= 0:
+                xbmc.sleep(80)
+                continue
+            offset = 1 if all_items > total_ep else 0
+            target_index = num_watched + offset
+            if not (0 < target_index < all_items):
+                return
+            xbmc.executebuiltin("Action(firstpage)")
+            xbmc.sleep(50)
+            xbmc.executebuiltin(f"Control.SetFocus({active_id}, {target_index})")
+            return
 
     def set_view_type(self, content_type):
         def _execute_set_view_mode(view):
@@ -1847,7 +1901,7 @@ class GlobalVariables:
         del k
         return input_value
 
-    def json_rpc(self, method, params=None):
+    def json_rpc(self, method, params=None, log_error=True):
         request_data = {
             "jsonrpc": "2.0",
             "method": method,
@@ -1856,7 +1910,8 @@ class GlobalVariables:
         }
         response = json.loads(xbmc.executeJSONRPC(json.dumps(request_data)))
         if "error" in response:
-            self.log(f"JsonRPC Error {response['error']['code']}: {response['error']['message']}", "debug")
+            if log_error:
+                self.log(f"JsonRPC Error {response['error']['code']}: {response['error']['message']}", "debug")
         return response.get("result", {})
 
     def get_kodi_subtitle_languages(self, iso_format=False):

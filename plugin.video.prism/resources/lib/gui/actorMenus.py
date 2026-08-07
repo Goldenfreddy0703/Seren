@@ -58,23 +58,17 @@ class ActorMenus:
 
     def movies_database(self):
 
-        from resources.lib.database.simkl_sync.movies import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-
-
-        return SimklSyncDatabase()
-
-
+        return get_sync_database()
 
     @cached_property
 
     def shows_database(self):
 
-        from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+        from resources.lib.database.session import get_sync_database
 
-
-
-        return SimklSyncDatabase()
+        return get_sync_database()
 
 
 
@@ -104,7 +98,7 @@ class ActorMenus:
 
     def search_by_actor(self, query=None):
 
-        from resources.lib.modules.metadata_providers import notify_tmdb_required, provider_enabled
+        from resources.lib.meta.provider_settings import notify_tmdb_required, provider_enabled
         from resources.lib.simkl.search_menus import (
             _actor_pagination_catalog,
             normalize_actor_args,
@@ -169,7 +163,7 @@ class ActorMenus:
 
     def actor_credits(self, action_args):
 
-        from resources.lib.modules.metadata_providers import notify_tmdb_required, provider_enabled
+        from resources.lib.meta.provider_settings import notify_tmdb_required, provider_enabled
         from resources.lib.simkl.person_ref import fetch_filmography_page, normalize_person_ref
         from resources.lib.simkl.search_menus import notify_empty_search, persist_search_pagination
 
@@ -199,15 +193,28 @@ class ActorMenus:
             return
 
         from resources.lib.discover.renderer import discover_list_kwargs
+        from resources.lib.meta.list_paint import attach_preloaded_catalog_paint, browse_list_kwargs
         from resources.lib.simkl.media_ref import enrich_and_persist
 
-        catalog_hint = args.get("catalog") or "movie"
-        enrich_and_persist(catalog_hint, items, force_simkl_meta=True, enrich=False)
-
+        refs: list[dict] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            catalog = item.get("catalog") or "movie"
+            refs.extend(enrich_and_persist(catalog, [item], force_simkl_meta=True, enrich=False))
+        actor_paint = discover_list_kwargs()
+        actor_paint["enrichment_reason"] = "actor"
+        actor_paint["mixed_list"] = True
+        list_kwargs = attach_preloaded_catalog_paint(
+            "movie",
+            refs,
+            browse_list_kwargs(**actor_paint),
+            prefer_catalog_payload=True,
+            payload_rows=items,
+        )
         self.list_builder.actor_credits_builder(
             items,
-            catalog=catalog_hint,
-            **discover_list_kwargs(),
+            **list_kwargs,
         )
 
 
@@ -246,67 +253,28 @@ class ActorMenus:
 
         catalog = normalized.get("catalog") or catalog
 
+        from resources.lib.discover.sync_bridge import insert_discover_page, simkl_refs
+        from resources.lib.discover.catalog_store import sync_items_for_refs
+        from resources.lib.meta.paint_cache import paint_catalog_page_rows
+
+        insert_discover_page(catalog, [normalized])
+        refs = simkl_refs([normalized])
+        page_sync = sync_items_for_refs(catalog, refs)
+        rows = paint_catalog_page_rows(refs, page_sync, hide_unaired=False, hide_watched=False)
+        if not rows:
+            notify_empty_search(30768)
+            return
+
+        menu_args = self.list_builder._menu_action_args(rows[0])
+
         if catalog == "movie":
-
-            self.movies_database.insert_simkl_movies([normalized])
-
-            rows = self.movies_database.get_movie_list(
-
-                [{"simkl_id": normalized["simkl_id"]}],
-
-                hide_unaired=False,
-
-                hide_watched=False,
-
-                skip_mill=True,
-
-            )
-
-            if not rows:
-
-                notify_empty_search(30768)
-
-                return
-
-            menu_args = self.list_builder._menu_action_args(rows[0])
-
             action = "getSources"
-
+        elif g.get_bool_setting("smartplay.clickresume"):
+            action = "forceResumeShow"
+        elif g.get_bool_setting("general.flatten.episodes"):
+            action = "flatEpisodes"
         else:
-
-            self.shows_database.insert_simkl_shows([normalized])
-
-            rows = self.shows_database.get_show_list(
-
-                [{"simkl_id": normalized["simkl_id"]}],
-
-                hide_unaired=False,
-
-                hide_watched=False,
-
-                skip_mill=True,
-
-            )
-
-            if not rows:
-
-                notify_empty_search(30768)
-
-                return
-
-            menu_args = self.list_builder._menu_action_args(rows[0])
-
-            if g.get_bool_setting("smartplay.clickresume"):
-
-                action = "forceResumeShow"
-
-            elif g.get_bool_setting("general.flatten.episodes"):
-
-                action = "flatEpisodes"
-
-            else:
-
-                action = "showSeasons"
+            action = "showSeasons"
 
 
 
@@ -319,5 +287,4 @@ class ActorMenus:
         )
 
         xbmc.executebuiltin(f"RunPlugin({url})")
-
 

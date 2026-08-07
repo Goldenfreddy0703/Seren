@@ -32,7 +32,7 @@ def show_genre_picker(catalog: str) -> None:
 
     if catalog in MULTI_GENRE_ACTIONS:
         multi_action, _ = MULTI_GENRE_ACTIONS[catalog]
-        from resources.lib.modules.metadata_providers import provider_enabled
+        from resources.lib.meta.provider_settings import provider_enabled
 
         if catalog == "anime" or provider_enabled("tmdb"):
             g.add_directory_item(
@@ -53,7 +53,7 @@ def show_genre_picker(catalog: str) -> None:
 
 
 def show_tmdb_genre_multiselect(catalog: str, page_limit: int, list_builder) -> None:
-    from resources.lib.modules.metadata_providers import notify_tmdb_required, provider_enabled
+    from resources.lib.meta.provider_settings import notify_tmdb_required, provider_enabled
 
     if not provider_enabled("tmdb"):
         notify_tmdb_required()
@@ -172,18 +172,18 @@ def render_multi_genre_list(catalog: str, action_args, page_limit: int, list_bui
         next_args["tmdb_page"] = page.next_tmdb_page
         if page.next_tmdb_offset:
             next_args["tmdb_offset"] = page.next_tmdb_offset
-    kwargs = discover_list_kwargs()
-    kwargs.update(
+    from resources.lib.meta.list_paint import render_catalog_discover_refs
+
+    render_catalog_discover_refs(
+        catalog,
+        refs,
+        list_builder,
+        list_kwargs=discover_list_kwargs(),
         has_next_page=page.has_next_page,
         next_action=get_action,
         next_args=next_args,
         enrichment_reason="genre",
     )
-
-    if catalog == "movie":
-        list_builder.movie_discover_builder(refs, **kwargs)
-    else:
-        list_builder.show_discover_builder(refs, **kwargs)
 
 
 def render_anime_multi_genre_list(action_args, page_limit: int, list_builder) -> None:
@@ -216,14 +216,18 @@ def render_anime_multi_genre_list(action_args, page_limit: int, list_builder) ->
         next_args["tenrai_page"] = page.next_tmdb_page
         if page.next_tmdb_offset:
             next_args["tenrai_offset"] = page.next_tmdb_offset
-    kwargs = discover_list_kwargs()
-    kwargs.update(
+    from resources.lib.meta.list_paint import render_catalog_discover_refs
+
+    render_catalog_discover_refs(
+        "anime",
+        refs,
+        list_builder,
+        list_kwargs=discover_list_kwargs(),
         has_next_page=page.has_next_page,
         next_action=get_action,
         next_args=next_args,
         enrichment_reason="genre",
     )
-    list_builder.anime_discover_builder(refs, **kwargs)
 
 
 def render_genre_list(catalog: str, args, page_limit: int, list_builder) -> None:
@@ -238,17 +242,15 @@ def render_genre_list(catalog: str, args, page_limit: int, list_builder) -> None
         return
 
     refs = persist_genre_page(catalog, page.items)
-    kwargs = discover_list_kwargs()
-    kwargs.update(
+    from resources.lib.meta.list_paint import render_catalog_discover_refs
+
+    render_catalog_discover_refs(
+        catalog,
+        refs,
+        list_builder,
+        list_kwargs=discover_list_kwargs(),
         has_next_page=page.has_next_page,
         next_action=GENRE_GET_ACTIONS[catalog],
         next_args=slug,
         enrichment_reason="genre",
     )
-
-    if catalog == "movie":
-        list_builder.movie_discover_builder(refs, **kwargs)
-    elif catalog == "anime":
-        list_builder.anime_discover_builder(refs, **kwargs)
-    else:
-        list_builder.show_discover_builder(refs, **kwargs)

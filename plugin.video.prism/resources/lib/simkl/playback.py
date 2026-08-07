@@ -69,6 +69,8 @@ def unwrap_playback_list(payload: Any, *, movies: bool) -> list[dict[str, Any]]:
 
 def sync_movie_playbacks(db) -> int:
     """Pull GET /sync/playback/movies into the local bookmarks table."""
+    from resources.lib.simkl.library import simkl_entry_to_sync_dict
+
     raw = db.simkl_api.get_playback("movies")
     if raw is None:
         g.log("Simkl playback fetch failed for movies, keeping existing bookmarks", "warning")
@@ -100,7 +102,9 @@ def sync_movie_playbacks(db) -> int:
                 CATALOG_MOVIE,
             )
         )
-        movies_to_insert.append(movie)
+        normalized = simkl_entry_to_sync_dict({"movie": movie}, CATALOG_MOVIE)
+        if normalized:
+            movies_to_insert.append(normalized)
 
     db.replace_playback_bookmarks("movie", rows)
     if movies_to_insert:
@@ -121,6 +125,7 @@ def sync_episode_playbacks(db) -> int:
     payload = unwrap_playback_list(raw, movies=False)
     rows: list[tuple] = []
     shows_by_id: dict[int, tuple[dict, str]] = {}
+    pending: list[tuple[dict, dict, str, float, str | None]] = []
 
     for session in payload:
         progress = session.get("progress")
@@ -134,13 +139,32 @@ def sync_episode_playbacks(db) -> int:
         if not show or not episode:
             continue
 
-        ep_num = episode.get("number")
-        if ep_num is None:
-            ep_num = episode.get("episode")
-
         show_id = (show.get("ids") or {}).get("simkl")
         if show_id:
             shows_by_id[int(show_id)] = (show, catalog)
+
+        pending.append(
+            (
+                show,
+                episode,
+                catalog,
+                float(progress),
+                session.get("paused_at") or session.get("updated_at"),
+            )
+        )
+
+    # Parent shows must exist before season/episode rows (FK).
+    for _show_id, (show, catalog) in shows_by_id.items():
+        media_key = "anime" if catalog == CATALOG_ANIME else "show"
+        normalized = simkl_entry_to_sync_dict({media_key: show}, catalog)
+        if normalized:
+            normalized["simkl_object"]["info"]["catalog"] = catalog
+            db.insert_simkl_shows([normalized])
+
+    for show, episode, catalog, progress, paused_at in pending:
+        ep_num = episode.get("number")
+        if ep_num is None:
+            ep_num = episode.get("episode")
 
         db.ensure_playback_episode_row(show, episode, catalog)
         simkl_id = db._resolve_episode_simkl_id(show, episode)
@@ -156,20 +180,13 @@ def sync_episode_playbacks(db) -> int:
         rows.append(
             (
                 int(simkl_id),
-                int(float(progress) / 100 * duration),
-                float(progress),
+                int(progress / 100 * duration),
+                progress,
                 "episode",
-                session.get("paused_at") or session.get("updated_at"),
+                paused_at,
                 catalog,
             )
         )
-
-    for show_id, (show, catalog) in shows_by_id.items():
-        media_key = "anime" if catalog == CATALOG_ANIME else "show"
-        normalized = simkl_entry_to_sync_dict({media_key: show}, catalog)
-        if normalized:
-            normalized["simkl_object"]["info"]["catalog"] = catalog
-            db.insert_simkl_shows([normalized])
 
     db.replace_playback_bookmarks("episode", rows)
     g.log(f"Simkl playback sync: {len(rows)} episode session(s)", "debug")
@@ -179,6 +196,18 @@ def sync_episode_playbacks(db) -> int:
 def _page_slice(page: int, page_limit: int) -> tuple[int, int]:
     page_start = (page - 1) * page_limit
     return page_start, page_start + page_limit
+
+
+def _refresh_playback_bookmarks_if_empty(db, catalog: str) -> None:
+    """Pull GET /sync/playback when local bookmarks were cleared (e.g. DB rebuild)."""
+    if catalog == CATALOG_MOVIE:
+        if db.fetchone("SELECT 1 FROM bookmarks WHERE type='movie' LIMIT 1"):
+            return
+        sync_movie_playbacks(db)
+        return
+    if db.fetchone("SELECT 1 FROM bookmarks WHERE type='episode' LIMIT 1"):
+        return
+    sync_episode_playbacks(db)
 
 
 def list_continue_watching(catalog: str, page: int | None = None) -> list[dict]:
@@ -191,32 +220,38 @@ def list_continue_watching(catalog: str, page: int | None = None) -> list[dict]:
     page_start, page_end = _page_slice(page, page_limit)
     hidden_mediatype = "movies" if catalog == CATALOG_MOVIE else "tvshow"
     hidden = HiddenDatabase().get_hidden_simkl_ids("progress_watched", hidden_mediatype)
-    items = BookmarkDatabase().get_continue_watching(catalog, hidden)
+    db = BookmarkDatabase()
+    _refresh_playback_bookmarks_if_empty(db, catalog)
+    items = db.get_continue_watching(catalog, hidden)
     return items[page_start:page_end]
 
 
 @simkl_auth_guard
 def render_continue_watching_menu(catalog: str) -> None:
     """Render Continue Watching for movie, tv, or anime."""
-    from resources.lib.discover.renderer import discover_list_kwargs
+    from resources.lib.meta.list_paint import render_catalog_episodes, render_catalog_rows
+    from resources.lib.meta.menu_paint_profile import MenuPaintProfile, profile_list_kwargs
     from resources.lib.modules.list_builder import ListBuilder
-    from resources.lib.simkl.menu_helpers import list_filter_kwargs
 
     items = list_continue_watching(catalog)
-    if not items:
-        g.cancel_directory()
-        return
+    for item in items:
+        if isinstance(item, dict):
+            item.setdefault("catalog", catalog)
+    builder = ListBuilder()
+    profile = MenuPaintProfile.LIBRARY_EPISODES if catalog != CATALOG_MOVIE else MenuPaintProfile.LIBRARY
+    paint_kwargs = profile_list_kwargs(profile)
 
-    list_kwargs = discover_list_kwargs()
     if catalog == CATALOG_MOVIE:
-        ListBuilder().movie_menu_builder(items, **list_kwargs)
+        render_catalog_rows(
+            catalog,
+            items,
+            builder,
+            list_kwargs=paint_kwargs,
+            **paint_kwargs,
+        )
         return
 
-    list_kwargs.update(list_filter_kwargs(hide_unaired=False, hide_watched=False))
-    list_kwargs["catalog"] = catalog
-    list_kwargs["enrichment_reason"] = "library"
-    list_kwargs["catalog_hint"] = catalog
-    ListBuilder().mixed_episode_builder(items, **list_kwargs)
+    render_catalog_episodes(catalog, items, builder, **paint_kwargs)
 
 
 def prefetch_continue_watching(catalog: str, page_params: dict[str, Any]) -> None:
@@ -229,14 +264,20 @@ def prefetch_continue_watching(catalog: str, page_params: dict[str, Any]) -> Non
         simkl_ids = sorted({int(item["simkl_id"]) for item in items if item.get("simkl_id") is not None})
         if not simkl_ids:
             return
-        from resources.lib.modules.page_prefetch import _blocking_enrich_simkl_ids
+        from resources.lib.discover.catalog_store import sync_items_for_refs
+        from resources.lib.simkl.enrich import enrich_page_for_paint
+        from resources.lib.modules.page_prefetch import _schedule_prefetch_simkl_ids
 
-        _blocking_enrich_simkl_ids(simkl_ids, "movie", catalog=CATALOG_MOVIE, reason="prefetch_ondeck")
+        refs = [{"simkl_id": sid, "catalog": CATALOG_MOVIE} for sid in simkl_ids]
+        page_sync = sync_items_for_refs(CATALOG_MOVIE, refs)
+        if page_sync:
+            enrich_page_for_paint(CATALOG_MOVIE, page_sync)
+        _schedule_prefetch_simkl_ids(simkl_ids, "movie", catalog=CATALOG_MOVIE, reason="prefetch_ondeck")
         return
 
     show_ids = sorted({int(show_id_from_item(item)) for item in items if show_id_from_item(item) is not None})
     if not show_ids:
         return
-    from resources.lib.modules.page_prefetch import _blocking_enrich_simkl_ids
+    from resources.lib.modules.page_prefetch import _schedule_prefetch_simkl_ids
 
-    _blocking_enrich_simkl_ids(show_ids, "tvshow", catalog=catalog, reason="prefetch_ondeck")
+    _schedule_prefetch_simkl_ids(show_ids, "tvshow", catalog=catalog, reason="prefetch_ondeck")

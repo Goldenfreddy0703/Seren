@@ -279,26 +279,26 @@ def get_item_information(action_args):
         return item
 
     if mediatype == "tvshow":
-        from resources.lib.database.simkl_sync import shows
+        from resources.lib.database.session import get_sync_database
 
-        item_information.update(shows.SimklSyncDatabase().get_show(action_args["simkl_id"]))
+        item_information.update(get_sync_database().get_show(action_args["simkl_id"]))
         return _finalize(item_information)
 
     if mediatype == "season":
-        from resources.lib.database.simkl_sync import shows
+        from resources.lib.database.session import get_sync_database
 
         show_id = show_id_from_args(action_args)
         season_num = season_num_from_args(action_args)
-        db = shows.SimklSyncDatabase()
+        db = get_sync_database()
         rows = db.get_season_list(show_id, season=season_num, hide_unaired=False, hide_watched=False)
         item_information.update(rows[0] if rows else {})
         return _finalize(item_information)
 
     if mediatype == "episode":
-        from resources.lib.database.simkl_sync import shows
+        from resources.lib.database.session import get_sync_database
 
         episode_id = episode_id_from_args(action_args)
-        db = shows.SimklSyncDatabase()
+        db = get_sync_database()
         show_id = show_id_for_episode_action(action_args)
         item_information.update(db.get_episode(episode_id, show_id))
         info = item_information.get("info")
@@ -310,9 +310,9 @@ def get_item_information(action_args):
         return _finalize(item_information)
 
     if mediatype == "movie":
-        from resources.lib.database.simkl_sync import movies
+        from resources.lib.database.session import get_sync_database
 
-        item_information.update(movies.SimklSyncDatabase().get_movie(action_args["simkl_id"]))
+        item_information.update(get_sync_database().get_movie(action_args["simkl_id"]))
         return _finalize(item_information)
 
 

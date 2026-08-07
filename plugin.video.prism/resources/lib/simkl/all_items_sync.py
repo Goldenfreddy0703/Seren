@@ -1,10 +1,13 @@
-﻿"""Watchlist foundation sync via ``GET /sync/all-items`` (one call per phase).
+"""Watchlist foundation sync via ``GET /sync/all-items`` (one call per phase).
 
-Simkl-native ingest at activities sync time — menus read local DB only.
-Option-2 LIST gap-fill at paint time mirrors discover menus.
+``extended=full,full_anime_seasons`` loads per-episode watch-state arrays plus anime
+TVDB season mapping — not episode catalog metadata (titles/thumbs/plot come from
+``GET /tv/episodes/{id}`` via episode warm). Show overview/fanart/genres/ratings come
+from Simkl detail endpoints (see ``enrich.enrich_page_for_paint``).
 """
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from resources.lib.modules.globals import g
@@ -19,51 +22,104 @@ from resources.lib.simkl.statuses import MOVIE_STATUS_OPTIONS, SHOW_STATUS_OPTIO
 if TYPE_CHECKING:
     from resources.lib.database.simkl_sync.activities import SimklSyncDatabase
 
-ALL_ITEMS_EXTENDED = "full_anime_seasons"
+# Comma-separated extended flags: episode arrays + runtime + anime TVDB season mapping.
+ALL_ITEMS_EXTENDED = "full,full_anime_seasons"
 EPISODE_PRUNE_AFTER_SYNC = True
 
 _MOVIE_STATUSES = tuple(status for status, _ in MOVIE_STATUS_OPTIONS)
 _SHOW_STATUSES = tuple(status for status, _ in SHOW_STATUS_OPTIONS)
 
 
-def build_all_items_params(*, date_from: str | None = None) -> dict:
-    """Lean sync params — episode display meta comes from post-sync catalog warm."""
+def _completed_or_dropped_changed(remote_activities, local_watermark: str) -> bool:
+    """True when completed/dropped lists moved since our last all-items watermark."""
+    from resources.lib.database.simkl_sync.database import SimklSyncDatabase
+
+    for section in ("movies", "tv_shows", "anime"):
+        section_data = remote_activities.get(section) or {}
+        for status in ("completed", "dropped"):
+            ts = section_data.get(status)
+            if ts and SimklSyncDatabase.requires_update(ts, local_watermark):
+                return True
+    return False
+
+
+def build_all_items_params(*, date_from: str, include_all_episodes: bool = False) -> dict:
+    """Simkl all-items params — always paired with date_from.
+
+    ``include_all_episodes`` synthesizes watched-episode rows for completed/dropped
+    shows (watch-state only). Episode display metadata still comes from episode catalog
+    milling, not sync.
+    """
     params = {
+        "date_from": date_from,
         "extended": ALL_ITEMS_EXTENDED,
         "next_watch_info": "yes",
         "episode_watched_at": "yes",
+        "episode_tvdb_id": "yes",
     }
-    if date_from:
-        params["date_from"] = date_from
+    if include_all_episodes:
+        params["include_all_episodes"] = "yes"
     return params
 
 
-def fetch_all_items(api, *, date_from: str | None = None):
-    return api.get_all_items(date_from=date_from, **build_all_items_params(date_from=date_from))
+def fetch_all_items(api, *, date_from: str, include_all_episodes: bool = False):
+    params = build_all_items_params(
+        date_from=date_from,
+        include_all_episodes=include_all_episodes,
+    )
+    url = "/sync/all-items/"
+    query = dict(params)
+    if hasattr(api, "_cdn_query"):
+        query.update(api._cdn_query())
+    response = api.get(url, **query)
+    if response is None:
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        return None
 
 
 def ingest_payload(db: "SimklSyncDatabase", payload, *, is_delta: bool = False) -> None:
+    """Unified all-items ingest — foundation and delta share one code path."""
     if not payload:
         return
+
     if not is_delta:
         if _unwrap_sync_items(payload, "movies"):
             db.set_sync_progress(15, g.get_language_string(31001))
-        db._process_movie_entries(_unwrap_sync_items(payload, "movies"))
         if _unwrap_sync_items(payload, "shows"):
             db.set_sync_progress(35, g.get_language_string(31002))
-        db._process_show_entries(_unwrap_sync_items(payload, "shows"), "tv")
         if _unwrap_sync_items(payload, "anime"):
             db.set_sync_progress(50, g.get_language_string(31003))
-        db._process_show_entries(_unwrap_sync_items(payload, "anime"), "anime")
-    else:
-        db._process_all_items_payload(payload)
+
+    db._process_all_items_payload(payload)
+
     if EPISODE_PRUNE_AFTER_SYNC:
         db.prune_library_episodes()
     db.set_sync_progress(60, g.get_language_string(31010))
     _seed_display_meta_from_payload(db, payload)
+    _upsert_catalog_items_from_payload(payload)
     rebuild_library_cache_from_db(db)
     phase = "delta" if is_delta else "foundation"
     g.log(f"Simkl all-items ingest complete ({phase})", "info")
+
+
+def _reapply_episode_watch_state_after_warm(db: "SimklSyncDatabase", payload) -> None:
+    """Episode catalog warm upserts rows with watched=0; restore Simkl watch flags afterward."""
+    if not payload:
+        return
+    for catalog, media_key in (("tv", "shows"), ("anime", "anime")):
+        entries = _unwrap_sync_items(payload, media_key)
+        if not entries:
+            continue
+        shows = []
+        for entry in entries:
+            normalized = simkl_entry_to_sync_dict(entry, catalog)
+            if normalized:
+                shows.append(normalized)
+        if shows:
+            db.reapply_episode_watch_state_from_entries(entries, shows)
 
 
 def rebuild_library_cache_from_db(db: "SimklSyncDatabase" | None = None) -> None:
@@ -84,9 +140,27 @@ def rebuild_library_cache_from_db(db: "SimklSyncDatabase" | None = None) -> None
             _save_cached_refs(catalog, status, refs)
 
 
+def _upsert_catalog_items_from_payload(payload) -> None:
+    from resources.lib.discover.catalog_store import upsert_sync_items
+
+    items: list[dict] = []
+    for entry in _unwrap_sync_items(payload, "movies"):
+        normalized = simkl_entry_to_sync_dict(entry, "movie")
+        if normalized:
+            items.append(normalized)
+    for catalog, media_key in (("tv", "shows"), ("anime", "anime")):
+        for entry in _unwrap_sync_items(payload, media_key):
+            normalized = simkl_entry_to_sync_dict(entry, catalog)
+            if normalized:
+                items.append(normalized)
+    if items:
+        upsert_sync_items(items)
+
+
 def _seed_display_meta_from_payload(db: "SimklSyncDatabase", payload) -> None:
+    """Seed title/poster from lean sync rows; plot/fanart filled on menu open."""
     from resources.lib.meta.display_store import get_display_meta_store
-    from resources.lib.modules.meta_storage import slim_art_dict, slim_info_dict
+    from resources.lib.meta.storage import slim_art_dict, slim_info_dict
     from resources.lib.modules.metadataHandler import MetadataHandler
 
     store = get_display_meta_store()
@@ -123,19 +197,14 @@ def _episode_warm_progress(db: "SimklSyncDatabase", current: int, total: int, _t
     db.set_sync_progress(percent, message)
 
 
-def sync_simkl_library(db: "SimklSyncDatabase", remote_activities, *, force: bool = False) -> None:
-    first_sync = str(db.activities["all_activities"]) == db.base_date
-    date_from = None if first_sync else db.activities["all_activities"]
-    blocking_warm = not db.silent
-
-    db.set_sync_progress(5, g.get_language_string(31000))
-    payload = fetch_all_items(db.simkl_api, date_from=date_from)
-    if payload:
-        ingest_payload(db, payload, is_delta=not first_sync)
-    if db._removed_from_list_changed(remote_activities):
-        db._reconcile_removed_items()
-        rebuild_library_cache_from_db(db)
-
+def _finalize_episode_sync_state(
+    db: "SimklSyncDatabase",
+    payload,
+    *,
+    force: bool = False,
+    blocking_warm: bool = False,
+) -> None:
+    """Post-ingest episode catalog warm + watch-state restore (single hook)."""
     if episode_warm_enabled():
         db.set_sync_progress(65, g.get_language_string(31012))
         run_post_sync_episode_warm(
@@ -149,4 +218,235 @@ def sync_simkl_library(db: "SimklSyncDatabase", remote_activities, *, force: boo
                 else None
             ),
         )
+    _reapply_episode_watch_state_after_warm(db, payload)
+
+
+_LIBRARY_WATCH_STATUSES = frozenset({"watching", "completed", "hold", "dropped"})
+
+
+def _find_show_entry(payload, media_key: str, show_id: int) -> dict | None:
+    from resources.lib.database.simkl_sync.database import SimklSyncDatabase
+
+    for entry in _unwrap_sync_items(payload, media_key):
+        if SimklSyncDatabase._entry_show_simkl_id(entry) == show_id:
+            return entry
+    return None
+
+
+def build_repair_watch_params(*, include_all_episodes: bool = False) -> dict:
+    """Full watch-state params for one-show repair (no date_from — deltas omit episode arrays)."""
+    params = {
+        "extended": ALL_ITEMS_EXTENDED,
+        "next_watch_info": "yes",
+        "episode_watched_at": "yes",
+        "episode_tvdb_id": "yes",
+    }
+    if include_all_episodes:
+        params["include_all_episodes"] = "yes"
+    return params
+
+
+def _library_entry_from_sync_watched(item: dict, catalog: str) -> dict | None:
+    """Convert POST /sync/watched response row into all-items-style library entry."""
+    if not isinstance(item, dict) or not item.get("result") or item.get("result") == "not_found":
+        return None
+    show_id = item.get("simkl")
+    if show_id is None:
+        return None
+    entry: dict = {
+        "status": item.get("list"),
+        "watched_episodes_count": item.get("episodes_watched"),
+        "total_episodes_count": item.get("episodes_total"),
+        "last_watched_at": item.get("last_watched_at"),
+        "seasons": [],
+    }
+    blob = {"ids": {"simkl": int(show_id)}}
+    if catalog == "anime":
+        entry["anime"] = blob
+    else:
+        entry["show"] = blob
+    for season in item.get("seasons") or []:
+        if not isinstance(season, dict) or season.get("number") is None:
+            continue
+        episodes = []
+        for episode in season.get("episodes") or []:
+            if not isinstance(episode, dict) or episode.get("number") is None:
+                continue
+            ep_row = {"number": int(episode["number"])}
+            if episode.get("watched") in (True, 1, "true", "True"):
+                ep_row["watched"] = True
+            if episode.get("last_watched_at"):
+                ep_row["watched_at"] = episode["last_watched_at"]
+            episodes.append(ep_row)
+        entry["seasons"].append({"number": int(season["number"]), "episodes": episodes})
+    return entry
+
+
+def fetch_show_watch_entry_from_sync_watched(api, show_id: int, catalog: str) -> dict | None:
+    """Per-show watch repair via POST /sync/watched?extended=episodes,specials."""
+    response = api.post_json(
+        "/sync/watched",
+        [{"ids": {"simkl": int(show_id)}}],
+        extended="episodes,specials",
+    )
+    if not isinstance(response, list) or not response:
+        return None
+    item = response[0]
+    if not isinstance(item, dict):
+        return None
+    return _library_entry_from_sync_watched(item, catalog)
+
+
+def refresh_show_episode_watch_state(db: "SimklSyncDatabase", simkl_show_id: int, *, force: bool = False) -> bool:
+    """Fetch one library show's per-episode watch flags from Simkl (drilldown repair)."""
+    show_id = int(simkl_show_id)
+    row = db.fetchone(
+        "SELECT simkl_status, watched_episodes, episode_count FROM shows WHERE simkl_id=?",
+        (show_id,),
+    )
+    if not row:
+        return False
+
+    status = str(row.get("simkl_status") or "").strip().lower()
+    if status not in _LIBRARY_WATCH_STATUSES:
+        return False
+
+    local = db.fetchone(
+        "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0 AND COALESCE(watched, 0) > 0",
+        (show_id,),
+    )
+    local_watched = int((local or {}).get("c") or 0)
+    show_watched = int(row.get("watched_episodes") or 0)
+    episode_count = int(row.get("episode_count") or 0)
+
+    cooldown_key = f"episode_watch_refresh_cooldown_{show_id}"
+    cooldown_raw = g.get_runtime_setting(cooldown_key)
+    cooldown_active = False
+    if not force and cooldown_raw:
+        try:
+            cooldown_active = (time.time() - float(cooldown_raw)) < 120
+        except (TypeError, ValueError):
+            cooldown_active = False
+
+    if not force:
+        # Only skip when show-level counters indicate we're fully caught up locally.
+        if (
+            local_watched > 0
+            and show_watched > 0
+            and local_watched >= show_watched
+            and episode_count > 0
+            and show_watched >= episode_count
+        ):
+            return local_watched > 0
+        if cooldown_active:
+            return local_watched > 0
+
+    catalog = db.show_catalog(show_id) or "tv"
+    media_key = "anime" if catalog == "anime" else "shows"
+    params = build_repair_watch_params(
+        include_all_episodes=status in ("completed", "dropped"),
+    )
+    payload = db.simkl_api.get_all_items(media_key, status=status, **params)
+    entry = _find_show_entry(payload, media_key, show_id)
+    if entry is None or not db._entry_has_per_episode_watch_rows(entry):
+        watched_entry = fetch_show_watch_entry_from_sync_watched(db.simkl_api, show_id, catalog)
+        if watched_entry and db._entry_has_per_episode_watch_rows(watched_entry):
+            entry = watched_entry
+        elif watched_entry and entry is None:
+            entry = watched_entry
+    if not entry:
+        return False
+
+    normalized = simkl_entry_to_sync_dict(entry, catalog)
+    if not normalized:
+        return False
+
+    shows = [normalized]
+    has_per_episode = db._entry_has_per_episode_watch_rows(entry)
+    simkl_watched_count = int(entry.get("watched_episodes_count") or 0)
+    local_episode_rows = int(
+        (db.fetchone(
+            "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0",
+            (show_id,),
+        ) or {}).get("c")
+        or 0
+    )
+    if has_per_episode and local_episode_rows == 0:
+        db.apply_sync_episode_stubs_from_entries([entry], shows, catalog, selective=True)
+        local_episode_rows = int(
+            (db.fetchone(
+                "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0",
+                (show_id,),
+            ) or {}).get("c")
+            or 0
+        )
+
+    db.apply_watched_episodes_from_entries([entry], shows)
+    local_watched_after = int(
+        (db.fetchone(
+            "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0 AND COALESCE(watched, 0) > 0",
+            (show_id,),
+        ) or {}).get("c")
+        or 0
+    )
+    if has_per_episode and simkl_watched_count > 0 and local_watched_after < simkl_watched_count:
+        db.apply_sync_episode_stubs_from_entries([entry], shows, catalog, selective=True)
+        db.apply_watched_episodes_from_entries([entry], shows)
+        local_watched_after = int(
+            (db.fetchone(
+                "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0 AND COALESCE(watched, 0) > 0",
+                (show_id,),
+            ) or {}).get("c")
+            or 0
+        )
+    if not has_per_episode and simkl_watched_count > 0 and local_watched_after < simkl_watched_count:
+        local_watched_after = max(
+            local_watched_after,
+            db.apply_watched_progress_from_entry(entry),
+        )
+    db.apply_show_watch_counters([entry])
+    if status == "completed":
+        db.apply_completed_show_watch_flags([entry])
+    db._refresh_show_and_season_statistics(show_id)
+
+    g.log(
+        f"Simkl watch refresh: show {show_id} ({status}) -> {local_watched_after} watched episode(s)",
+        "info",
+    )
+    return local_watched_after > 0
+
+
+def sync_simkl_library(db: "SimklSyncDatabase", remote_activities, *, force: bool = False) -> None:
+    first_sync = str(db.activities["all_activities"]) == db.base_date
+    date_from = db.base_date if first_sync else str(db.activities["all_activities"])
+    local_watermark = str(db.activities["all_activities"])
+    include_all_episodes = first_sync or _completed_or_dropped_changed(remote_activities, local_watermark)
+    blocking_warm = not db.silent
+
+    g.log(
+        f"Simkl all-items: extended={ALL_ITEMS_EXTENDED}, "
+        f"include_all_episodes={'yes' if include_all_episodes else 'no'}, "
+        f"phase={'foundation' if first_sync else 'delta'}",
+        "debug",
+    )
+
+    db.set_sync_progress(5, g.get_language_string(31000))
+    payload = fetch_all_items(
+        db.simkl_api,
+        date_from=date_from,
+        include_all_episodes=include_all_episodes,
+    )
+    if payload:
+        ingest_payload(db, payload, is_delta=not first_sync)
+
+    if db._removed_from_list_changed(remote_activities):
+        db._reconcile_removed_items()
+        rebuild_library_cache_from_db(db)
+
+    _finalize_episode_sync_state(
+        db,
+        payload,
+        force=force,
+        blocking_warm=blocking_warm,
+    )
     db.set_sync_progress(100, g.get_language_string(31013))

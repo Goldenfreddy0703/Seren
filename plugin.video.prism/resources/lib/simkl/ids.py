@@ -587,9 +587,9 @@ def show_id_for_episode_action(action_args: dict[str, Any] | None) -> int | None
     episode_id = episode_id_from_args(action_args)
     if episode_id is None:
         return None
-    from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+    from resources.lib.database.session import get_sync_database
 
-    row = SimklSyncDatabase().fetchone(
+    row = get_sync_database().fetchone(
         "SELECT simkl_show_id FROM episodes WHERE simkl_id = ?",
         (episode_id,),
     )
@@ -661,9 +661,9 @@ def _resolve_action_catalog(
         elif mediatype == "episode" and show_id is None and simkl_id is not None:
             show_id = show_id_for_episode_action({"mediatype": "episode", "simkl_id": simkl_id})
         if show_id is not None:
-            from resources.lib.database.simkl_sync.shows import SimklSyncDatabase
+            from resources.lib.database.session import get_sync_database
 
-            catalog = SimklSyncDatabase().show_catalog(int(show_id))
+            catalog = get_sync_database().show_catalog(int(show_id))
             if catalog in ("movie", "tv", "anime"):
                 return catalog
         return "tv"

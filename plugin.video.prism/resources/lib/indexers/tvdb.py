@@ -1615,10 +1615,14 @@ class TVDBAPI(ApiBase):
             thumb_url = self._absolute_v4_image_path(movie.get("image"))
             if thumb_url:
                 art["thumb"] = thumb_url
-        return {
+        result = {
             "art": art,
             "info": self._normalize_info(self.movie_normalization, movie),
         }
+        cast = self._handle_v4_cast(movie.get("characters"))
+        if cast:
+            result["cast"] = cast
+        return result
 
     @wrap_tvdb_object
     def get_movie(self, tvdb_id):

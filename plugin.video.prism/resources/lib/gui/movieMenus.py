@@ -30,12 +30,6 @@ class Menus:
         return SearchHistory()
 
     @cached_property
-    def hidden_database(self):
-        from resources.lib.database.simkl_sync.hidden import SimklSyncDatabase as HiddenDatabase
-
-        return HiddenDatabase()
-
-    @cached_property
     def bookmark_database(self):
         from resources.lib.database.simkl_sync.bookmark import SimklSyncDatabase as BookmarkDatabase
 
@@ -85,16 +79,6 @@ class Menus:
         from resources.lib.simkl.library_menus import render_continue_watching
 
         render_continue_watching("movie")
-
-    @simkl_auth_guard
-    def my_movie_collection(self):
-        from resources.lib.discover.renderer import discover_list_kwargs
-
-        self.list_builder.movie_menu_builder(
-            self.movies_database.get_collected_movies(g.PAGE),
-            no_paging=False,
-            **discover_list_kwargs(),
-        )
 
     @simkl_auth_guard
     def movies_recommended(self):
@@ -163,14 +147,23 @@ class Menus:
 
     def movie_years_results(self, year):
         items = browse.discover_by_year("movie", int(year), g.PAGE, self.page_limit)
+        from resources.lib.discover.renderer import discover_list_kwargs
+        from resources.lib.meta.list_paint import render_catalog_discover_refs
+        from resources.lib.simkl.media_ref import enrich_and_persist
+
         if not items:
             g.cancel_directory()
             return
-        from resources.lib.discover.renderer import discover_list_kwargs
-        from resources.lib.simkl.media_ref import enrich_and_persist
-
         refs = enrich_and_persist("movie", items, enrich=False)
-        self.list_builder.movie_discover_builder(refs, **discover_list_kwargs())
+        render_catalog_discover_refs(
+            "movie",
+            refs,
+            self.list_builder,
+            list_kwargs=discover_list_kwargs(),
+            next_action="movieYearsMovies",
+            next_args=int(year),
+            has_next_page=len(items) >= self.page_limit,
+        )
 
     def movies_genres(self):
         from resources.lib.simkl.genre_menus import show_genre_picker
@@ -194,11 +187,9 @@ class Menus:
 
     @simkl_auth_guard
     def my_watched_movies(self):
-        from resources.lib.simkl.library_menus import render_watched_movies
-
-        render_watched_movies()
-
-    def recently_watched_movies(self):
         from resources.lib.simkl.library_menus import render_recently_watched_movies
 
         render_recently_watched_movies()
+
+    def recently_watched_movies(self):
+        self.my_watched_movies()

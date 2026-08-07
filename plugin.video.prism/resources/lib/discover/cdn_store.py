@@ -188,7 +188,17 @@ def _load_store() -> RowStore:
     cdn = SimklCDN()
     _ingest_combined(store, cdn)
     _ingest_dvd(store, cdn)
+    _persist_catalog_store(store)
     return store
+
+
+def _persist_catalog_store(store: RowStore) -> None:
+    from resources.lib.discover.catalog_store import upsert_cdn_rows
+
+    for catalog in ("movie", "tv", "anime"):
+        rows = [row for (cat, _sid), row in store.items() if cat == catalog]
+        if rows:
+            upsert_cdn_rows(catalog, rows)
 
 
 def rows_for_catalog(catalog: str) -> list[dict[str, Any]]:

@@ -24,21 +24,27 @@ class SimklSyncDatabase(shows.SimklSyncDatabase):
         self.force_sync = False
         self.current_dialog_text = None
         self._remote_activities = None
+        # Playback bookmarks are cheap GETs — run before the heavy all-items + episode warm.
         self._sync_activities_list = [
-            ("Simkl watchlist", None, None, self._sync_simkl_library_activity),
-            (
-                "Show bookmarks",
-                ("tv_shows", "playback"),
-                "episodes_bookmarked",
-                self._sync_show_bookmarks,
-            ),
             (
                 "Movie bookmarks",
                 ("movies", "playback"),
                 "movies_bookmarked",
                 self._sync_movie_bookmarks,
             ),
+            (
+                "Show bookmarks",
+                ("tv_shows", "playback"),
+                "episodes_bookmarked",
+                self._sync_show_bookmarks,
+            ),
+            ("Simkl watchlist", None, None, self._sync_simkl_library_activity),
         ]
+
+    def _fetch_remote_activities_payload(self, *, force: bool = False):
+        from resources.lib.simkl.remote_activities import get_activities_payload
+
+        return get_activities_payload(force=force)
 
     def fetch_remote_activities(self, silent=False, force=False):
         self.refresh_activities()
@@ -54,7 +60,7 @@ class SimklSyncDatabase(shows.SimklSyncDatabase):
             g.log("Activities endpoint called too frequently, skipping sync", "info")
             return None
 
-        remote_activities = self.simkl_api.get_activities()
+        remote_activities = self._fetch_remote_activities_payload(force=force)
         self._update_last_activities_call()
         return remote_activities
 
@@ -62,6 +68,7 @@ class SimklSyncDatabase(shows.SimklSyncDatabase):
     def sync_activities(self, silent=False, force=False):
         with GlobalLock("simkl.sync"):
             self.force_sync = force
+            self.silent = silent
             simkl_auth = g.get_setting("simkl.auth")
             update_time = str(self._get_datetime_now())
 
@@ -132,16 +139,23 @@ class SimklSyncDatabase(shows.SimklSyncDatabase):
 
                 if activity[1] is not None:
                     if activity[0] == "Show bookmarks":
-                        if not self._show_bookmarks_need_sync(remote_activities):
+                        if not self._show_bookmarks_need_sync(remote_activities) and not self._playback_bookmarks_empty(
+                            "episode"
+                        ):
                             g.log(f"Skipping {activity[0]}, does not require update")
                             continue
                     else:
                         section, field = activity[1]
                         last_activity_update = (remote_activities.get(section) or {}).get(field)
-                        if not last_activity_update:
+                        if not last_activity_update and not self._playback_bookmarks_empty("movie"):
                             g.log(f"Skipping {activity[0]}, remote activity timestamp missing")
                             continue
-                        if not self.requires_update(last_activity_update, self.activities[activity[2]]):
+                        if (
+                            not self.force_sync
+                            and last_activity_update
+                            and not self.requires_update(last_activity_update, self.activities[activity[2]])
+                            and not self._playback_bookmarks_empty("movie")
+                        ):
                             g.log(f"Skipping {activity[0]}, does not require update")
                             continue
 
@@ -161,8 +175,17 @@ class SimklSyncDatabase(shows.SimklSyncDatabase):
         return self._show_bookmarks_need_sync(remote_activities)
 
     def _movie_bookmarks_need_sync(self, remote_activities) -> bool:
+        if self._playback_bookmarks_empty("movie"):
+            return True
         movies_at = (remote_activities.get("movies") or {}).get("playback")
         return bool(movies_at and self.requires_update(movies_at, self.activities["movies_bookmarked"]))
+
+    def _playback_bookmarks_empty(self, bookmark_type: str) -> bool:
+        row = self.fetchone(
+            "SELECT 1 FROM bookmarks WHERE type=? LIMIT 1",
+            (bookmark_type,),
+        )
+        return row is None
 
     def _do_sync_bookmark_activities(self, remote_activities):
         """Simkl can bump playback timestamps without changing `all` — sync bookmarks only."""
@@ -220,6 +243,8 @@ class SimklSyncDatabase(shows.SimklSyncDatabase):
             raise ActivitySyncFailure(exc) from exc
 
     def _show_bookmarks_need_sync(self, remote_activities) -> bool:
+        if self._playback_bookmarks_empty("episode"):
+            return True
         local = self.activities["episodes_bookmarked"]
         for section in ("tv_shows", "anime"):
             playback_at = (remote_activities.get(section) or {}).get("playback")
@@ -369,7 +394,7 @@ class SimklSyncDatabase(shows.SimklSyncDatabase):
                 episode_entries, shows, catalog, selective=True
             )
             self.apply_next_watch_stubs_from_entries(episode_entries, shows, catalog)
-            self.apply_watched_episodes_from_entries(episode_entries, shows)
+            self.sync_show_watch_state_from_entries(episode_entries, shows)
 
     def _resolve_episode_simkl_id(self, show, episode):
         simkl_id = (episode.get("ids") or {}).get("simkl_id") or (episode.get("ids") or {}).get("simkl")

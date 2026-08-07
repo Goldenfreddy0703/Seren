@@ -104,16 +104,39 @@ class Database:
     def _create_column_expression(column_name, column_declaration):
         return f"{column_name} {' '.join(column_declaration)}"
 
+    def _schema_complete(self) -> bool:
+        if not xbmcvfs.exists(self._db_file):
+            return False
+        try:
+            with SQLiteConnection(self._db_file) as sqlite:
+                rows = sqlite.fetchall("SELECT name FROM sqlite_master WHERE type='table'")
+        except Exception:
+            return False
+        present = {row["name"] for row in (rows or []) if isinstance(row, dict) and row.get("name")}
+        expected = set(self._database_layout)
+        return expected.issubset(present)
+
+    def ensure_schema(self) -> None:
+        """Create any missing schema tables/indexes without wiping existing data."""
+        with SQLiteConnection(self._db_file) as sqlite:
+            with sqlite.transaction():
+                self._create_tables(sqlite._connection)
+
     def _integrity_check_db(self):
         db_file_checksum = tools.md5_hash(self._database_layout)
         try:
             with GlobalLock(self.__class__.__name__, True, db_file_checksum):
-                if xbmcvfs.exists(self._db_file) and g.read_all_text(f"{self._db_file}.md5") == db_file_checksum:
+                md5_match = xbmcvfs.exists(f"{self._db_file}.md5") and (
+                    g.read_all_text(f"{self._db_file}.md5") == db_file_checksum
+                )
+                schema_ok = self._schema_complete()
+                if xbmcvfs.exists(self._db_file) and md5_match and schema_ok:
                     return
                 g.log(f"Integrity checked failed - {self._db_file} - {db_file_checksum} - rebuilding db")
                 self.rebuild_database()
                 g.write_all_text(f"{self._db_file}.md5", db_file_checksum)
         except RanOnceAlready:
+            self.ensure_schema()
             return
 
     # endregion

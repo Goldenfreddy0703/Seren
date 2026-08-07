@@ -25,6 +25,12 @@ class PrismMonitor(xbmc.Monitor):
         from resources.lib.modules.settings_hot_cache import warm_settings_dict
 
         warm_settings_dict()
+        try:
+            from resources.lib.modules.cache_maintenance import invalidate_paint_stamps
+
+            invalidate_paint_stamps()
+        except Exception:
+            g.log_stacktrace()
         g.trigger_widget_refresh(if_playing=False)
 
     def onNotification(self, sender, method, data):

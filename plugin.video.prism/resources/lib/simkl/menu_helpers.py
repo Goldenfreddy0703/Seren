@@ -41,19 +41,17 @@ def library_status_list_kwargs(catalog: str, status: str, refs: list) -> dict:
     Stamps catalog/status on REQUEST_PARAMS so Next Page links and prefetch use the canonical
     simklLibraryList route with hybrid fast-menu defaults.
     """
-    from resources.lib.discover.renderer import discover_list_kwargs
+    from resources.lib.meta.menu_paint_profile import MenuPaintProfile, profile_list_kwargs
 
     g.REQUEST_PARAMS["action"] = "simklLibraryList"
     g.REQUEST_PARAMS["catalog"] = catalog
     g.REQUEST_PARAMS["status"] = status
 
     return {
-        **discover_list_kwargs(),
-        **list_filter_kwargs(hide_unaired=False, hide_watched=False),
+        **profile_list_kwargs(MenuPaintProfile.LIBRARY),
         "has_next_page": library_list_has_next(refs),
         "next_action": "simklLibraryList",
         "catalog_hint": catalog,
-        "enrichment_reason": "library",
     }
 
 
