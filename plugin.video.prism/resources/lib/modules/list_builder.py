@@ -210,20 +210,9 @@ class ListBuilder:
 
     @staticmethod
     def _schedule_next_page_prefetch(page_params: dict | None) -> None:
-        if not page_params:
-            return
-        if str(g.REQUEST_PARAMS.get("menu_warmup", "")).lower() in ("1", "true"):
-            return
-        from resources.lib.modules.page_prefetch import PagePrefetch
+        from resources.lib.modules.page_prefetch import schedule_page_prefetch_chain
 
-        PagePrefetch.schedule(page_params)
-        try:
-            page_num = int(page_params.get("page") or 1)
-        except (TypeError, ValueError):
-            page_num = 1
-        ahead_params = dict(page_params)
-        ahead_params["page"] = page_num + 1
-        PagePrefetch.schedule(ahead_params)
+        schedule_page_prefetch_chain(page_params)
 
     @staticmethod
     def _build_next_page_params(

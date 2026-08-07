@@ -5345,3 +5345,13 @@ msgstr "For currently airing shows, re-download episode titles from Simkl when l
 msgctxt "#31024"
 msgid "Formatting episode catalogs ({0}/{1})"
 msgstr "Formatting episode catalogs ({0}/{1})"
+
+#: /resources/settings.xml
+msgctxt "#31025"
+msgid "Pages to prefetch ahead"
+msgstr "Pages to prefetch ahead"
+
+#: /resources/settings.xml
+msgctxt "#31026"
+msgid "How many upcoming list pages to warm in the background while you browse paginated menus (0 = off). Use 1 on slower devices; increase on fast hardware for smoother Next Page navigation."
+msgstr "How many upcoming list pages to warm in the background while you browse paginated menus (0 = off). Use 1 on slower devices; increase on fast hardware for smoother Next Page navigation."

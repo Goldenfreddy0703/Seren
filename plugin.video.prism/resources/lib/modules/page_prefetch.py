@@ -12,16 +12,26 @@ from resources.lib.modules.globals import g
 _DONE_KEY = "page_prefetch.done_keys"
 _IN_FLIGHT_KEY = "page_prefetch.in_flight"
 _MENU_ACTIVE_KEY = "browse.menu_active"
+_PREFETCH_PAGES_SETTING = "general.prefetch.pages"
+_PREFETCH_PAGES_DEFAULT = 1
+_PREFETCH_PAGES_MAX = 5
 _MAX_DONE_KEYS = 256
 _prefetch_events: dict[str, threading.Event] = {}
 _prefetch_events_lock = threading.Lock()
 
 
+def prefetch_page_depth() -> int:
+    """How many upcoming list pages to warm (0 disables background page prefetch)."""
+    try:
+        depth = int(g.get_int_setting(_PREFETCH_PAGES_SETTING, _PREFETCH_PAGES_DEFAULT))
+    except (TypeError, ValueError):
+        depth = _PREFETCH_PAGES_DEFAULT
+    return max(0, min(depth, _PREFETCH_PAGES_MAX))
+
+
 def prefetch_next_page_enabled() -> bool:
     """Follow general menu caching — prefetch is only useful when cacheToDisc is on."""
-    from resources.lib.modules.globals import g
-
-    return g.kodi_menu_caching_enabled()
+    return g.kodi_menu_caching_enabled() and prefetch_page_depth() > 0
 
 
 def set_foreground_menu_active(active: bool) -> None:
@@ -925,6 +935,25 @@ def run_page_prefetch(page_params: dict[str, Any]) -> bool:
     except Exception:
         g.log_stacktrace()
     return stamped
+
+
+def schedule_page_prefetch_chain(page_params: dict[str, Any] | None) -> None:
+    """Schedule background prefetch for the next N pages (see general.prefetch.pages)."""
+    if not isinstance(page_params, dict) or not page_params.get("action"):
+        return
+    if str(g.REQUEST_PARAMS.get("menu_warmup", "")).lower() in ("1", "true"):
+        return
+    depth = prefetch_page_depth()
+    if depth <= 0 or not g.kodi_menu_caching_enabled():
+        return
+    try:
+        start_page = int(page_params.get("page") or 1)
+    except (TypeError, ValueError):
+        start_page = 1
+    for offset in range(depth):
+        params = dict(page_params)
+        params["page"] = start_page + offset
+        PagePrefetch.schedule(params)
 
 
 class PagePrefetch:
