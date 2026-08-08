@@ -374,6 +374,14 @@ def set_session_page_paint(cache_key: tuple, rows: list[dict[str, Any]]) -> None
         db_store[cache_key] = payload
 
 
+def clear_session_page_paint() -> None:
+    """Drop in-memory (and session DB) list paint rows after watch-state changes."""
+    _PAGE_PAINT_CACHE.clear()
+    db_store = _db_page_paint_store()
+    if isinstance(db_store, dict):
+        db_store.clear()
+
+
 def rows_paint_all_complete(rows: list[dict[str, Any]], media_type: str, *, profile: str = "browse") -> bool:
     if not rows:
         return True

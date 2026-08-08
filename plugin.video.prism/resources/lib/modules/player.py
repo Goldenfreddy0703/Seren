@@ -75,6 +75,83 @@ class PrismPlayer(xbmc.Player):
         self.playback_timestamp = 0
         self._locale_backup = None
 
+    @staticmethod
+    def _playlist_has_next_item() -> bool:
+        try:
+            size = g.PLAYLIST.size()
+            if size <= 1:
+                return False
+            position = g.PLAYLIST.getposition()
+            return position >= 0 and position < size - 1
+        except Exception:
+            return False
+
+    def _should_restore_catalog_locale(self) -> bool:
+        """Keep per-catalog locale active while auto-advancing playlist episodes."""
+        if self._playlist_has_next_item() and self.playback_ended and not self.playback_stopped:
+            return False
+        return True
+
+    def _finalize_playback_progress(self) -> None:
+        """Refresh position before bookmark/scrobble on natural end or user stop."""
+        if self.playback_error:
+            return
+        if not self.playback_ended and not self.playback_stopped:
+            return
+
+        total = float(self.total_time or 0)
+        if total <= 0:
+            try:
+                total = float(self.getTotalTime())
+            except RuntimeError:
+                total = 0
+            if total <= 0:
+                info = (self.item_information or {}).get("info") or {}
+                total = float(info.get("duration") or 0)
+
+        current = float(self.current_time or 0)
+        if current <= 0:
+            try:
+                current = float(self.getTime())
+            except RuntimeError:
+                current = 0
+        if current <= 0 and total > 0 and self.watched_percentage > 0:
+            current = total * float(self.watched_percentage) / 100.0
+
+        if total > 0 and current > 0:
+            self.total_time = total
+            self.current_time = current
+            self.watched_percentage = min(
+                100.0,
+                tools.safe_round(current / total * 100, 2),
+            )
+
+        # Natural file end is a completed watch even if progress polling lagged.
+        if self.playback_ended and not self.playback_stopped:
+            self.watched_percentage = max(
+                float(self.watched_percentage),
+                float(self.playCountMinimumPercent),
+            )
+
+    def _reset_playback_session_state(self) -> None:
+        """Clear progress/scrobble flags when a new item starts playing."""
+        self.current_time = 0
+        self.total_time = 0
+        self.watched_percentage = 0
+        self.playback_ended = False
+        self.playback_stopped = False
+        self.playback_error = False
+        self.playback_started = False
+        self.scrobbled = False
+        self.scrobble_started = False
+        self.marked_watched = False
+        self.resumed = False
+        self.dialogs_triggered = False
+        self.pre_scrape_initiated = False
+        self.introdb_segments = []
+        self.introdb_fired = set()
+        self._running_path = None
+
     @cached_property
     def _simkl_api(self):
         return SimklAPI()
@@ -107,6 +184,7 @@ class PrismPlayer(xbmc.Player):
 
         self.playing_file = stream_link
         self.item_information = item_information
+        self._reset_playback_session_state()
         self.smart_module = smartPlay.SmartPlay(item_information)
         self.mediatype = self.item_information["info"]["mediatype"]
         self.simkl_id = self.item_information["info"]["simkl_id"]
@@ -133,7 +211,8 @@ class PrismPlayer(xbmc.Player):
 
             self._keep_alive()
         finally:
-            locale_playback.restore_catalog_locale(locale_backup)
+            if self._should_restore_catalog_locale():
+                locale_playback.restore_catalog_locale(locale_backup)
             self._locale_backup = None
 
     # region Kodi player overrides
@@ -355,7 +434,7 @@ class PrismPlayer(xbmc.Player):
                 self.smart_module.append_next_season()
 
     def _end_playback(self):
-        locale_playback.restore_catalog_locale(self._locale_backup)
+        self._finalize_playback_progress()
         self._handle_bookmark()
         self._simkl_stop_watching()
         self._simkl_mark_playing_item_watched()
@@ -542,11 +621,15 @@ class PrismPlayer(xbmc.Player):
             from resources.lib.simkl.ids import show_id_from_info
 
             show_id = show_id_from_info(self.item_information["info"])
-            get_sync_database().mark_episode_watched(
+            season = self.item_information["info"]["season"]
+            episode = self.item_information["info"]["episode"]
+            db = get_sync_database()
+            db.mark_episode_watched(
                 show_id,
-                self.item_information["info"]["season"],
-                self.item_information["info"]["episode"],
+                season,
+                episode,
             )
+            self.bookmark_sync.remove_bookmark(self.simkl_id)
         if self.mediatype == "movie":
             from resources.lib.database.session import get_sync_database
 

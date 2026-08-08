@@ -704,6 +704,48 @@ def finish_episode_parent_paint(
     return painted, refs, "tvshow"
 
 
+def merge_episode_playback_overlay(rows: list[dict], seed_rows: list[dict]) -> list[dict]:
+    """Apply fresh bookmark fields from menu seeds onto painted episode rows (Continue Watching)."""
+    if not rows or not seed_rows:
+        return rows
+    by_id: dict[int, dict] = {}
+    for seed in seed_rows:
+        if not isinstance(seed, dict):
+            continue
+        simkl_id = seed.get("simkl_id")
+        if simkl_id is None:
+            continue
+        by_id[int(simkl_id)] = seed
+    if not by_id:
+        return rows
+
+    merged: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            merged.append(row)
+            continue
+        simkl_id = row.get("simkl_id")
+        if simkl_id is None:
+            merged.append(row)
+            continue
+        seed = by_id.get(int(simkl_id))
+        if not seed:
+            merged.append(row)
+            continue
+        painted = dict(row)
+        if seed.get("percent_played") is not None:
+            painted["percent_played"] = seed["percent_played"]
+        progress = seed.get("resume_time")
+        if progress is None:
+            progress = seed.get("progress")
+        if progress is not None:
+            painted["resume_time"] = progress
+        if seed.get("force_resume_indicator"):
+            painted["force_resume_indicator"] = True
+        merged.append(painted)
+    return merged
+
+
 def render_catalog_episodes(
     catalog: str,
     episode_rows: list[dict],
@@ -738,7 +780,7 @@ def render_catalog_episodes(
     db = get_sync_database()
     filter_params = list_builder._apply_list_filters(dict(list_kwargs))
     if cached_rows is not None:
-        list_kwargs["preloaded_episode_rows"] = cached_rows
+        list_kwargs["preloaded_episode_rows"] = merge_episode_playback_overlay(cached_rows, episode_rows)
     else:
         upsert_episode_parent_shows(episode_rows, catalog)
         if library_paint:
@@ -750,6 +792,9 @@ def render_catalog_episodes(
             db,
             filter_params=filter_params,
         )
+        preloaded = list_kwargs.get("preloaded_episode_rows")
+        if preloaded is not None:
+            list_kwargs["preloaded_episode_rows"] = merge_episode_playback_overlay(preloaded, episode_rows)
     list_builder.mixed_episode_builder(episode_rows, **list_kwargs)
 
 
@@ -811,7 +856,7 @@ def _drilldown_catalog_for_show(show_id: int) -> str:
 def _warm_drilldown_parent_show(show_id: int, catalog: str) -> None:
     """Ensure parent show row exists locally — no provider HTTP on drilldown open."""
     ctx = load_show_menu_context(show_id)
-    if ctx and ctx.get("show_info", {}).get("title"):
+    if ctx and not _show_menu_context_sparse(ctx):
         return
 
     from resources.lib.discover.catalog_store import sync_items_for_refs
@@ -831,6 +876,11 @@ def render_catalog_seasons(show_id: int, list_builder, **kwargs) -> None:
 
     paint_kwargs = profile_list_kwargs(MenuPaintProfile.DRILLDOWN, **kwargs)
     show_ctx = load_show_menu_context(show_id)
+    if _show_menu_context_sparse(show_ctx):
+        sync_row = _fetch_show_sync_row(show_id)
+        if isinstance(sync_row, dict) and _show_needs_provider_enrich(sync_row):
+            ensure_show_metadata(show_id)
+        show_ctx = load_show_menu_context(show_id)
     set_show_menu_plugin_category(show_ctx)
 
     catalog = _drilldown_catalog_for_show(show_id)
@@ -875,6 +925,11 @@ def render_catalog_drilldown_episodes(
 
     paint_kwargs = profile_list_kwargs(MenuPaintProfile.DRILLDOWN, **kwargs)
     show_ctx = load_show_menu_context(show_id)
+    if _show_menu_context_sparse(show_ctx):
+        sync_row = _fetch_show_sync_row(show_id)
+        if isinstance(sync_row, dict) and _show_needs_provider_enrich(sync_row):
+            ensure_show_metadata(show_id)
+        show_ctx = load_show_menu_context(show_id)
     season_ctx = load_season_menu_context(show_id, season) if season is not None else None
     set_show_menu_plugin_category(show_ctx, season_num=season)
 
@@ -928,6 +983,101 @@ def _copy_mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _fetch_show_sync_row(simkl_id: int) -> dict[str, Any] | None:
+    from resources.lib.database.session import get_sync_database
+
+    return get_sync_database().fetchone(
+        """
+        SELECT simkl_id, info, art, [cast], season_count, episode_count
+        FROM shows
+        WHERE simkl_id = ?
+        """,
+        (int(simkl_id),),
+    )
+
+
+def _show_context_from_sync_row(row: dict[str, Any]) -> dict[str, Any]:
+    sid = int(row["simkl_id"])
+    info = _copy_mapping(row.get("info"))
+    info.setdefault("simkl_id", sid)
+    if row.get("season_count") is not None:
+        info.setdefault("season_count", row["season_count"])
+    if row.get("episode_count") is not None:
+        info.setdefault("episode_count", row["episode_count"])
+    return {
+        "title": info.get("title") or info.get("tvshowtitle"),
+        "show_info": info,
+        "show_art": _copy_mapping(row.get("art")),
+        "show_cast": list(row.get("cast") or []),
+    }
+
+
+def _merge_painted_show_with_sync_row(
+    painted_info: dict[str, Any],
+    painted_art: dict[str, Any],
+    painted_cast: list,
+    sync_row: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], list]:
+    """Fill display-cache gaps from the sync DB after display_meta migration clears."""
+    from resources.lib.common import tools as merge_tools
+    from resources.lib.database.sync_meta_cache import row_has_plot_meta
+
+    db_ctx = _show_context_from_sync_row(sync_row)
+    db_info = db_ctx["show_info"]
+    db_art = db_ctx["show_art"]
+    db_cast = db_ctx["show_cast"]
+
+    info = merge_tools.smart_merge_dictionary(
+        dict(db_info),
+        dict(painted_info),
+        keep_original=True,
+        extend_array=False,
+    )
+    if not row_has_plot_meta({"info": painted_info}) and row_has_plot_meta({"info": db_info}):
+        for key in ("plot", "overview", "genre", "mpaa", "status", "studio"):
+            if db_info.get(key) and not info.get(key):
+                info[key] = db_info[key]
+        for key in db_info:
+            if str(key).startswith("rating.") and not info.get(key):
+                info[key] = db_info[key]
+
+    art = merge_tools.smart_merge_dictionary(
+        dict(db_art),
+        dict(painted_art),
+        keep_original=True,
+        extend_array=False,
+    )
+    cast = painted_cast if painted_cast else db_cast
+    return info, art, cast
+
+
+def _show_menu_context_sparse(show_ctx: dict[str, Any] | None) -> bool:
+    if not show_ctx:
+        return True
+    from resources.lib.database.sync_meta_cache import row_has_display_meta, row_has_plot_meta
+
+    pseudo = {
+        "info": show_ctx.get("show_info") or {},
+        "art": show_ctx.get("show_art") or {},
+    }
+    if not row_has_display_meta(pseudo):
+        return True
+    if not row_has_plot_meta(pseudo):
+        return True
+    cast = show_ctx.get("show_cast")
+    return not cast or not isinstance(cast, list) or len(cast) == 0
+
+
+def _show_needs_provider_enrich(row: dict) -> bool:
+    if _cast_is_missing(row):
+        return True
+    info = row.get("info") if isinstance(row.get("info"), dict) else {}
+    if not info.get("plot") and not info.get("overview"):
+        return True
+    art = row.get("art") if isinstance(row.get("art"), dict) else {}
+    return not art.get("poster") and not art.get("thumb") and not art.get("fanart")
+
+
 def load_show_menu_context(simkl_show_id: int) -> dict[str, Any] | None:
     """Load parent show info/art/cast for season and episode folder menus."""
     if not simkl_show_id:
@@ -938,42 +1088,40 @@ def load_show_menu_context(simkl_show_id: int) -> dict[str, Any] | None:
     from resources.lib.database.sync_meta_cache import row_has_display_meta
     from resources.lib.meta.display_store import get_display_meta_store
 
+    sync_row = _fetch_show_sync_row(sid)
     painted = get_display_meta_store().get_row("tvshow", sid)
     if painted and row_has_display_meta(painted):
         info = _copy_mapping(painted.get("info"))
-        return {
+        art = _copy_mapping(painted.get("art"))
+        cast = list(painted.get("cast") or [])
+        if isinstance(sync_row, dict):
+            from resources.lib.database.sync_meta_cache import row_has_plot_meta
+
+            painted_sparse = not row_has_plot_meta(painted) or _cast_is_missing(painted)
+            info, art, cast = _merge_painted_show_with_sync_row(info, art, cast, sync_row)
+            if painted_sparse:
+                get_display_meta_store().set_row(
+                    "tvshow",
+                    {
+                        "simkl_id": sid,
+                        "info": info,
+                        "art": art,
+                        "cast": cast,
+                    },
+                )
+        show_ctx = {
             "title": info.get("title") or info.get("tvshowtitle"),
             "show_info": info,
-            "show_art": _copy_mapping(painted.get("art")),
-            "show_cast": list(painted.get("cast") or []),
+            "show_art": art,
+            "show_cast": cast,
         }
+        return show_ctx
 
-    from resources.lib.database.session import get_sync_database
-
-    row = get_sync_database().fetchone(
-        """
-        SELECT simkl_id, info, art, [cast], season_count, episode_count
-        FROM shows
-        WHERE simkl_id = ?
-        """,
-        (sid,),
-    )
-    if not isinstance(row, dict):
+    if not isinstance(sync_row, dict):
         return None
 
-    info = _copy_mapping(row.get("info"))
-    info.setdefault("simkl_id", sid)
-    if row.get("season_count") is not None:
-        info.setdefault("season_count", row["season_count"])
-    if row.get("episode_count") is not None:
-        info.setdefault("episode_count", row["episode_count"])
-
-    return {
-        "title": info.get("title") or info.get("tvshowtitle"),
-        "show_info": info,
-        "show_art": _copy_mapping(row.get("art")),
-        "show_cast": list(row.get("cast") or []),
-    }
+    show_ctx = _show_context_from_sync_row(sync_row)
+    return show_ctx
 
 
 def load_season_menu_context(simkl_show_id: int, season_num: int) -> dict[str, Any] | None:
@@ -1237,7 +1385,7 @@ def ensure_show_metadata(simkl_show_id: int) -> None:
     )
     if not isinstance(row, dict):
         return
-    if not _cast_is_missing(row):
+    if not _show_needs_provider_enrich(row):
         return
 
     handler = db.metadataHandler

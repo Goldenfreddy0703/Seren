@@ -2438,6 +2438,28 @@ class SimklSyncDatabase(Database):
             )
 
 
+    @staticmethod
+    def _milled_catalog_season_guard_sql(episode_alias: str = "e") -> str:
+        """SQL guard: keep full drilldown-milled season catalogs out of stub prune."""
+        return f"""
+              AND NOT EXISTS (
+                SELECT 1
+                FROM seasons AS se
+                WHERE se.simkl_show_id = {episode_alias}.simkl_show_id
+                  AND se.season = {episode_alias}.season
+                  AND se.season > 0
+                  AND (
+                    SELECT COUNT(*)
+                    FROM episodes AS ec
+                    WHERE ec.simkl_show_id = se.simkl_show_id
+                      AND ec.season = se.season
+                  ) >= CASE
+                    WHEN COALESCE(se.episode_count, 0) > 1 THEN se.episode_count
+                    ELSE 2
+                  END
+              )
+        """
+
     def prune_library_episodes(self) -> None:
         """Drop episode rows not needed for Continue Watching / Next Up / Watched Episodes."""
         bookmarked = self.fetchall("SELECT simkl_id FROM bookmarks WHERE type='episode'")
@@ -2448,6 +2470,7 @@ class SimklSyncDatabase(Database):
             placeholders = ",".join("?" * len(bookmark_ids))
             bookmark_clause = f" AND e.simkl_id NOT IN ({placeholders})"
             bookmark_params = tuple(bookmark_ids)
+        milled_guard = self._milled_catalog_season_guard_sql("e")
 
         self.execute_sql(
             f"""
@@ -2488,7 +2511,7 @@ class SimklSyncDatabase(Database):
                   AND e2.season > 0
                 ORDER BY e2.season ASC, e2.number ASC
                 LIMIT 1
-            ){bookmark_clause}
+            ){milled_guard}{bookmark_clause}
             """,
             bookmark_params or None,
         )
@@ -2769,27 +2792,24 @@ class SimklSyncDatabase(Database):
         ) as temp_table:
             temp_table.insert_data(rows)
             self.execute_sql(
-                [
-                    f"UPDATE episodes SET watched=0 WHERE simkl_show_id IN ({show_id_list})",
-                    """
-                    UPDATE episodes
-                    SET (watched, last_watched_at) = (
-                        SELECT watched, last_watched_at
-                        FROM _episodes_watched
-                        WHERE _episodes_watched.simkl_show_id = episodes.simkl_show_id
-                            AND _episodes_watched.season = episodes.season
-                            AND _episodes_watched.episode = episodes.number
-                    )
-                    WHERE simkl_show_id IN ({show_ids})
-                      AND EXISTS (
-                        SELECT 1
-                        FROM _episodes_watched
-                        WHERE _episodes_watched.simkl_show_id = episodes.simkl_show_id
-                            AND _episodes_watched.season = episodes.season
-                            AND _episodes_watched.episode = episodes.number
-                    )
-                    """.format(show_ids=show_id_list),
-                ]
+                """
+                UPDATE episodes
+                SET (watched, last_watched_at) = (
+                    SELECT watched, last_watched_at
+                    FROM _episodes_watched
+                    WHERE _episodes_watched.simkl_show_id = episodes.simkl_show_id
+                        AND _episodes_watched.season = episodes.season
+                        AND _episodes_watched.episode = episodes.number
+                )
+                WHERE simkl_show_id IN ({show_ids})
+                  AND EXISTS (
+                    SELECT 1
+                    FROM _episodes_watched
+                    WHERE _episodes_watched.simkl_show_id = episodes.simkl_show_id
+                        AND _episodes_watched.season = episodes.season
+                        AND _episodes_watched.episode = episodes.number
+                )
+                """.format(show_ids=show_id_list),
             )
 
         for show_id in show_ids.keys():
@@ -2866,7 +2886,8 @@ class SimklSyncDatabase(Database):
                 (
                     "UPDATE episodes SET watched=1, "
                     "last_watched_at=COALESCE(last_watched_at, ?) "
-                    "WHERE simkl_show_id=? AND season=? AND number=?"
+                    "WHERE simkl_show_id=? AND season=? AND number=? "
+                    "AND COALESCE(watched, 0) = 0"
                 ),
                 (stamp, show_id, int(row["season"]), int(row["number"])),
             )
@@ -2904,29 +2925,9 @@ class SimklSyncDatabase(Database):
                         (max(watched_int, total_int), total_int, show_id),
                     )
 
-            episode_rows = self.fetchone(
-                "SELECT COUNT(*) AS episode_count FROM episodes WHERE simkl_show_id=? AND season != 0",
-                (show_id,),
-            )
-            episode_count = int(episode_rows.get("episode_count") or 0) if episode_rows else 0
-            watched_rows = self.fetchone(
-                "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0 AND COALESCE(watched, 0) > 0",
-                (show_id,),
-            )
-            local_watched = int((watched_rows or {}).get("c") or 0)
-            total_int = int(total) if total is not None else 0
-            watched_int = int(watched) if watched is not None else 0
-            force_all = total_int > 0 and watched_int >= total_int
-            if episode_count > 0 and force_all and local_watched < episode_count:
-                self.execute_sql(
-                    """
-                    UPDATE episodes
-                    SET watched=1, last_watched_at=COALESCE(last_watched_at, ?)
-                    WHERE simkl_show_id=? AND season != 0
-                    """,
-                    (self._get_datetime_now(), show_id),
-                )
-                self._update_shows_statistics_from_show_id(show_id)
+            # Do not bulk-mark every episode row watched from show-level counters alone.
+            # Per-episode Simkl flags (apply_watched_episodes_from_entries) are authoritative;
+            # list UI uses _apply_completed_watched_display for completed-show indicators.
 
     def apply_movie_watch_flags(self, entries):
         """Align movies.watched with Simkl list status, not prior watch history alone."""

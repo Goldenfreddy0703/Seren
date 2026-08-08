@@ -152,13 +152,23 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             f"Marking episode {show_id} S{season}E{number} as watched in sync database",
             "debug",
         )
-        play_count = self.fetchone(
-            "SELECT watched from episodes " "where simkl_show_id=? and season=? and number=?",
+        row = self.fetchone(
+            "SELECT simkl_id, watched FROM episodes WHERE simkl_show_id=? AND season=? AND number=?",
             (show_id, season, number),
-        ).get("watched")
-        if play_count is None:
+        )
+        if not row or row.get("watched") is None:
             return
+        play_count = row.get("watched")
         self._mark_episode_record("watched", play_count + 1, show_id, season, number)
+        simkl_id = row.get("simkl_id")
+        if simkl_id is not None:
+            self.remove_bookmark(int(simkl_id))
+        try:
+            from resources.lib.meta.paint_cache import clear_session_page_paint
+
+            clear_session_page_paint()
+        except Exception:
+            pass
         self._update_shows_statistics_from_show_id(show_id)
 
     @guard_against_none()
@@ -503,7 +513,9 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 scope_formatted = True
         elif simkl_pulled or episodes_need_format:
             self._try_update_episodes(simkl_show_id, season_row_id, simkl_id)
-        self.refresh_show_episode_watch_state(simkl_show_id)
+        skip_watch_refresh = params.pop("skip_watch_refresh", skip_update)
+        if not skip_watch_refresh:
+            self.refresh_show_episode_watch_state(simkl_show_id)
         self._refresh_show_and_season_statistics(int(simkl_show_id))
         g.log("Updated required episodes", "debug")
         statement = """SELECT e.simkl_id, e.simkl_show_id, e.simkl_season_id, e.info, e.cast, e.art, e.args, e.watched as play_count,
@@ -1127,6 +1139,26 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             )
             if gap_rows:
                 return True
+            completeness = self.fetchone(
+                """
+                SELECT COALESCE(se.episode_count, 0) AS expected,
+                       (
+                           SELECT COUNT(*)
+                           FROM episodes AS e
+                           WHERE e.simkl_show_id = se.simkl_show_id
+                             AND e.season = se.season
+                       ) AS local_cnt
+                FROM seasons AS se
+                WHERE se.simkl_show_id = ?
+                  AND se.season = ?
+                """,
+                (int(simkl_show_id), int(season_num)),
+            )
+            if completeness:
+                expected = int(completeness.get("expected") or 0)
+                local_cnt = int(completeness.get("local_cnt") or 0)
+                if expected > 1 and local_cnt < expected:
+                    return True
         return False
 
     def _needs_simkl_season_pull(
@@ -1618,7 +1650,14 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         :return: Episode object with full meta
         :rtype: dict
         """
-        result = self.get_episode_list(simkl_show_id, simkl_id=simkl_id, hide_unaired=False, hide_watched=False)
+        result = self.get_episode_list(
+            simkl_show_id,
+            simkl_id=simkl_id,
+            hide_unaired=False,
+            hide_watched=False,
+            skip_update=True,
+            skip_watch_refresh=True,
+        )
         if len(result) > 0:
             result = result[0]
             result.update(

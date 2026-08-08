@@ -1587,7 +1587,8 @@ class GlobalVariables:
         if "watched_episodes" in menu_item:
             item.setProperty("WatchedEpisodes", str(menu_item["watched_episodes"]))
 
-        if menu_item.get("episode_count", 0) and menu_item.get("watched_episodes", 0):
+        mediatype = (info.get("mediatype") or "").lower()
+        if mediatype in ("tvshow", "season") and menu_item.get("episode_count", 0) and menu_item.get("watched_episodes", 0):
             ep_count = int(menu_item["episode_count"])
             watched_eps = int(menu_item["watched_episodes"])
             if ep_count == watched_eps:
@@ -1609,28 +1610,43 @@ class GlobalVariables:
         if "season_count" in menu_item:
             item.setProperty("TotalSeasons", str(menu_item["season_count"]))
 
+        resolved_play_count = None
+        if menu_item.get("play_count") is not None:
+            try:
+                resolved_play_count = int(menu_item["play_count"])
+            except (TypeError, ValueError):
+                resolved_play_count = 0
+        episode_watched = resolved_play_count is not None and resolved_play_count > 0
+
+        resume_time = menu_item.get("resume_time")
+        if resume_time is None and menu_item.get("progress") is not None:
+            resume_time = menu_item.get("progress")
+            menu_item["resume_time"] = resume_time
+
         partial_percent = 0.0
         try:
             partial_percent = float(menu_item.get("percent_played") or 0)
         except (TypeError, ValueError):
             partial_percent = 0.0
-        has_partial = 0 < partial_percent < 100
 
-        if (
-            "percent_played" in menu_item
-            and menu_item.get("percent_played") is not None
-            and partial_percent > 0
-        ):
-            item.setProperty("percentplayed", str(menu_item["percent_played"]))
-        if (
-            "resume_time" in menu_item
-            and menu_item.get("resume_time") is not None
-            and int(menu_item.get("resume_time", 0)) > 0
-        ):
-            params["resume"] = str(menu_item["resume_time"])
-            item.setProperty("resumetime", str(menu_item["resume_time"]))
+        has_resume_time = False
+        try:
+            has_resume_time = resume_time is not None and int(resume_time) > 0
+        except (TypeError, ValueError):
+            has_resume_time = False
+
+        force_resume_indicator = bool(menu_item.get("force_resume_indicator"))
+        has_active_partial = (0 < partial_percent < 100) or has_resume_time
+        if episode_watched and not force_resume_indicator:
+            # Completed episodes show a checkmark; stale bookmarks must not keep the half-circle.
+            episode_in_progress = False
+            resume_time = None
+            has_resume_time = False
+            partial_percent = 0.0
+        else:
+            episode_in_progress = has_active_partial
+
         duration = info.get("duration")
-
         if not duration:
             runtime = info.get("runtime")
             try:
@@ -1638,31 +1654,34 @@ class GlobalVariables:
             except Exception:
                 duration = None
 
-        watched_progress_set = False
-        try:
-            if duration and float(duration) > 0 and menu_item.get("resume_time") is not None:
-                progress = int((float(menu_item["resume_time"]) / float(duration)) * 100)
-                progress = max(0, min(100, progress))
-                item.setProperty("WatchedProgress", str(progress))
-                watched_progress_set = True
-        except Exception:
-            pass
+        if episode_in_progress:
+            if partial_percent > 0:
+                item.setProperty("percentplayed", str(partial_percent))
+            if has_resume_time:
+                params["resume"] = str(resume_time)
+                item.setProperty("resumetime", str(resume_time))
+                if duration:
+                    item.setProperty("totaltime", str(int(duration)))
 
-        if not watched_progress_set and has_partial:
-            item.setProperty("WatchedProgress", str(int(round(partial_percent))))
+            watched_progress_set = False
+            try:
+                if duration and float(duration) > 0 and has_resume_time:
+                    progress = int((float(resume_time) / float(duration)) * 100)
+                    progress = max(0, min(100, progress))
+                    item.setProperty("WatchedProgress", str(progress))
+                    watched_progress_set = True
+            except Exception:
+                pass
+            if not watched_progress_set and 0 < partial_percent < 100:
+                item.setProperty("WatchedProgress", str(int(round(partial_percent))))
+
+            # Kodi half-watched overlay requires playcount 0 (not fully watched).
+            info["playcount"] = 0
+        elif resolved_play_count is not None:
+            info["playcount"] = resolved_play_count if resolved_play_count > 0 else 0
 
         if duration and not info.get("duration"):
             info["duration"] = duration
-
-        if "play_count" in menu_item and menu_item.get("play_count") is not None:
-            if has_partial:
-                info["playcount"] = 0
-            else:
-                try:
-                    play_count = int(menu_item["play_count"])
-                except (TypeError, ValueError):
-                    play_count = 0
-                info["playcount"] = play_count if play_count > 0 else 0
         if "air_date" in menu_item and menu_item.get("air_date") is not None:
             # shows.air_date is often min(episode air_date) for hide-unaired SQL — not show premiere.
             if info.get("mediatype") != "tvshow" or not (info.get("premiered") or info.get("aired")):
@@ -1747,6 +1766,20 @@ class GlobalVariables:
 
         # Use InfoTagVideo API (Kodi 21+) instead of deprecated setInfo/setCast/setUniqueIDs
         set_video_info_tag(item, info, cast=cast, unique_ids=unique_ids)
+
+        if episode_in_progress:
+            try:
+                info_tag = item.getVideoInfoTag()
+                if duration and float(duration) > 0:
+                    if has_resume_time:
+                        info_tag.setResumePoint(float(resume_time), float(duration))
+                    elif 0 < partial_percent < 100:
+                        info_tag.setResumePoint(float(duration) * partial_percent / 100.0, float(duration))
+                elif has_resume_time:
+                    info_tag.setResumePoint(float(resume_time))
+            except Exception:
+                pass
+
         item.setLabel(name)
 
         bulk_add = params.pop("bulk_add", False)

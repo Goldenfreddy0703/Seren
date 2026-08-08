@@ -237,6 +237,7 @@ def render_continue_watching_menu(catalog: str) -> None:
     for item in items:
         if isinstance(item, dict):
             item.setdefault("catalog", catalog)
+            item["force_resume_indicator"] = True
     builder = ListBuilder()
     profile = MenuPaintProfile.LIBRARY_EPISODES if catalog != CATALOG_MOVIE else MenuPaintProfile.LIBRARY
     paint_kwargs = profile_list_kwargs(profile)

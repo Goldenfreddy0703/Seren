@@ -399,7 +399,12 @@ def refresh_show_episode_watch_state(db: "SimklSyncDatabase", simkl_show_id: int
             ) or {}).get("c")
             or 0
         )
-    if not has_per_episode and simkl_watched_count > 0 and local_watched_after < simkl_watched_count:
+    if (
+        not has_per_episode
+        and simkl_watched_count > 0
+        and local_watched_after < simkl_watched_count
+        and local_watched_after == 0
+    ):
         local_watched_after = max(
             local_watched_after,
             db.apply_watched_progress_from_entry(entry),

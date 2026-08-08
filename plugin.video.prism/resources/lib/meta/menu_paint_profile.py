@@ -156,6 +156,7 @@ def profile_list_kwargs(
     elif profile == MenuPaintProfile.DRILLDOWN:
         base.update(_browse_hide_filters())
         base["paint_only"] = False
+        base["menu_cache"] = False
         base.setdefault("enrichment_reason", "drilldown")
     elif profile == MenuPaintProfile.RELATED:
         base.update(_browse_hide_filters())
