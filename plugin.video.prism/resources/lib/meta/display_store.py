@@ -490,6 +490,19 @@ class DisplayMetaStore:
             )
         conn.commit()
 
+    def delete_row(self, media_type: str, simkl_id: int) -> None:
+        """Drop one cached display row (RAM + prism_meta.db)."""
+        cache_type = self._media_key(media_type)
+        sid = int(simkl_id)
+        self._ram.delete_row(cache_type, sid)
+        with self._db_lock:
+            conn = self._connect()
+            conn.execute(
+                "DELETE FROM display_meta WHERE media_type = ? AND simkl_id = ?",
+                (cache_type, sid),
+            )
+            conn.commit()
+
     def clear_paint_stamps(self) -> None:
         """Invalidate trust stamps without deleting paint blobs."""
         with self._db_lock:

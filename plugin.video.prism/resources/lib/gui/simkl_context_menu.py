@@ -97,7 +97,6 @@ class SimklContextMenu:
             },
             g.get_language_string(30283): {
                 "method": self._refresh_meta_information,
-                "info_key": "info",
             },
             g.get_language_string(30284): {
                 "method": self._remove_playback_history,
@@ -109,7 +108,11 @@ class SimklContextMenu:
         if selected_option not in options:
             return
         selected_option = options[selected_option]
-        selected_option["method"](item_information[selected_option["info_key"]])
+        info_key = selected_option.get("info_key")
+        if info_key:
+            selected_option["method"](item_information[info_key])
+        else:
+            selected_option["method"](item_information)
 
     @cached_property
     def simkl_api(self):
@@ -259,10 +262,27 @@ class SimklContextMenu:
                 self.dialog_list.append(g.get_language_string(30279))
             else:
                 self.dialog_list.append(g.get_language_string(30278))
-        elif item_information.get("unwatched_episodes", 0) > 0:
+        elif self._season_or_show_mark_watched(item_information):
             self.dialog_list.append(g.get_language_string(30278))
         else:
             self.dialog_list.append(g.get_language_string(30279))
+
+    @staticmethod
+    def _season_or_show_mark_watched(item_information: dict) -> bool:
+        """True when Simkl manager should offer Mark as Watched for a season or show."""
+        watched = int(item_information.get("watched_episodes") or 0)
+        unwatched_raw = item_information.get("unwatched_episodes")
+        if unwatched_raw is not None:
+            try:
+                unwatched = int(unwatched_raw)
+            except (TypeError, ValueError):
+                unwatched = 0
+            if unwatched > 0:
+                return True
+            if watched > 0:
+                return False
+            return True
+        return watched <= 0
 
     @staticmethod
     def _confirm_item_information(item_information):
@@ -274,12 +294,24 @@ class SimklContextMenu:
         apply_local_library_status(item_information, status)
 
     @staticmethod
-    def _refresh_meta_information(simkl_object):
+    def _refresh_meta_information(item_information):
         from resources.lib.database.session import get_sync_database
 
-        get_sync_database().clear_specific_item_meta(simkl_object["simkl_id"], simkl_object["mediatype"])
-        g.container_refresh()
-        g.trigger_widget_refresh()
+        ok = get_sync_database().refresh_item_metadata(item_information)
+        refreshed = g.refresh_visible_container()
+        if not refreshed:
+            g.container_refresh()
+        g.trigger_widget_refresh(if_playing=False)
+        if ok:
+            g.notification(
+                f"{g.ADDON_NAME}: {g.get_language_string(30286)}",
+                g.get_language_string(30283),
+            )
+        else:
+            g.notification(
+                f"{g.ADDON_NAME}: {g.get_language_string(30286)}",
+                g.get_language_string(30287),
+            )
 
     @staticmethod
     def _history_success(response, key: str) -> bool:
@@ -353,14 +385,23 @@ class SimklContextMenu:
         else:
             apply_local_status_after_watch(item_information)
 
+        show_id = self._get_show_id(item_information)
+        mediatype = item_information.get("mediatype")
+        if show_id is not None and mediatype == "tvshow":
+            try:
+                get_sync_database().refresh_show_episode_watch_state(int(show_id), force=True)
+            except Exception:
+                g.log_stacktrace()
+
         g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30288))
         if not silent:
-            show_id = self._get_show_id(item_information)
             if show_id is not None:
                 g.set_runtime_setting(f"episode_watch_refresh_cooldown_{int(show_id)}", str(int(time.time())))
             queue_library_sync(user_initiated=False)
-            g.container_refresh()
-            g.trigger_widget_refresh()
+            refreshed = g.refresh_visible_container()
+            if not refreshed:
+                g.container_refresh()
+            g.trigger_widget_refresh(if_playing=False)
 
     def _mark_unwatched(self, item_information):
         payload = info_to_history_payload(item_information)
@@ -398,8 +439,10 @@ class SimklContextMenu:
         if show_id is not None:
             g.set_runtime_setting(f"episode_watch_refresh_cooldown_{int(show_id)}", str(int(time.time())))
         queue_library_sync(user_initiated=False)
-        g.container_refresh()
-        g.trigger_widget_refresh()
+        refreshed = g.refresh_visible_container()
+        if not refreshed:
+            g.container_refresh()
+        g.trigger_widget_refresh(if_playing=False)
 
     def _add_to_library(self, item_information):
         self._change_list_status(item_information, exclude_current=False, dialog_string_id=30762)

@@ -382,6 +382,54 @@ def clear_session_page_paint() -> None:
         db_store.clear()
 
 
+_LIBRARY_PAINT_PROFILES = frozenset({"library", "library_episodes"})
+
+
+def _session_paint_key_touches_show(key: object, show_id: int) -> bool:
+    if not isinstance(key, tuple) or not key:
+        return False
+    if len(key) >= 5 and key[4] in _LIBRARY_PAINT_PROFILES:
+        return False
+    if key[0] == "episode_page":
+        return True
+    if len(key) >= 2 and isinstance(key[1], tuple):
+        return show_id in key[1]
+    return False
+
+
+def clear_session_page_paint_for_show(simkl_show_id: int) -> None:
+    """Drop session paint for one show (drilldown + library pages that include it)."""
+    show_id = int(simkl_show_id)
+
+    def _purge(store: dict) -> None:
+        for key in list(store.keys()):
+            if _session_paint_key_touches_show(key, show_id):
+                store.pop(key, None)
+
+    _purge(_PAGE_PAINT_CACHE)
+    db_store = _db_page_paint_store()
+    if isinstance(db_store, dict):
+        _purge(db_store)
+
+
+def clear_session_page_paint_for_item(simkl_id: int, mediatype: str | None = None) -> None:
+    """Drop session paint rows that include one library item."""
+    sid = int(simkl_id)
+    mt = (mediatype or "").lower()
+    if mt == "movie":
+        def _purge(store: dict) -> None:
+            for key in list(store.keys()):
+                if isinstance(key, tuple) and len(key) >= 2 and isinstance(key[1], tuple) and sid in key[1]:
+                    store.pop(key, None)
+
+        _purge(_PAGE_PAINT_CACHE)
+        db_store = _db_page_paint_store()
+        if isinstance(db_store, dict):
+            _purge(db_store)
+        return
+    clear_session_page_paint_for_show(sid)
+
+
 def rows_paint_all_complete(rows: list[dict[str, Any]], media_type: str, *, profile: str = "browse") -> bool:
     if not rows:
         return True

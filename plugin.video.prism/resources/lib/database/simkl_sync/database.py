@@ -510,6 +510,43 @@ class SimklSyncDatabase(Database):
             (simkl_id,),
         )
 
+    def _purge_meta_table_ids(self, meta_table: str, ids: list[int] | set[int]) -> None:
+        unique = sorted({int(i) for i in ids if i is not None})
+        if not unique:
+            return
+        placeholders = ",".join("?" * len(unique))
+        self.execute_sql(
+            f"DELETE FROM {meta_table} WHERE id IN ({placeholders})",
+            tuple(unique),
+        )
+
+    def _invalidate_sync_row_meta(
+        self,
+        table: str,
+        meta_table: str,
+        simkl_id: int,
+        *,
+        include_provider_ids: bool = True,
+    ) -> None:
+        """Clear formatted fields, provider meta blobs, and flag row for re-enrichment."""
+        row = self.fetchone(
+            f"SELECT simkl_id, tmdb_id, tvdb_id FROM {table} WHERE simkl_id = ?",
+            (int(simkl_id),),
+        )
+        if not row:
+            return
+        meta_ids = [int(simkl_id)]
+        if include_provider_ids:
+            if row.get("tmdb_id"):
+                meta_ids.append(int(row["tmdb_id"]))
+            if row.get("tvdb_id"):
+                meta_ids.append(int(row["tvdb_id"]))
+        self._purge_meta_table_ids(meta_table, meta_ids)
+        self.execute_sql(
+            f"UPDATE {table} SET info=null, art=null, cast=null, meta_hash=null, needs_update=1 WHERE simkl_id=?",
+            (int(simkl_id),),
+        )
+
     def _update_last_activities_call(self):
         self.execute_sql("UPDATE activities SET last_activities_call=? WHERE sync_id=1", (int(time.time()),))
         self.refresh_activities()
@@ -762,9 +799,12 @@ class SimklSyncDatabase(Database):
         ]
         if not episode_entries or not shows:
             return
-        self.apply_watched_episodes_from_entries(episode_entries, shows)
+        self._apply_entry_watch_state(episode_entries, shows)
         for entry in episode_entries:
-            if not self._entry_has_per_episode_watch_rows(entry):
+            if (
+                not self._entry_has_full_episode_watch_detail(entry)
+                and not self._entry_has_per_episode_watch_rows(entry)
+            ):
                 self.apply_watched_progress_from_entry(entry)
         self.apply_show_watch_counters(episode_entries)
         self.apply_completed_show_watch_flags(episode_entries)
@@ -2280,6 +2320,120 @@ class SimklSyncDatabase(Database):
                     return True
         return False
 
+    def _entry_has_full_episode_watch_detail(self, entry: dict) -> bool:
+        """True when Simkl returned episode rows suitable for watched/unwatched reconciliation."""
+        if not isinstance(entry, dict):
+            return False
+        for season in entry.get("seasons") or []:
+            if isinstance(season, dict) and season.get("episodes"):
+                return True
+        return False
+
+    def apply_episode_watch_state_from_entries(self, entries, shows) -> bool:
+        """Apply Simkl per-episode watched and unwatched flags when episode rows are present."""
+        show_ids = {int(show["simkl_id"]): show for show in shows if show.get("simkl_id")}
+        rows = []
+
+        for entry in entries or []:
+            if not self._entry_has_full_episode_watch_detail(entry):
+                continue
+            show_id = self._entry_show_simkl_id(entry)
+            if show_id is None or int(show_id) not in show_ids:
+                continue
+            show_id = int(show_id)
+
+            for season in entry.get("seasons") or []:
+                if not isinstance(season, dict):
+                    continue
+                season_num = season.get("number") if season.get("number") is not None else season.get("season")
+                if season_num is None:
+                    continue
+                for episode in season.get("episodes") or []:
+                    if not isinstance(episode, dict):
+                        continue
+                    episode_num = (
+                        episode.get("number") if episode.get("number") is not None else episode.get("episode")
+                    )
+                    if episode_num is None:
+                        continue
+                    watched = 1 if self._episode_marked_watched(episode, entry) else 0
+                    last_watched_at = None
+                    if watched:
+                        last_watched_at = (
+                            episode.get("watched_at")
+                            or episode.get("last_watched_at")
+                            or entry.get("last_watched_at")
+                        )
+                    rows.append(
+                        {
+                            "simkl_show_id": show_id,
+                            "season": int(season_num),
+                            "episode": int(episode_num),
+                            "watched": watched,
+                            "last_watched_at": last_watched_at,
+                        }
+                    )
+
+        if not rows:
+            return False
+
+        show_id_list = sorted({row["simkl_show_id"] for row in rows})
+        with self.create_temp_table(
+            "_episodes_watch_state",
+            ["simkl_show_id", "season", "episode", "watched", "last_watched_at"],
+            primary_key="simkl_show_id, season, episode",
+        ) as temp_table:
+            temp_table.insert_data(rows)
+            placeholders = ",".join(str(sid) for sid in show_id_list)
+            self.execute_sql(
+                f"""
+                UPDATE episodes
+                SET watched = (
+                        SELECT watched
+                        FROM _episodes_watch_state
+                        WHERE _episodes_watch_state.simkl_show_id = episodes.simkl_show_id
+                          AND _episodes_watch_state.season = episodes.season
+                          AND _episodes_watch_state.episode = episodes.number
+                    ),
+                    last_watched_at = (
+                        SELECT CASE
+                            WHEN _episodes_watch_state.watched > 0
+                                THEN COALESCE(
+                                    _episodes_watch_state.last_watched_at,
+                                    episodes.last_watched_at
+                                )
+                            ELSE NULL
+                        END
+                        FROM _episodes_watch_state
+                        WHERE _episodes_watch_state.simkl_show_id = episodes.simkl_show_id
+                          AND _episodes_watch_state.season = episodes.season
+                          AND _episodes_watch_state.episode = episodes.number
+                    )
+                WHERE simkl_show_id IN ({placeholders})
+                  AND EXISTS (
+                    SELECT 1
+                    FROM _episodes_watch_state
+                    WHERE _episodes_watch_state.simkl_show_id = episodes.simkl_show_id
+                      AND _episodes_watch_state.season = episodes.season
+                      AND _episodes_watch_state.episode = episodes.number
+                )
+                """
+            )
+
+        for show_id in show_id_list:
+            self._refresh_show_and_season_statistics(int(show_id))
+        self.apply_show_watch_counters(entries)
+        return True
+
+    def _apply_entry_watch_state(self, entries, shows) -> None:
+        """Apply per-episode watch flags, using bidirectional sync when Simkl returned episode rows."""
+        full_entries = [entry for entry in (entries or []) if self._entry_has_full_episode_watch_detail(entry)]
+        partial_entries = [entry for entry in (entries or []) if entry not in full_entries]
+        if full_entries:
+            self.apply_episode_watch_state_from_entries(full_entries, shows)
+        if partial_entries:
+            self.apply_watched_episodes_from_entries(partial_entries, shows)
+
     def apply_show_watch_counters(self, entries):
         """Apply Simkl summary progress (watched/total episode counts) to show rows for list indicators."""
         rows = []
@@ -3299,9 +3453,14 @@ class SimklSyncDatabase(Database):
                                     ELSE seasons.last_watched_at
                                     END AS last_watched_at
                          FROM episodes AS e
-                         WHERE e.simkl_season_id = seasons.simkl_id
-                         GROUP BY e.simkl_season_id)
-            WHERE EXISTS(SELECT simkl_season_id FROM episodes AS ep WHERE ep.simkl_season_id = seasons.simkl_id)
+                         WHERE e.simkl_show_id = seasons.simkl_show_id
+                           AND e.season = seasons.season)
+            WHERE EXISTS(
+                SELECT 1
+                FROM episodes AS ep
+                WHERE ep.simkl_show_id = seasons.simkl_show_id
+                  AND ep.season = seasons.season
+            )
             {where_restriction_clause}
             """
         )

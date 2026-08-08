@@ -343,17 +343,27 @@ def refresh_show_episode_watch_state(db: "SimklSyncDatabase", simkl_show_id: int
 
     catalog = db.show_catalog(show_id) or "tv"
     media_key = "anime" if catalog == "anime" else "shows"
-    params = build_repair_watch_params(
-        include_all_episodes=status in ("completed", "dropped"),
-    )
-    payload = db.simkl_api.get_all_items(media_key, status=status, **params)
-    entry = _find_show_entry(payload, media_key, show_id)
-    if entry is None or not db._entry_has_per_episode_watch_rows(entry):
-        watched_entry = fetch_show_watch_entry_from_sync_watched(db.simkl_api, show_id, catalog)
-        if watched_entry and db._entry_has_per_episode_watch_rows(watched_entry):
-            entry = watched_entry
-        elif watched_entry and entry is None:
-            entry = watched_entry
+    entry = None
+    if force:
+        entry = fetch_show_watch_entry_from_sync_watched(db.simkl_api, show_id, catalog)
+    if entry is None:
+        params = build_repair_watch_params(
+            include_all_episodes=status in ("completed", "dropped"),
+        )
+        payload = db.simkl_api.get_all_items(media_key, status=status, **params)
+        entry = _find_show_entry(payload, media_key, show_id)
+        if entry is None or (
+            not db._entry_has_full_episode_watch_detail(entry)
+            and not db._entry_has_per_episode_watch_rows(entry)
+        ):
+            watched_entry = fetch_show_watch_entry_from_sync_watched(db.simkl_api, show_id, catalog)
+            if watched_entry and (
+                db._entry_has_full_episode_watch_detail(watched_entry)
+                or db._entry_has_per_episode_watch_rows(watched_entry)
+            ):
+                entry = watched_entry
+            elif watched_entry and entry is None:
+                entry = watched_entry
     if not entry:
         return False
 
@@ -362,7 +372,7 @@ def refresh_show_episode_watch_state(db: "SimklSyncDatabase", simkl_show_id: int
         return False
 
     shows = [normalized]
-    has_per_episode = db._entry_has_per_episode_watch_rows(entry)
+    has_per_episode = db._entry_has_full_episode_watch_detail(entry) or db._entry_has_per_episode_watch_rows(entry)
     simkl_watched_count = int(entry.get("watched_episodes_count") or 0)
     local_episode_rows = int(
         (db.fetchone(
@@ -381,7 +391,7 @@ def refresh_show_episode_watch_state(db: "SimklSyncDatabase", simkl_show_id: int
             or 0
         )
 
-    db.apply_watched_episodes_from_entries([entry], shows)
+    db._apply_entry_watch_state([entry], shows)
     local_watched_after = int(
         (db.fetchone(
             "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0 AND COALESCE(watched, 0) > 0",
@@ -391,7 +401,7 @@ def refresh_show_episode_watch_state(db: "SimklSyncDatabase", simkl_show_id: int
     )
     if has_per_episode and simkl_watched_count > 0 and local_watched_after < simkl_watched_count:
         db.apply_sync_episode_stubs_from_entries([entry], shows, catalog, selective=True)
-        db.apply_watched_episodes_from_entries([entry], shows)
+        db._apply_entry_watch_state([entry], shows)
         local_watched_after = int(
             (db.fetchone(
                 "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0 AND COALESCE(watched, 0) > 0",

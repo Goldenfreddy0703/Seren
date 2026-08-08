@@ -1813,7 +1813,37 @@ class GlobalVariables:
 
     def kodi_menu_caching_enabled(self) -> bool:
         """When true, Kodi may reuse cached folder listings (instant back navigation)."""
+        if (self.REQUEST_PARAMS or {}).get("prism_reload") == "true":
+            return False
         return self.get_bool_setting("general.menucaching", True) and not self.FROM_WIDGET
+
+    def refresh_visible_container(self) -> bool:
+        """Rebuild the active Prism folder so list art/meta repaint after background actions."""
+        import time
+        from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+        import xbmc
+
+        if not self.is_addon_visible():
+            return False
+
+        path = xbmc.getInfoLabel("Container.FolderPath") or ""
+
+        # RunPlugin context actions (handle -1) must not rewrite folder history.
+        if self.PLUGIN_HANDLE <= 0:
+            return bool(self.container_refresh())
+
+        if not path.startswith("plugin://plugin.video.prism"):
+            return False
+
+        parsed = urlparse(path)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query["prism_reload"] = "true"
+        query["_cb"] = str(int(time.time()))
+        new_path = urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+        escaped = new_path.replace("\\", "\\\\").replace('"', '\\"')
+        xbmc.executebuiltin(f'Container.Update("{escaped}",replace)')
+        return True
 
     def close_directory(self, content_type, sort=False, cache=None):
         if sort == "title":

@@ -124,15 +124,39 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         :rtype: None
         """
         g.log(f"Marking season {season} as watched in sync database", "debug")
+        show_id = int(show_id)
+        season = int(season)
+        from resources.lib.simkl.ids import season_key
+
+        season_row_id = season_key(show_id, season)
+        self._ensure_simkl_episode_tree(
+            show_id,
+            season_num=season,
+            season_row_id=season_row_id,
+        )
+        if self._episodes_scope_need_format(
+            show_id,
+            season_num=season,
+            season_row_id=season_row_id,
+        ):
+            self._format_episodes_local(show_id, season_row_id)
+
         self.execute_sql(
-            "UPDATE episodes SET watched=?, last_watched_at=?" " WHERE simkl_show_id=? AND season=?",
+            "UPDATE episodes SET watched=?, last_watched_at=?, simkl_season_id=? WHERE simkl_show_id=? AND season=?",
             (
                 watched,
                 self._get_datetime_now() if watched > 0 else None,
+                season_row_id,
                 show_id,
                 season,
             ),
         )
+        try:
+            from resources.lib.meta.paint_cache import clear_session_page_paint_for_show
+
+            clear_session_page_paint_for_show(show_id)
+        except Exception:
+            pass
         self._update_shows_statistics_from_show_id(show_id)
 
     @guard_against_none()
@@ -164,9 +188,9 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         if simkl_id is not None:
             self.remove_bookmark(int(simkl_id))
         try:
-            from resources.lib.meta.paint_cache import clear_session_page_paint
+            from resources.lib.meta.paint_cache import clear_session_page_paint_for_show
 
-            clear_session_page_paint()
+            clear_session_page_paint_for_show(int(show_id))
         except Exception:
             pass
         self._update_shows_statistics_from_show_id(show_id)
@@ -2659,3 +2683,176 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             """SELECT simkl_id, simkl_show_id FROM episodes WHERE simkl_show_id=? AND season=? AND number=?""",
             (simkl_show_id, season, episode),
         )
+
+    def refresh_item_metadata(self, item_information: dict) -> bool:
+        """Clear cached meta and re-fetch provider data for one library item."""
+        from resources.lib.meta.display_store import get_display_meta_store
+        from resources.lib.meta.paint_cache import clear_session_page_paint
+        from resources.lib.simkl.ids import (
+            season_num_from_args,
+            show_id_for_episode_action,
+            show_id_from_args,
+            show_id_from_info,
+        )
+
+        info = item_information.get("info") or {}
+        action_args = item_information.get("action_args") or {}
+        mediatype = (
+            action_args.get("mediatype")
+            or item_information.get("mediatype")
+            or info.get("mediatype")
+            or ""
+        ).lower()
+        if mediatype == "movies":
+            mediatype = "movie"
+
+        simkl_id = item_information.get("simkl_id") or info.get("simkl_id") or action_args.get("simkl_id")
+        if simkl_id is None:
+            return False
+        simkl_id = int(simkl_id)
+
+        show_id = None
+        if mediatype in ("season", "episode", "tvshow", "show"):
+            show_id = (
+                info.get("simkl_show_id")
+                or action_args.get("simkl_show_id")
+                or action_args.get("show_id")
+            )
+            if show_id is None and mediatype == "tvshow":
+                show_id = simkl_id
+            elif show_id is None and mediatype == "episode" and action_args:
+                show_id = show_id_for_episode_action(action_args)
+            if show_id is None:
+                show_id = show_id_from_info(info) or show_id_from_args(action_args)
+            if show_id is not None:
+                show_id = int(show_id)
+
+        season_num = info.get("season") or action_args.get("season")
+        if season_num is not None:
+            season_num = int(season_num)
+        season_row_id = info.get("simkl_season_id") or action_args.get("simkl_season_id")
+        if season_row_id is not None:
+            season_row_id = int(season_row_id)
+
+        try:
+            from resources.lib.meta.paint_cache import clear_session_page_paint_for_item
+
+            clear_session_page_paint_for_item(int(simkl_id), mediatype)
+        except Exception:
+            pass
+
+        display_store = get_display_meta_store()
+        ok = False
+
+        if mediatype == "movie":
+            display_store.delete_row("movie", simkl_id)
+            self._invalidate_sync_row_meta("movies", "movies_meta", simkl_id)
+            movie_meta = self._get_single_movie_meta(simkl_id) or {"simkl_id": simkl_id, "needs_update": True}
+            movie_meta["needs_update"] = True
+            self._update_movies([movie_meta])
+            ok = True
+        elif mediatype in ("tvshow", "show"):
+            display_store.delete_row("show", simkl_id)
+            self._invalidate_sync_row_meta("shows", "shows_meta", simkl_id)
+            for row in self.fetchall(
+                "SELECT simkl_id FROM seasons WHERE simkl_show_id = ?",
+                (simkl_id,),
+            ) or []:
+                self._invalidate_sync_row_meta("seasons", "seasons_meta", int(row["simkl_id"]))
+            for row in self.fetchall(
+                "SELECT simkl_id FROM episodes WHERE simkl_show_id = ?",
+                (simkl_id,),
+            ) or []:
+                self._invalidate_sync_row_meta(
+                    "episodes",
+                    "episodes_meta",
+                    int(row["simkl_id"]),
+                    include_provider_ids=False,
+                )
+            show_meta = self._get_single_show_meta(simkl_id) or {"simkl_id": simkl_id}
+            show_meta["needs_update"] = True
+            self._update_mill_format_shows(show_meta, mill_episodes=True)
+            self._try_update_seasons(simkl_id)
+            self._try_update_episodes(simkl_id)
+            ok = True
+        elif mediatype == "season" and show_id:
+            display_store.delete_row("show", show_id)
+            if season_row_id is None:
+                if season_num is not None:
+                    row = self.fetchone(
+                        "SELECT simkl_id FROM seasons WHERE simkl_show_id = ? AND season = ?",
+                        (show_id, season_num),
+                    )
+                else:
+                    row = self.fetchone(
+                        "SELECT simkl_id FROM seasons WHERE simkl_id = ?",
+                        (simkl_id,),
+                    )
+                if row:
+                    season_row_id = int(row["simkl_id"])
+                else:
+                    season_row_id = simkl_id
+            self._invalidate_sync_row_meta("seasons", "seasons_meta", season_row_id)
+            for row in self.fetchall(
+                "SELECT simkl_id FROM episodes WHERE simkl_season_id = ?",
+                (season_row_id,),
+            ) or []:
+                self._invalidate_sync_row_meta(
+                    "episodes",
+                    "episodes_meta",
+                    int(row["simkl_id"]),
+                    include_provider_ids=False,
+                )
+            self._get_single_show_meta(show_id)
+            self._ensure_simkl_episode_tree(
+                show_id,
+                season_num=season_num,
+                season_row_id=season_row_id,
+            )
+            self._format_seasons_local(show_id, season_row_id)
+            self._try_update_seasons(show_id, season_row_id)
+            self._format_episodes_local(show_id, season_row_id)
+            self._try_update_episodes(show_id, season_row_id)
+            ok = True
+        elif mediatype == "episode" and show_id:
+            display_store.delete_row("show", show_id)
+            if season_row_id is None and season_num is not None:
+                row = self.fetchone(
+                    "SELECT simkl_id FROM seasons WHERE simkl_show_id = ? AND season = ?",
+                    (show_id, season_num),
+                )
+                if row:
+                    season_row_id = int(row["simkl_id"])
+            self._invalidate_sync_row_meta(
+                "episodes",
+                "episodes_meta",
+                simkl_id,
+                include_provider_ids=False,
+            )
+            self._get_single_show_meta(show_id)
+            self._ensure_simkl_episode_tree(
+                show_id,
+                season_num=season_num,
+                simkl_id=simkl_id,
+                season_row_id=season_row_id,
+            )
+            self._format_episodes_local(show_id, season_row_id, simkl_id)
+            self._try_update_episodes(show_id, season_row_id, simkl_id)
+            ok = True
+
+        if ok:
+            try:
+                if mediatype == "movie":
+                    self.refresh_movie_watch_state(simkl_id)
+                elif show_id is not None and mediatype in ("tvshow", "show", "season", "episode"):
+                    self.refresh_show_episode_watch_state(show_id, force=True)
+                    try:
+                        from resources.lib.meta.paint_cache import clear_session_page_paint_for_show
+
+                        clear_session_page_paint_for_show(int(show_id))
+                    except Exception:
+                        pass
+            except Exception:
+                g.log_stacktrace()
+
+        return ok

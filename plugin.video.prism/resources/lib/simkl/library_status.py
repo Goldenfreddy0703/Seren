@@ -160,11 +160,16 @@ def apply_local_library_status(
 
     catalog = library_catalog(info)
     db = _library_db(catalog)
+    table = "movies" if catalog == "movie" else "shows"
+    prior_row = db.fetchone(f"SELECT simkl_status FROM {table} WHERE simkl_id=?", (int(simkl_id),))
+    prior_status = (prior_row or {}).get("simkl_status")
+
     db.set_simkl_status(simkl_id, catalog, status)
 
-    from resources.lib.simkl.library_cache import invalidate_library_cache
+    if str(status or "") != str(prior_status or ""):
+        from resources.lib.simkl.library_cache import invalidate_library_cache
 
-    invalidate_library_cache(catalog)
+        invalidate_library_cache(catalog)
 
     if status == "completed":
         if catalog == "movie":

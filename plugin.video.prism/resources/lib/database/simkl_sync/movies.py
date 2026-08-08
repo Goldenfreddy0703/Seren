@@ -120,6 +120,24 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
     def mark_movie_unwatched(self, simkl_id):
         self._mark_movie_record("watched", 0, simkl_id)
 
+    def refresh_movie_watch_state(self, simkl_id: int) -> bool:
+        """Pull movie watched/list status from Simkl for one library row."""
+        from resources.lib.simkl.remote_state import fetch_remote_item_state, reconcile_local_item_state
+
+        row = self.fetchone("SELECT simkl_id, info FROM movies WHERE simkl_id=?", (int(simkl_id),))
+        if not row:
+            return False
+        info = {
+            "simkl_id": int(simkl_id),
+            "mediatype": "movie",
+            "info": row.get("info") if isinstance(row.get("info"), dict) else {},
+        }
+        remote = fetch_remote_item_state(info)
+        if remote is None:
+            return False
+        reconcile_local_item_state(info, remote)
+        return remote.matched
+
     @guard_against_none()
     def _mark_movie_record(self, column, value, simkl_id):
         if column != "watched":
