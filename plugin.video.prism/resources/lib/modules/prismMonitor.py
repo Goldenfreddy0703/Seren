@@ -26,6 +26,11 @@ class PrismMonitor(xbmc.Monitor):
 
         warm_settings_dict()
         try:
+            if g.is_addon_visible():
+                g.refresh_visible_container()
+        except Exception:
+            g.log_stacktrace()
+        try:
             from resources.lib.modules.cache_maintenance import invalidate_paint_stamps
 
             invalidate_paint_stamps()

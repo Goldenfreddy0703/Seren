@@ -119,7 +119,7 @@ class Menus:
                     description=g.get_language_string(30776),
                     menu_item=g.create_icon_dict("actor_search", g.ICONS_PATH),
                 )
-        g.close_directory(g.CONTENT_MENU)
+        g.close_directory(g.CONTENT_MENU, cache=False)
 
     @staticmethod
     def tools_menu():

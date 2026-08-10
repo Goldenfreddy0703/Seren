@@ -297,79 +297,102 @@ def fetch_show_watch_entry_from_sync_watched(api, show_id: int, catalog: str) ->
     return _library_entry_from_sync_watched(item, catalog)
 
 
-def refresh_show_episode_watch_state(db: "SimklSyncDatabase", simkl_show_id: int, *, force: bool = False) -> bool:
-    """Fetch one library show's per-episode watch flags from Simkl (drilldown repair)."""
-    show_id = int(simkl_show_id)
-    row = db.fetchone(
-        "SELECT simkl_status, watched_episodes, episode_count FROM shows WHERE simkl_id=?",
-        (show_id,),
-    )
-    if not row:
+def _episode_watch_cooldown_active(show_id: int) -> bool:
+    cooldown_raw = g.get_runtime_setting(f"episode_watch_refresh_cooldown_{show_id}")
+    if not cooldown_raw:
+        return False
+    try:
+        return (time.time() - float(cooldown_raw)) < 120
+    except (TypeError, ValueError):
         return False
 
-    status = str(row.get("simkl_status") or "").strip().lower()
-    if status not in _LIBRARY_WATCH_STATUSES:
-        return False
 
-    local = db.fetchone(
-        "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0 AND COALESCE(watched, 0) > 0",
+def _local_watched_episode_keys(db: "SimklSyncDatabase", show_id: int) -> set[tuple[int, int]]:
+    rows = db.fetchall(
+        """
+        SELECT season, number
+        FROM episodes
+        WHERE simkl_show_id=? AND season != 0 AND COALESCE(watched, 0) > 0
+        """,
         (show_id,),
     )
-    local_watched = int((local or {}).get("c") or 0)
-    show_watched = int(row.get("watched_episodes") or 0)
-    episode_count = int(row.get("episode_count") or 0)
+    return {(int(row["season"]), int(row["number"])) for row in rows or []}
 
-    cooldown_key = f"episode_watch_refresh_cooldown_{show_id}"
-    cooldown_raw = g.get_runtime_setting(cooldown_key)
-    cooldown_active = False
-    if not force and cooldown_raw:
-        try:
-            cooldown_active = (time.time() - float(cooldown_raw)) < 120
-        except (TypeError, ValueError):
-            cooldown_active = False
 
-    if not force:
-        # Only skip when show-level counters indicate we're fully caught up locally.
-        if (
-            local_watched > 0
-            and show_watched > 0
-            and local_watched >= show_watched
-            and episode_count > 0
-            and show_watched >= episode_count
-        ):
-            return local_watched > 0
-        if cooldown_active:
-            return local_watched > 0
+def _remote_watched_episode_keys(db: "SimklSyncDatabase", entry: dict) -> set[tuple[int, int]]:
+    keys: set[tuple[int, int]] = set()
+    for season in entry.get("seasons") or []:
+        if not isinstance(season, dict):
+            continue
+        season_num = season.get("number") if season.get("number") is not None else season.get("season")
+        if season_num is None:
+            continue
+        for episode in season.get("episodes") or []:
+            if not isinstance(episode, dict):
+                continue
+            ep_num = episode.get("number") if episode.get("number") is not None else episode.get("episode")
+            if ep_num is None:
+                continue
+            if db._episode_marked_watched(episode, entry):
+                keys.add((int(season_num), int(ep_num)))
+    return keys
 
-    catalog = db.show_catalog(show_id) or "tv"
+
+def _show_watch_state_matches(
+    db: "SimklSyncDatabase",
+    *,
+    show_id: int,
+    entry: dict,
+    local_status: str,
+    resolved_status: str,
+) -> bool:
+    """True when local DB watch state already matches Simkl (safe to use cached menus)."""
+    remote_watched = int(entry.get("watched_episodes_count") or 0)
+    local_watched = len(_local_watched_episode_keys(db, show_id))
+    remote_status = str(entry.get("status") or "").strip().lower()
+
+    if resolved_status and remote_status and resolved_status != remote_status:
+        return False
+    if local_status and remote_status and local_status != remote_status:
+        return False
+    if local_watched != remote_watched:
+        return False
+
+    if db._entry_has_full_episode_watch_detail(entry):
+        return _local_watched_episode_keys(db, show_id) == _remote_watched_episode_keys(db, entry)
+
+    row = db.fetchone("SELECT watched_episodes FROM shows WHERE simkl_id=?", (show_id,))
+    show_watched = int((row or {}).get("watched_episodes") or 0)
+    if show_watched > 0 and remote_watched > 0 and show_watched != remote_watched:
+        return False
+    return True
+
+
+def _reconcile_show_watch_entry(
+    db: "SimklSyncDatabase",
+    show_id: int,
+    entry: dict,
+    catalog: str,
+    status: str,
+) -> int:
+    """Apply Simkl watch entry to the local DB; return watched episode row count."""
     media_key = "anime" if catalog == "anime" else "shows"
-    entry = None
-    if force:
-        entry = fetch_show_watch_entry_from_sync_watched(db.simkl_api, show_id, catalog)
-    if entry is None:
-        params = build_repair_watch_params(
-            include_all_episodes=status in ("completed", "dropped"),
-        )
-        payload = db.simkl_api.get_all_items(media_key, status=status, **params)
-        entry = _find_show_entry(payload, media_key, show_id)
-        if entry is None or (
-            not db._entry_has_full_episode_watch_detail(entry)
-            and not db._entry_has_per_episode_watch_rows(entry)
-        ):
-            watched_entry = fetch_show_watch_entry_from_sync_watched(db.simkl_api, show_id, catalog)
-            if watched_entry and (
-                db._entry_has_full_episode_watch_detail(watched_entry)
-                or db._entry_has_per_episode_watch_rows(watched_entry)
+    if not db._entry_has_full_episode_watch_detail(entry) and not db._entry_has_per_episode_watch_rows(entry):
+        if status in _LIBRARY_WATCH_STATUSES:
+            params = build_repair_watch_params(
+                include_all_episodes=status in ("completed", "dropped"),
+            )
+            payload = db.simkl_api.get_all_items(media_key, status=status, **params)
+            richer = _find_show_entry(payload, media_key, show_id)
+            if richer and (
+                db._entry_has_full_episode_watch_detail(richer)
+                or db._entry_has_per_episode_watch_rows(richer)
             ):
-                entry = watched_entry
-            elif watched_entry and entry is None:
-                entry = watched_entry
-    if not entry:
-        return False
+                entry = richer
 
     normalized = simkl_entry_to_sync_dict(entry, catalog)
     if not normalized:
-        return False
+        return 0
 
     shows = [normalized]
     has_per_episode = db._entry_has_full_episode_watch_detail(entry) or db._entry_has_per_episode_watch_rows(entry)
@@ -383,32 +406,13 @@ def refresh_show_episode_watch_state(db: "SimklSyncDatabase", simkl_show_id: int
     )
     if has_per_episode and local_episode_rows == 0:
         db.apply_sync_episode_stubs_from_entries([entry], shows, catalog, selective=True)
-        local_episode_rows = int(
-            (db.fetchone(
-                "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0",
-                (show_id,),
-            ) or {}).get("c")
-            or 0
-        )
 
     db._apply_entry_watch_state([entry], shows)
-    local_watched_after = int(
-        (db.fetchone(
-            "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0 AND COALESCE(watched, 0) > 0",
-            (show_id,),
-        ) or {}).get("c")
-        or 0
-    )
+    local_watched_after = len(_local_watched_episode_keys(db, show_id))
     if has_per_episode and simkl_watched_count > 0 and local_watched_after < simkl_watched_count:
         db.apply_sync_episode_stubs_from_entries([entry], shows, catalog, selective=True)
         db._apply_entry_watch_state([entry], shows)
-        local_watched_after = int(
-            (db.fetchone(
-                "SELECT COUNT(*) AS c FROM episodes WHERE simkl_show_id=? AND season != 0 AND COALESCE(watched, 0) > 0",
-                (show_id,),
-            ) or {}).get("c")
-            or 0
-        )
+        local_watched_after = len(_local_watched_episode_keys(db, show_id))
     if (
         not has_per_episode
         and simkl_watched_count > 0
@@ -423,9 +427,63 @@ def refresh_show_episode_watch_state(db: "SimklSyncDatabase", simkl_show_id: int
     if status == "completed":
         db.apply_completed_show_watch_flags([entry])
     db._refresh_show_and_season_statistics(show_id)
+    return local_watched_after
 
+
+def refresh_show_episode_watch_state(db: "SimklSyncDatabase", simkl_show_id: int, *, force: bool = False) -> bool:
+    """Validate per-show watch state against Simkl; reconcile only when local data drifted."""
+    show_id = int(simkl_show_id)
+    row = db.fetchone(
+        "SELECT simkl_status, watched_episodes, episode_count FROM shows WHERE simkl_id=?",
+        (show_id,),
+    )
+    if not row:
+        return False
+
+    catalog = db.show_catalog(show_id) or "tv"
+    local_status = str(row.get("simkl_status") or "").strip().lower()
+
+    if not force and _episode_watch_cooldown_active(show_id):
+        return len(_local_watched_episode_keys(db, show_id)) > 0
+
+    entry = fetch_show_watch_entry_from_sync_watched(db.simkl_api, show_id, catalog)
+    if not entry:
+        return False
+
+    remote_status = str(entry.get("status") or "").strip().lower()
+    remote_watched = int(entry.get("watched_episodes_count") or 0)
+    if remote_status not in _LIBRARY_WATCH_STATUSES and remote_watched <= 0:
+        return False
+
+    resolved_status = local_status
+    if remote_status in _LIBRARY_WATCH_STATUSES:
+        resolved_status = remote_status
+        if local_status != remote_status:
+            db.set_simkl_status(show_id, catalog, remote_status)
+
+    if not force and _show_watch_state_matches(
+        db,
+        show_id=show_id,
+        entry=entry,
+        local_status=local_status,
+        resolved_status=resolved_status,
+    ):
+        g.log(
+            f"Simkl watch verify: show {show_id} matches remote ({remote_watched} watched) — cache ok",
+            "debug",
+        )
+        return remote_watched > 0 or len(_local_watched_episode_keys(db, show_id)) > 0
+
+    local_watched_after = _reconcile_show_watch_entry(db, show_id, entry, catalog, resolved_status)
+    try:
+        from resources.lib.meta.paint_cache import clear_session_page_paint_for_show
+
+        clear_session_page_paint_for_show(show_id)
+    except Exception:
+        pass
     g.log(
-        f"Simkl watch refresh: show {show_id} ({status}) -> {local_watched_after} watched episode(s)",
+        f"Simkl watch reconcile: show {show_id} ({resolved_status or 'watching'}) -> "
+        f"{local_watched_after} watched episode(s)",
         "info",
     )
     return local_watched_after > 0

@@ -157,7 +157,7 @@ class DiscoverRenderer:
                 description=g.get_language_string(30770 if catalog == "anime" else (30371 if catalog == "movie" else 30372)),
                 menu_item=g.create_icon_dict(f"{_ICON_PREFIX.get(catalog, 'movies')}_search", g.ICONS_PATH),
             )
-        g.close_directory(g.CONTENT_MENU)
+        g.close_directory(g.CONTENT_MENU, cache=False)
 
     def _cdn_loader(self, discover_list: DiscoverList, catalog: Catalog):
         def loader() -> list[dict]:
