@@ -5355,3 +5355,43 @@ msgstr "Pages to prefetch ahead"
 msgctxt "#31026"
 msgid "How many upcoming list pages to warm in the background while you browse paginated menus (0 = off). Use 1 on slower devices; increase on fast hardware for smoother Next Page navigation."
 msgstr "How many upcoming list pages to warm in the background while you browse paginated menus (0 = off). Use 1 on slower devices; increase on fast hardware for smoother Next Page navigation."
+
+#: /resources/settings.xml
+msgctxt "#31027"
+msgid "Offcloud"
+msgstr "Offcloud"
+
+#: /resources/settings.xml
+msgctxt "#31028"
+msgid "Enable Offcloud"
+msgstr "Enable Offcloud"
+
+#: /resources/settings.xml
+msgctxt "#31029"
+msgid "Offcloud Username"
+msgstr "Offcloud Username"
+
+#: /resources/settings.xml
+msgctxt "#31030"
+msgid "Authorize Offcloud"
+msgstr "Authorize Offcloud"
+
+#: /resources/settings.xml
+msgctxt "#31031"
+msgid "Offcloud Torrents"
+msgstr "Offcloud Torrents"
+
+#: /resources/settings.xml
+msgctxt "#31032"
+msgid "Enable Offcloud Hosters"
+msgstr "Enable Offcloud Hosters"
+
+#: /resources/settings.xml
+msgctxt "#31033"
+msgid "Auto-Delete Offcloud Transfers"
+msgstr "Auto-Delete Offcloud Transfers"
+
+#: /resources/settings.xml
+msgctxt "#31034"
+msgid "Scrape Offcloud Cloud"
+msgstr "Scrape Offcloud Cloud"

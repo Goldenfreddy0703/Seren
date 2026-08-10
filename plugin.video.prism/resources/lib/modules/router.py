@@ -752,6 +752,12 @@ def dispatch(params):
         TorBox().auth()
         g.open_addon_settings(3, 45)
 
+    elif action == "authOffCloud":
+        from resources.lib.debrid.offcloud import OffCloud
+
+        OffCloud().auth()
+        g.open_addon_settings(3, 53)
+
     elif action == "checkSkinUpdates":
         from resources.lib.database.skinManager import SkinManager
 

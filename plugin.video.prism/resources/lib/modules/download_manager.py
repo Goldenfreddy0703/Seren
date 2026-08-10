@@ -888,6 +888,44 @@ class _TorBoxDownloader(_DebridDownloadBase):
         return stream_url
 
 
+class _OffCloudDownloader(_DebridDownloadBase):
+    def __init__(self, source, item_information=None):
+        super().__init__(source, item_information)
+        from resources.lib.debrid.offcloud import OffCloud
+
+        self.debrid_module = OffCloud()
+        self.request_id = None
+
+    def _fetch_available_files(self):
+        magnet = self.source.get("magnet")
+        if not magnet:
+            magnet = f"magnet:?xt=urn:btih:{self.source['hash']}"
+        torrent_data = self.debrid_module.get_torrent_files(magnet=magnet)
+        if not torrent_data or not torrent_data.get("files"):
+            raise UnexpectedResponse(torrent_data)
+        self.request_id = torrent_data.get("request_id")
+        return [
+            {
+                "path": f.get("path") or f.get("name", ""),
+                "id": f.get("id"),
+                "request_id": self.request_id,
+                "url": f.get("url"),
+                "bytes": f.get("size", 0),
+            }
+            for f in torrent_data["files"]
+        ]
+
+    def _resolve_file_url(self, file):
+        item = file[0]
+        if item.get("url"):
+            return item["url"]
+        return self.debrid_module.resolve_torrent_file(
+            item.get("request_id") or self.request_id,
+            item.get("id"),
+            item,
+        )
+
+
 class _DirectDownloader(_DownloadBase):
     def __init__(self, source, item_information=None):
         super().__init__(source, item_information)
@@ -921,6 +959,7 @@ def _get_debrid_downloader_class(source, item_information=None):
         "real_debrid": _RealDebridDownloader,
         "all_debrid": _AllDebridDownloader,
         "torbox": _TorBoxDownloader,
+        "offcloud": _OffCloudDownloader,
     }
     return debrid_providers[source["debrid_provider"]](source, item_information)
 

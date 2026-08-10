@@ -1419,7 +1419,13 @@ class GlobalVariables:
         return False
 
     def debrid_available(self):
-        return self.premiumize_enabled() or self.real_debrid_enabled() or self.all_debrid_enabled() or self.torbox_enabled()
+        return (
+            self.premiumize_enabled()
+            or self.real_debrid_enabled()
+            or self.all_debrid_enabled()
+            or self.torbox_enabled()
+            or self.offcloud_enabled()
+        )
 
     @staticmethod
     def configured_directory_path(setting_id):
@@ -1442,6 +1448,9 @@ class GlobalVariables:
 
     def torbox_enabled(self):
         return bool(self.get_setting("tb.token") != "" and self.get_bool_setting("torbox.enabled"))
+
+    def offcloud_enabled(self):
+        return bool(self.get_setting("oc.token") != "" and self.get_bool_setting("offcloud.enabled"))
 
     def container_refresh(self):
         return xbmc.executebuiltin("Container.Refresh")

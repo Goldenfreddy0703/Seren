@@ -24,6 +24,7 @@ MY_FILES_PROVIDER_ORDER = (
     'premiumize',
     'real_debrid',
     'torbox',
+    'offcloud',
 )
 
 
@@ -38,6 +39,8 @@ class Menus:
             self.providers['real_debrid'] = ('Real Debrid', RealDebridWalker)
         if g.torbox_enabled():
             self.providers['torbox'] = ('TorBox', TorBoxWalker)
+        if g.offcloud_enabled():
+            self.providers['offcloud'] = ('Offcloud', OffCloudWalker)
         if g.configured_directory_path('download.location'):
             self.providers['local_downloads'] = ('Local Downloads', LocalDownloadsWalker)
         if g.configured_directory_path('local.location'):
@@ -389,6 +392,80 @@ class TorBoxWalker(BaseDebridWalker):
         else:
             # Torrent files
             return self.torbox.resolve_torrent_file(parent_id, file_id)
+
+
+class OffCloudWalker(BaseDebridWalker):
+    provider = 'offcloud'
+
+    @cached_property
+    def offcloud(self):
+        from resources.lib.debrid.offcloud import OffCloud
+
+        return OffCloud()
+
+    def get_init_list(self):
+        items = []
+        transfers = self.offcloud.list_cloud_history()
+        for transfer in transfers or []:
+            if transfer.get("status") != "downloaded":
+                continue
+            request_id = transfer.get("requestId")
+            if not request_id:
+                continue
+            files = self.offcloud.cloud_explore(request_id, detailed=True)
+            if len(files) > 1:
+                items.append(
+                    {
+                        "id": request_id,
+                        "name": transfer.get("fileName", request_id),
+                        "type": "cloud",
+                        "links": files,
+                    }
+                )
+            elif len(files) == 1:
+                normalized = self.offcloud._normalize_file(files[0], request_id)
+                items.append(
+                    {
+                        "name": normalized.get("release_title", transfer.get("fileName", "")),
+                        "link": normalized.get("url") or f"{request_id},{normalized.get('id')}",
+                        "size": normalized.get("size", 0),
+                        "type": "cloud",
+                        "request_id": request_id,
+                    }
+                )
+        self._format_items(items)
+
+    def _is_folder(self, list_item):
+        return bool(list_item.get("links"))
+
+    def get_folder(self, list_item):
+        items = []
+        request_id = list_item["id"]
+        files = self.offcloud.cloud_explore(request_id, detailed=True)
+        for file_item in files:
+            normalized = self.offcloud._normalize_file(file_item, request_id)
+            filename = normalized.get("release_title", "")
+            if not filename.lower().endswith(g.common_video_extensions):
+                continue
+            items.append(
+                {
+                    "name": filename,
+                    "link": normalized.get("url") or f"{request_id},{normalized.get('id')}",
+                    "size": normalized.get("size", 0),
+                    "type": "cloud",
+                    "request_id": request_id,
+                }
+            )
+        self._format_items(sorted(items, key=lambda x: x['name']))
+
+    def resolve_link(self, list_item):
+        link = list_item.get("link", "")
+        if link.startswith("http"):
+            return link
+        if "," in link:
+            request_id, file_id = link.split(",", 1)
+            return self.offcloud.resolve_torrent_file(request_id, file_id)
+        return None
 
 
 class BaseLocalPathWalker(BaseDebridWalker):

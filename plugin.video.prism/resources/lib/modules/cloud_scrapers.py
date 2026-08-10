@@ -2,6 +2,7 @@ from resources.lib.common import source_utils
 from resources.lib.debrid.all_debrid import AllDebrid
 from resources.lib.debrid.premiumize import Premiumize
 from resources.lib.debrid.real_debrid import RealDebrid
+from resources.lib.debrid.offcloud import OffCloud
 from resources.lib.debrid.torbox import TorBox
 from resources.lib.indexers.apibase import ApiBase
 from resources.lib.modules.globals import g
@@ -309,3 +310,52 @@ class TorBoxCloudScraper(CloudScraper):
 
     def _is_enabled(self):
         return g.torbox_enabled()
+
+
+class OffCloudCloudScraper(CloudScraper):
+    def __init__(self, terminate_flag):
+        super().__init__(terminate_flag)
+        self.api_adapter = OffCloud()
+        self.debrid_provider = "offcloud"
+        self._source_normalization = (
+            ("short_name", "release_title", lambda k: k.lower()),
+            ("size", "size", lambda k: (k / 1024) / 1024),
+            ("id", "file_id", None),
+            ("request_id", "request_id", None),
+        )
+
+    def _fetch_cloud_items(self):
+        all_items = []
+        transfers = self.api_adapter.list_cloud_history()
+        g.log(f"Offcloud cloud scraper: Found {len(transfers) if transfers else 0} transfers", "debug")
+
+        for transfer in transfers or []:
+            if transfer.get("status") != "downloaded":
+                continue
+            request_id = transfer.get("requestId")
+            if not request_id:
+                continue
+            files = self.api_adapter.cloud_explore(request_id, detailed=True)
+            transfer_name = transfer.get("fileName", "")
+            for file_item in files:
+                normalized = self.api_adapter._normalize_file(file_item, request_id)
+                normalized["request_id"] = request_id
+                normalized["short_name"] = normalized.get("release_title", "")
+                normalized["folder_name"] = transfer_name
+                normalized["url"] = f"{request_id},{normalized['id']}"
+                all_items.append(normalized)
+
+        g.log(f"Offcloud cloud scraper: Total {len(all_items)} files", "debug")
+        return all_items
+
+    def _normalize_item(self, item):
+        normalized = super()._normalize_item(item)
+        normalized["url"] = item.get("url", "")
+        normalized["folder_name"] = item.get("folder_name", "")
+        return normalized
+
+    def _is_valid_pack(self, item):
+        return True
+
+    def _is_enabled(self):
+        return g.offcloud_enabled()

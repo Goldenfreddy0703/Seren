@@ -230,6 +230,7 @@ class SourceSorter:
             2: "real_debrid",
             3: "all_debrid",
             4: "torbox",
+            5: "offcloud",
         }
 
         for i in range(1, 5):

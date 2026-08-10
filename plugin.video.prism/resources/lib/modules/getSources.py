@@ -25,6 +25,7 @@ from resources.lib.database.torrentCache import TorrentCache
 from resources.lib.debrid import all_debrid
 from resources.lib.debrid import premiumize
 from resources.lib.debrid import real_debrid
+from resources.lib.debrid import offcloud
 from resources.lib.debrid import torbox
 from resources.lib.gui.windows.get_sources_window import GetSourcesWindow
 from resources.lib.gui.windows.manual_caching import ManualCacheWindow
@@ -33,6 +34,7 @@ from resources.lib.modules import resolver as resolver
 from resources.lib.modules.cloud_scrapers import AllDebridCloudScraper
 from resources.lib.modules.cloud_scrapers import PremiumizeCloudScraper
 from resources.lib.modules.cloud_scrapers import RealDebridCloudScraper
+from resources.lib.modules.cloud_scrapers import OffCloudCloudScraper
 from resources.lib.modules.cloud_scrapers import TorBoxCloudScraper
 from resources.lib.modules.local_scraper import LocalFileScraper
 from resources.lib.modules.local_scraper import local_scraping_enabled
@@ -383,6 +385,7 @@ class Sources:
             or (g.get_bool_setting('rd.torrents') and g.real_debrid_enabled())
             or (g.get_bool_setting('alldebrid.torrents') and g.all_debrid_enabled())
             or (g.get_bool_setting('tb.torrents') and g.torbox_enabled())
+            or (g.get_bool_setting('oc.torrents') and g.offcloud_enabled())
         )
 
     @staticmethod
@@ -392,6 +395,7 @@ class Sources:
             or (g.get_bool_setting('rd.hosters') and g.real_debrid_enabled())
             or (g.get_bool_setting('alldebrid.hosters') and g.all_debrid_enabled())
             or (g.get_bool_setting('tb.hosters') and g.torbox_enabled())
+            or (g.get_bool_setting('oc.hosters') and g.offcloud_enabled())
         )
 
     def _store_torrent_results(self, torrent_list):
@@ -768,6 +772,11 @@ class Sources:
                     "setting": "tb.cloudInspection",
                     "provider": TorBoxCloudScraper,
                     "enabled": g.torbox_enabled(),
+                },
+                {
+                    "setting": "oc.cloudInspection",
+                    "provider": OffCloudCloudScraper,
+                    "enabled": g.offcloud_enabled(),
                 },
             ]
 
@@ -1222,6 +1231,8 @@ class TorrentCacheCheck:
 
         if g.torbox_enabled() and g.get_bool_setting('tb.torrents'):
             self.threads.put(self._torbox_worker, copy.deepcopy(torrent_list))
+        if g.offcloud_enabled() and g.get_bool_setting('oc.torrents'):
+            self.threads.put(self._offcloud_worker, copy.deepcopy(torrent_list))
         self.threads.wait_completion()
 
     def _all_debrid_worker(self, torrent_list):
@@ -1295,6 +1306,21 @@ class TorrentCacheCheck:
             for i in torrent_list:
                 if i['hash'].lower() in [h.lower() for h in cached_hashes]:
                     i['debrid_provider'] = 'torbox'
+                    self.store_torrent(i)
+        except Exception:
+            g.log_stacktrace()
+
+    def _offcloud_worker(self, torrent_list):
+        try:
+            hash_list = [i['hash'] for i in torrent_list]
+            if not hash_list:
+                return
+            cached_hashes = offcloud.OffCloud().check_hash(hash_list)
+            if not cached_hashes:
+                return
+            for i in torrent_list:
+                if i['hash'].lower() in [h.lower() for h in cached_hashes]:
+                    i['debrid_provider'] = 'offcloud'
                     self.store_torrent(i)
         except Exception:
             g.log_stacktrace()

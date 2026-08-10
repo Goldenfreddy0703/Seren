@@ -13,6 +13,7 @@ from resources.lib.common.thread_pool import ThreadPool
 from resources.lib.debrid.all_debrid import AllDebrid
 from resources.lib.debrid.premiumize import Premiumize
 from resources.lib.debrid.real_debrid import RealDebrid
+from resources.lib.debrid.offcloud import OffCloud
 from resources.lib.debrid.torbox import TorBox
 from resources.lib.modules.exceptions import FileIdentification
 from resources.lib.modules.exceptions import ResolverFailure
@@ -21,6 +22,7 @@ from resources.lib.modules.globals import g
 from resources.lib.modules.resolver.torrent_resolvers import AllDebridResolver
 from resources.lib.modules.resolver.torrent_resolvers import PremiumizeResolver
 from resources.lib.modules.resolver.torrent_resolvers import RealDebridResolver
+from resources.lib.modules.resolver.torrent_resolvers import OffCloudResolver
 from resources.lib.modules.resolver.torrent_resolvers import TorBoxResolver
 
 
@@ -40,6 +42,7 @@ class Resolver:
             "premiumize": PremiumizeResolver,
             "real_debrid": RealDebridResolver,
             "torbox": TorBoxResolver,
+            "offcloud": OffCloudResolver,
         }
 
     def resolve_multiple_until_valid_link(self, sources, item_information, pack_select=False, silent=False):
@@ -173,6 +176,23 @@ class Resolver:
                 g.log(f"TorBox cloud resolve error: {e}", "error")
                 return None
 
+        if source["type"] == "cloud" and source["debrid_provider"] == "offcloud":
+            try:
+                url = source.get("url", "")
+                if not url or "," not in url:
+                    g.log(f"Offcloud cloud: Invalid URL format: {url}", "error")
+                    return None
+                request_id, file_id = url.split(",", 1)
+                offcloud = OffCloud()
+                for file_item in offcloud.cloud_explore(request_id, detailed=True):
+                    normalized = offcloud._normalize_file(file_item, request_id)
+                    if str(normalized.get("id")) == str(file_id):
+                        return normalized.get("url")
+                return offcloud.resolve_torrent_file(request_id, file_id)
+            except Exception as e:
+                g.log(f"Offcloud cloud resolve error: {e}", "error")
+                return None
+
         if "provider_imports" in source:
             source = self._handle_provider_imports_resolving(source)
 
@@ -264,6 +284,9 @@ class Resolver:
 
             if g.get_bool_setting("torbox.enabled") and g.get_bool_setting("tb.hosters"):
                 thread_pool.put(TorBox().get_hosters, hosters)
+
+            if g.get_bool_setting("offcloud.enabled") and g.get_bool_setting("oc.hosters"):
+                thread_pool.put(OffCloud().get_hosters, hosters)
             thread_pool.wait_completion()
         except ValueError:
             g.log_stacktrace()

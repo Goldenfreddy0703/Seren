@@ -9,8 +9,8 @@ SORT_OPTIONS = {
     "resolution": [],
     "sourcetypesort": [30581, 30249, 30470, 30057, 30058, 30631],
     # Other, Cloud, Adaptive, Torrents, Hosters, Direct
-    "debridsort": [30513, 30134, 30135, 30333, 30718],
-    # None, Premiumize, Real-Debrid, AllDebrid, TorBox
+    "debridsort": [30513, 30134, 30135, 30333, 30718, 31027],
+    # None, Premiumize, Real-Debrid, AllDebrid, TorBox, Offcloud
     "size": [],
     "cam": [],
     "hevc": [],

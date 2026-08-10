@@ -409,6 +409,47 @@ class _TorBoxCacheAssist(_BaseCacheAssist):
         self.debrid.delete_torrent(self.transfer_id)
 
 
+class _OffCloudCacheAssist(_BaseCacheAssist):
+    def __init__(self, uncached_source, silent=False):
+        if not g.offcloud_enabled():
+            raise DebridNotEnabled
+        super().__init__(uncached_source, silent)
+        self.debrid_slug = "offcloud"
+        self.debrid_readable = "Offcloud"
+        from resources.lib.debrid.offcloud import OffCloud
+
+        self.debrid = OffCloud()
+
+        self.uncached_source = uncached_source
+        self.transfer_info = self.debrid.add_magnet(uncached_source["magnet"])
+        if not self.transfer_info or "requestId" not in self.transfer_info:
+            raise GeneralCachingFailure("Failed to add magnet to Offcloud")
+        self.transfer_id = self.transfer_info["requestId"]
+        self._update_status()
+
+    def _update_status(self):
+        status = self.debrid.cloud_status(self.transfer_id)
+        if not status:
+            self.status = "failed"
+            return
+
+        state = status.get("status", "")
+        if state == "created":
+            self.status = "downloading"
+        elif state == "downloaded":
+            self.status = "finished"
+        else:
+            self.status = "failed"
+
+        self.previous_percent = self.current_percent
+        progress = status.get("progress")
+        if progress is not None:
+            self.current_percent = tools.safe_round(progress * 100, 2)
+
+    def delete_transfer(self):
+        self.debrid.delete_torrent(self.transfer_id)
+
+
 class CacheAssistHelper:
     def __init__(self):
         self.locations = [
@@ -416,6 +457,7 @@ class CacheAssistHelper:
             ("Real Debrid", _RealDebridCacheAssist, "real_debrid", g.real_debrid_enabled()),
             ("AllDebrid", _AllDebridCacheAssist, "all_debrid", g.all_debrid_enabled()),
             ("TorBox", _TorBoxCacheAssist, "torbox", g.torbox_enabled()),
+            ("Offcloud", _OffCloudCacheAssist, "offcloud", g.offcloud_enabled()),
         ]
 
     def _get_cache_location(self):

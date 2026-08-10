@@ -1634,6 +1634,90 @@
 					<control type="toggle"/>
 				</setting>
 			</group>
+			<group id="8" label="31027">
+				<setting id="offcloud.enabled" type="boolean" label="31028" help="">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="oc.username" type="string" label="31029" help="">
+					<level>0</level>
+					<default/>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<enable>false</enable>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="offcloud.enabled">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="edit" format="string">
+						<heading>31029</heading>
+					</control>
+				</setting>
+				<setting id="oc.premiumstatus" type="string" label="30458" help="" parent="oc.username">
+					<level>0</level>
+					<default/>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<enable>false</enable>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="offcloud.enabled">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="edit" format="string">
+						<heading>30458</heading>
+					</control>
+				</setting>
+				<setting id="oc.authOffCloud" type="action" label="31030" help="">
+					<level>0</level>
+					<data>RunPlugin(plugin://plugin.video.prism/?action=authOffCloud)</data>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="offcloud.enabled">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="button" format="action">
+						<close>true</close>
+					</control>
+				</setting>
+				<setting id="oc.torrents" type="boolean" label="30153" help="" parent="">
+					<level>0</level>
+					<default>true</default>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="offcloud.enabled">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="toggle"/>
+				</setting>
+				<setting id="oc.hosters" type="boolean" label="30154" help="" parent="">
+					<level>0</level>
+					<default>false</default>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="offcloud.enabled">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="toggle"/>
+				</setting>
+				<setting id="oc.addToCloud" type="boolean" label="30183" help="" parent="">
+					<level>0</level>
+					<default>false</default>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="offcloud.enabled">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="toggle"/>
+				</setting>
+			</group>
 		</category>
 		<category id="providers" label="30136" help="">
 			<group id="1" label="30084">
@@ -1751,6 +1835,16 @@
 					</dependencies>
 					<control type="toggle"/>
 				</setting>
+				<setting id="oc.cloudInspection" type="boolean" label="31034" help="">
+					<level>0</level>
+					<default>true</default>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="offcloud.enabled">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="toggle"/>
+				</setting>
 			</group>
 			<group id="4" label="30113">
 				<setting id="general.autocache" type="boolean" label="30114" help="">
@@ -1783,6 +1877,7 @@
 							<option label="30135">1</option>
 							<option label="30333">2</option>
 							<option label="30718">3</option>
+							<option label="31027">4</option>
 						</options>
 					</constraints>
 					<dependencies>
@@ -2401,6 +2496,7 @@
 							<option label="30135">2</option>
 							<option label="30333">3</option>
 							<option label="30718">4</option>
+							<option label="31027">5</option>
 						</options>
 					</constraints>
 					<control type="spinner" format="string"/>
@@ -2415,6 +2511,7 @@
 							<option label="30135">2</option>
 							<option label="30333">3</option>
 							<option label="30718">4</option>
+							<option label="31027">5</option>
 						</options>
 					</constraints>
 					<control type="spinner" format="string"/>
@@ -2429,6 +2526,7 @@
 							<option label="30135">2</option>
 							<option label="30333">3</option>
 							<option label="30718">4</option>
+							<option label="31027">5</option>
 						</options>
 					</constraints>
 					<control type="spinner" format="string"/>
@@ -2443,6 +2541,7 @@
 							<option label="30135">2</option>
 							<option label="30333">3</option>
 							<option label="30718">4</option>
+							<option label="31027">5</option>
 						</options>
 					</constraints>
 					<control type="spinner" format="string"/>
