@@ -1540,6 +1540,9 @@ class GlobalVariables:
                     preferred = pick_anime_display_title(info, prefer_romaji=prefer_romaji)
                     if preferred:
                         display = preferred
+                        relation = info.get("relation_type")
+                        if relation:
+                            display = f"{display} ({relation})"
                         info["title"] = display
                         if info.get("mediatype") == "tvshow":
                             info["tvshowtitle"] = display

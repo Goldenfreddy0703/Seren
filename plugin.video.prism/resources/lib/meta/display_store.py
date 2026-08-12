@@ -390,6 +390,13 @@ class DisplayMetaStore:
                 merged_info,
                 catalog=row.get("catalog") or updated.get("catalog"),
             )
+            item_catalog = row.get("catalog") or updated.get("catalog")
+            if item_catalog == "anime":
+                from resources.lib.simkl.field_map import ensure_anime_title_slots, merge_anime_title_slots
+
+                row_info = dict(row.get("info") or {})
+                merge_anime_title_slots(updated["info"], row_info)
+                ensure_anime_title_slots(updated["info"])
             updated["art"] = merge_tools.smart_merge_dictionary(
                 dict(row.get("art") or {}),
                 dict(cached.get("art") or {}),

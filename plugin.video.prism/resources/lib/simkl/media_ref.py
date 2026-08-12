@@ -142,6 +142,9 @@ def normalize_library_entry(entry: dict[str, Any], catalog: str) -> dict[str, An
 
     item = {
         "title": media.get("title"),
+        "en_title": media.get("en_title"),
+        "title_en": media.get("title_en") or media.get("en_title"),
+        "title_romaji": media.get("title_romaji"),
         "overview": media.get("overview") or media.get("description"),
         "year": media.get("year"),
         "release_date": media.get("released") or media.get("release_date") or media.get("first_aired"),
@@ -399,7 +402,6 @@ def render_mixed_sync_list(
 ) -> None:
     """Enrich, insert, and render a mixed movie + show/anime Kodi directory."""
     from resources.lib.discover.sync_bridge import insert_discover_page
-    from resources.lib.discover.catalog_store import catalog_refs_need_seed
     from resources.lib.discover.sync_bridge import simkl_refs
     from resources.lib.meta.list_paint import attach_preloaded_catalog_paint_mixed, browse_list_kwargs
     from resources.lib.meta.menu_paint_profile import current_action_profile_kwargs
@@ -413,9 +415,7 @@ def render_mixed_sync_list(
     movies, tv, anime = partition_by_catalog(sync_items)
     for cat, group in (("movie", movies), ("tv", tv), ("anime", anime)):
         if group:
-            refs = simkl_refs(group)
-            if catalog_refs_need_seed(cat, refs):
-                insert_discover_page(cat, group)
+            insert_discover_page(cat, group)
 
     builder = ListBuilder()
     paint_overrides = current_action_profile_kwargs()

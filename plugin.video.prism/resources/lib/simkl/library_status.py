@@ -4,7 +4,7 @@ from __future__ import annotations
 import xbmc
 
 from resources.lib.modules.globals import g
-from resources.lib.simkl.statuses import library_catalog, library_row_id
+from resources.lib.simkl.statuses import library_catalog, library_hub_catalog, library_row_id
 
 
 def _library_db(catalog: str):
@@ -159,6 +159,7 @@ def apply_local_library_status(
         return False
 
     catalog = library_catalog(info)
+    hub_catalog = library_hub_catalog(info)
     db = _library_db(catalog)
     table = "movies" if catalog == "movie" else "shows"
     prior_row = db.fetchone(f"SELECT simkl_status FROM {table} WHERE simkl_id=?", (int(simkl_id),))
@@ -167,9 +168,19 @@ def apply_local_library_status(
     db.set_simkl_status(simkl_id, catalog, status)
 
     if str(status or "") != str(prior_status or ""):
+        from resources.lib.discover.catalog_store import sync_items_for_refs
+        from resources.lib.discover.sync_bridge import insert_discover_page
+        from resources.lib.meta.paint_cache import clear_library_session_page_paint_for_item
         from resources.lib.simkl.library_cache import invalidate_library_cache
+        from resources.lib.simkl.library_list_sync import mark_library_catalog_verified
 
-        invalidate_library_cache(catalog)
+        invalidate_library_cache(hub_catalog)
+        mark_library_catalog_verified(hub_catalog)
+        clear_library_session_page_paint_for_item(int(simkl_id), info.get("mediatype"))
+        seed_refs = [{"simkl_id": int(simkl_id), "catalog": hub_catalog}]
+        seed_items = sync_items_for_refs(hub_catalog, seed_refs)
+        if seed_items:
+            insert_discover_page(hub_catalog, seed_items, force_simkl_meta=True)
 
     if status == "completed":
         if catalog == "movie":

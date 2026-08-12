@@ -221,7 +221,7 @@ def _finalize_episode_sync_state(
     _reapply_episode_watch_state_after_warm(db, payload)
 
 
-_LIBRARY_WATCH_STATUSES = frozenset({"watching", "completed", "hold", "dropped"})
+_LIBRARY_WATCH_STATUSES = frozenset({"watching", "plantowatch", "completed", "hold", "dropped"})
 
 
 def _find_show_entry(payload, media_key: str, show_id: int) -> dict | None:
@@ -455,11 +455,11 @@ def refresh_show_episode_watch_state(db: "SimklSyncDatabase", simkl_show_id: int
     if remote_status not in _LIBRARY_WATCH_STATUSES and remote_watched <= 0:
         return False
 
+    # List bucket membership is owned by library_list_sync (/sync/all-items).
+    # /sync/watched is only used here for episode-level watch flags.
     resolved_status = local_status
-    if remote_status in _LIBRARY_WATCH_STATUSES:
+    if not resolved_status and remote_status in _LIBRARY_WATCH_STATUSES:
         resolved_status = remote_status
-        if local_status != remote_status:
-            db.set_simkl_status(show_id, catalog, remote_status)
 
     if not force and _show_watch_state_matches(
         db,

@@ -411,7 +411,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                         self._format_episodes_local(
                             int(simkl_show_id),
                             _season_key(int(simkl_show_id), int(season_num)),
-                        )
+            )
             seasons_need_format = self._seasons_need_format(
                 simkl_show_id,
                 season_num=season,
@@ -452,7 +452,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 f"db.season={row.get('season')} info.season={info_season} "
                 f"title={info.get('title') if isinstance(info, dict) else None} row_id={row.get('simkl_id')}",
                 "debug",
-            )
+                )
         return rows
 
     @guard_against_none(list, 1, 2, 4)
@@ -2602,21 +2602,21 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 return entry[1]
 
         base_query = """
-            SELECT e.simkl_id,
-                   e.number  AS episode_x,
-                   e.season  AS season_x,
-                   e.simkl_show_id,
-                   em.value  AS episode,
-                   sm.value  AS show,
-                   s.tmdb_id AS tmdb_show_id,
-                   s.tvdb_id AS tvdb_show_id,
-                   e.last_watched_at
-            FROM episodes AS e
-                     INNER JOIN shows AS s
-                                ON s.simkl_id = e.simkl_show_id
-                     LEFT JOIN episodes_meta AS em
+                SELECT e.simkl_id,
+                       e.number  AS episode_x,
+                       e.season  AS season_x,
+                       e.simkl_show_id,
+                       em.value  AS episode,
+                       sm.value  AS show,
+                       s.tmdb_id AS tmdb_show_id,
+                       s.tvdb_id AS tvdb_show_id,
+                       e.last_watched_at
+                FROM episodes AS e
+                         INNER JOIN shows AS s
+                             ON s.simkl_id = e.simkl_show_id
+                         LEFT JOIN episodes_meta AS em
                                ON e.simkl_id = em.id AND em.type = 'simkl'
-                     LEFT JOIN shows_meta AS sm
+                         LEFT JOIN shows_meta AS sm
                                ON e.simkl_show_id = sm.id AND sm.type = 'simkl'
             WHERE (COALESCE(e.watched, 0) > 0 OR e.last_watched_at IS NOT NULL)
             """

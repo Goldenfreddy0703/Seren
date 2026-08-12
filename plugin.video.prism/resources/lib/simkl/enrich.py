@@ -169,6 +169,10 @@ def _merge_sync_item_rows(base: dict, overlay: dict) -> dict:
             dst_info[ext_key] = overlay_info[ext_key]
     if overlay.get("catalog") and not result.get("catalog"):
         result["catalog"] = overlay["catalog"]
+    if _is_anime_info(dst_info):
+        from resources.lib.simkl.field_map import merge_anime_title_slots
+
+        merge_anime_title_slots(dst_info, overlay_info)
     return result
 
 
@@ -205,6 +209,16 @@ def _row_has_list_paint_fields(item: dict) -> bool:
     return bool(title and poster)
 
 
+def _anime_row_needs_title_gapfill(item: dict) -> bool:
+    from resources.lib.simkl.field_map import anime_title_slots_collapsed
+
+    blob = item.get("simkl_object") or {}
+    info = blob.get("info") if isinstance(blob.get("info"), dict) else {}
+    if not info and isinstance(item.get("info"), dict):
+        info = item["info"]
+    return _is_anime_info(info) and anime_title_slots_collapsed(info)
+
+
 def _merge_discover_db_gaps(item: dict) -> dict:
     """Gap-fill from cached Simkl CDN discover rows when Simkl detail is thin."""
     simkl_id = item.get("simkl_id")
@@ -212,7 +226,7 @@ def _merge_discover_db_gaps(item: dict) -> dict:
     if simkl_id is None or catalog not in ("movie", "tv", "anime"):
         return item
 
-    if _row_has_list_paint_fields(item):
+    if _row_has_list_paint_fields(item) and not _anime_row_needs_title_gapfill(item):
         return item
 
     from resources.lib.discover.catalog_store import get_items_batch
@@ -267,7 +281,14 @@ def simkl_detail_needed(item: dict) -> bool:
     info = blob.get("info") if isinstance(blob.get("info"), dict) else {}
     if not info and isinstance(item.get("info"), dict):
         info = item["info"]
-    return not _has_simkl_owned_metadata(info)
+    if not _has_simkl_owned_metadata(info):
+        return True
+    if _is_anime_info(info):
+        from resources.lib.simkl.field_map import anime_title_slots_collapsed
+
+        if anime_title_slots_collapsed(info):
+            return True
+    return False
 
 
 def _hydrate_sync_item_local(
@@ -345,7 +366,7 @@ def _enrich_sync_item(
         from resources.lib.simkl.field_map import ensure_anime_title_slots
 
         ensure_anime_title_slots(blob_info)
-    if _sync_row_display_ready(working):
+    if not simkl_detail_needed(working):
         if cached:
             g.log(f"Simkl enrich skipped API (sync cache): {sid}", "debug")
         return _apply_overlay_fields(item, working)

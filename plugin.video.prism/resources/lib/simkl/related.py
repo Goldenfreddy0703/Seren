@@ -82,12 +82,13 @@ def _related_entry_to_sync(entry: dict[str, Any], *, relation_label: bool = Fals
     from resources.lib.simkl.catalog import resolve_item_catalog
 
     catalog = resolve_item_catalog(entry, "")
-    title = entry.get("title") or entry.get("en_title")
-    year = entry.get("year")
     item: dict[str, Any] = {
-        "title": title,
-        "year": year,
-        "release_date": f"{year}-01-01" if year else None,
+        "title": entry.get("title"),
+        "en_title": entry.get("en_title"),
+        "title_en": entry.get("title_en") or entry.get("en_title"),
+        "title_romaji": entry.get("title_romaji"),
+        "year": entry.get("year"),
+        "release_date": f"{entry.get('year')}-01-01" if entry.get("year") else None,
         "poster": entry.get("poster"),
         "url": entry.get("url"),
         "type": entry.get("type"),
@@ -101,11 +102,14 @@ def _related_entry_to_sync(entry: dict[str, Any], *, relation_label: bool = Fals
     if not sync:
         return None
 
-    if relation_label and entry.get("relation_type"):
-        info = sync.get("simkl_object", {}).get("info", {})
-        base_title = info.get("title") or title
-        if base_title:
-            info["title"] = f"{base_title} ({entry['relation_type']})"
+    info = sync.get("simkl_object", {}).get("info")
+    if isinstance(info, dict) and (catalog == "anime" or info.get("mal_id")):
+        from resources.lib.simkl.field_map import ensure_anime_title_slots
+
+        ensure_anime_title_slots(info)
+
+    if relation_label and entry.get("relation_type") and isinstance(info, dict):
+        info["relation_type"] = str(entry["relation_type"])
     return sync
 
 

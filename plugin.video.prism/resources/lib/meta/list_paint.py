@@ -88,8 +88,18 @@ def attach_preloaded_catalog_paint(
     if cached_page is not None:
         from resources.lib.meta.paint_cache import mixed_page_paint_all_complete, overlay_display_meta_stamps
         from resources.lib.meta.paint_complete import rows_page_paint_ready
+        from resources.lib.simkl.field_map import paint_page_has_collapsed_anime_titles
+
+        if paint_page_has_collapsed_anime_titles(cached_page):
+            cached_page = None
+    if cached_page is not None:
+        from resources.lib.meta.paint_cache import mixed_page_paint_all_complete, overlay_display_meta_stamps
+        from resources.lib.meta.paint_complete import rows_page_paint_ready
+
+        from resources.lib.meta.paint_cache import overlay_page_watch_fields
 
         cached_page = overlay_display_meta_stamps(cached_page)
+        cached_page = overlay_page_watch_fields(cached_page)
         merged["preloaded_paint_rows"] = cached_page
         merged["preloaded_paint_complete"] = rows_page_paint_ready(cached_page, profile=paint_profile) or mixed_page_paint_all_complete(
             cached_page,
@@ -376,12 +386,24 @@ def attach_preloaded_catalog_paint_mixed(
     movies, tv, anime = partition_by_catalog(sync_items)
     all_refs: list[dict] = []
     all_payload: list[dict] = []
+    fresh_by_id: dict[int, dict] = {}
     for cat, group in (("movie", movies), ("tv", tv), ("anime", anime)):
         if not group:
             continue
         refs = simkl_refs(group)
         all_refs.extend(refs)
-        all_payload.extend(sync_items_for_refs(cat, refs))
+        for item in group:
+            if isinstance(item, dict) and item.get("simkl_id") is not None:
+                fresh_by_id[int(item["simkl_id"])] = item
+        cached_payload = sync_items_for_refs(cat, refs)
+        cached_by_id = {
+            int(item["simkl_id"]): item
+            for item in cached_payload
+            if isinstance(item, dict) and item.get("simkl_id") is not None
+        }
+        for ref in refs:
+            sid = int(ref["simkl_id"])
+            all_payload.append(fresh_by_id.get(sid) or cached_by_id.get(sid))
 
     if not all_refs or not all_payload:
         return merged
@@ -397,7 +419,15 @@ def attach_preloaded_catalog_paint_mixed(
     )
     cached_page = get_session_page_paint(session_key)
     if cached_page is not None:
+        from resources.lib.simkl.field_map import paint_page_has_collapsed_anime_titles
+
+        if paint_page_has_collapsed_anime_titles(cached_page):
+            cached_page = None
+    if cached_page is not None:
+        from resources.lib.meta.paint_cache import overlay_page_watch_fields
+
         cached_page = overlay_display_meta_stamps(cached_page)
+        cached_page = overlay_page_watch_fields(cached_page)
         merged["preloaded_paint_rows"] = cached_page
         merged["preloaded_paint_complete"] = rows_page_paint_ready(cached_page, profile=paint_profile) or mixed_page_paint_all_complete(
             cached_page,

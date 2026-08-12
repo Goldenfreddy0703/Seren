@@ -38,6 +38,20 @@ def _catalog_for_info(info: dict[str, Any]) -> str:
     return "show"
 
 
+def library_hub_catalog(info: dict[str, Any]) -> str:
+    """My Library hub key: movie, tv, or anime (for list cache + menus)."""
+    mediatype = (info.get("mediatype") or "").lower()
+    if mediatype in ("movie", "movies"):
+        return "movie"
+    cat = str(info.get("catalog") or "").lower()
+    if cat in ("anime", "tv"):
+        return cat
+    ids = info.get("ids") or {}
+    if info.get("mal_id") or ids.get("mal"):
+        return "anime"
+    return "tv"
+
+
 def effective_list_status(
     info: dict[str, Any],
     library_status: str | None = None,

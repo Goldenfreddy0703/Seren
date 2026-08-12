@@ -1030,6 +1030,14 @@ class ListBuilder:
         info = sanitize_list_info(info, catalog=info.get("catalog"))
         item["info"] = info
 
+        catalog = item.get("catalog") or info.get("catalog")
+        if catalog and not info.get("catalog"):
+            info["catalog"] = catalog
+        if catalog == "anime":
+            from resources.lib.simkl.field_map import ensure_anime_title_slots
+
+            ensure_anime_title_slots(info)
+
         from resources.lib.simkl.field_map import (
             apply_display_rating,
             default_display_rating_priority,
@@ -1046,6 +1054,16 @@ class ListBuilder:
             name = info.get("originaltitle")
         else:
             name = info.get("title") or item.get("name")
+
+        ids = info.get("ids") if isinstance(info.get("ids"), dict) else {}
+        if catalog == "anime" or info.get("mal_id") or ids.get("mal"):
+            from resources.lib.simkl.field_map import pick_anime_display_title
+
+            prefer_romaji = g.get_int_setting("general.anime.titlelanguage") == 1
+            localized = pick_anime_display_title(info, prefer_romaji=prefer_romaji)
+            if localized:
+                relation = info.get("relation_type")
+                name = f"{localized} ({relation})" if relation else localized
 
         if not name and info.get("mediatype") == "season":
             from resources.lib.simkl.field_map import ensure_season_title

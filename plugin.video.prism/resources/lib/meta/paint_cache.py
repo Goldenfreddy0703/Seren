@@ -43,6 +43,13 @@ def sync_row_to_paint_row(sync_item: dict[str, Any]) -> dict[str, Any] | None:
         art = sync_item.get("art") if isinstance(sync_item.get("art"), dict) else {}
     catalog = sync_item.get("catalog")
     info = sanitize_list_info(info, catalog=catalog)
+    if catalog:
+        if not info.get("catalog"):
+            info["catalog"] = catalog
+        if catalog == "anime":
+            from resources.lib.simkl.field_map import ensure_anime_title_slots
+
+            ensure_anime_title_slots(info)
     row = {
         "simkl_id": int(sync_item["simkl_id"]),
         "info": dict(info),
@@ -187,6 +194,49 @@ def _overlay_sync_fields(rows: list[dict[str, Any]], media_type: str, db) -> lis
     return merged
 
 
+def overlay_page_watch_fields(
+    rows: list[dict[str, Any]],
+    db=None,
+) -> list[dict[str, Any]]:
+    """Attach live watch/play fields from simkl_sync so list indicators stay current."""
+    if not rows:
+        return rows
+    if db is None:
+        from resources.lib.database.session import get_sync_database
+
+        db = get_sync_database()
+    movie_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict) and row.get("simkl_id") is not None and row.get("catalog") == "movie"
+    ]
+    show_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict) and row.get("simkl_id") is not None and row.get("catalog") in ("tv", "anime")
+    ]
+    by_id: dict[int, dict[str, Any]] = {}
+    if movie_rows:
+        for row in _overlay_sync_fields(movie_rows, "movie", db):
+            by_id[int(row["simkl_id"])] = row
+    if show_rows:
+        for row in _overlay_sync_fields(show_rows, "tvshow", db):
+            by_id[int(row["simkl_id"])] = row
+    if not by_id:
+        return rows
+    merged: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            merged.append(row)
+            continue
+        sid = row.get("simkl_id")
+        if sid is not None and int(sid) in by_id:
+            merged.append(by_id[int(sid)])
+        else:
+            merged.append(row)
+    return merged
+
+
 def _should_overlay_sync(profile: str | None) -> bool:
     normalized = str(profile or "browse").lower()
     return normalized in ("library", "library_episodes", "airing")
@@ -201,12 +251,13 @@ def _prepare_paint_rows(
 ) -> tuple[list[dict[str, Any]], list[dict]]:
     if not rows:
         return rows, []
+    overlay_sync = _should_overlay_sync(profile)
     prepared, enrichment_refs, _stats = db.metadataHandler.prepare_list_rows_for_paint(
         rows,
         media_type,
         db=db,
         profile=profile,
-        overlay_sync=_should_overlay_sync(profile),
+        overlay_sync=overlay_sync,
     )
     return prepared, enrichment_refs
 
@@ -372,6 +423,41 @@ def set_session_page_paint(cache_key: tuple, rows: list[dict[str, Any]]) -> None
             oldest_key = min(db_store, key=lambda key: db_store[key][0])
             db_store.pop(oldest_key, None)
         db_store[cache_key] = payload
+
+
+def clear_library_session_page_paint() -> None:
+    """Drop session paint rows for My Library status lists."""
+    def _purge(store: dict) -> None:
+        for key in list(store.keys()):
+            if isinstance(key, tuple) and len(key) >= 5 and key[4] in _LIBRARY_PAINT_PROFILES:
+                store.pop(key, None)
+
+    _purge(_PAGE_PAINT_CACHE)
+    db_store = _db_page_paint_store()
+    if isinstance(db_store, dict):
+        _purge(db_store)
+
+
+def clear_library_session_page_paint_for_item(simkl_id: int, mediatype: str | None = None) -> None:
+    """Drop library list session paint rows that include one item."""
+    sid = int(simkl_id)
+    mt = (mediatype or "").lower()
+
+    def _purge(store: dict) -> None:
+        for key in list(store.keys()):
+            if not isinstance(key, tuple) or len(key) < 2 or not isinstance(key[1], tuple):
+                continue
+            if sid not in key[1]:
+                continue
+            if len(key) >= 5 and key[4] in _LIBRARY_PAINT_PROFILES:
+                store.pop(key, None)
+            elif mt == "movie" and key[0] != "episode_page":
+                store.pop(key, None)
+
+    _purge(_PAGE_PAINT_CACHE)
+    db_store = _db_page_paint_store()
+    if isinstance(db_store, dict):
+        _purge(db_store)
 
 
 def clear_session_page_paint() -> None:
@@ -724,6 +810,14 @@ def _paint_media_group(
         if sid not in display_hits or not row_has_trusted_paint_stamp(display_hits.get(sid))
     ]
     sync_hits = fetch_simkl_paint_rows_batch(media_type, missing_ids, db) if missing_ids else {}
+    anime_ids = [
+        int(ref["simkl_id"])
+        for ref in refs
+        if ref.get("simkl_id") is not None and ref.get("catalog") == "anime"
+    ]
+    if anime_ids:
+        anime_sync_hits = fetch_simkl_paint_rows_batch(media_type, anime_ids, db)
+        sync_hits = {**sync_hits, **anime_sync_hits}
 
     rows: list[dict[str, Any]] = []
     used_display = False
@@ -756,15 +850,33 @@ def _paint_media_group(
             else:
                 used_sync = True
         else:
-            if not payload:
+            paint_payload = payload
+            if not paint_payload:
+                paint_payload = sync_hits.get(sid)
+            if not paint_payload:
+                from resources.lib.discover.catalog_store import get_items_batch
+
+                item_catalog = ref.get("catalog") or "tv"
+                paint_payload = get_items_batch(item_catalog, [sid]).get(sid)
+            if not paint_payload:
                 continue
-            painted = sync_row_to_paint_row(payload)
+            painted = sync_row_to_paint_row(paint_payload)
             if not painted:
                 continue
             used_payload = True
             store.set_row(store_type, painted)
         if ref.get("catalog"):
             painted["catalog"] = ref["catalog"]
+        info = painted.get("info")
+        if isinstance(info, dict) and ref.get("catalog") == "anime":
+            from resources.lib.simkl.field_map import ensure_anime_title_slots, merge_anime_title_slots
+
+            sync_src = sync_hits.get(sid)
+            if sync_src and isinstance(sync_src.get("info"), dict):
+                merge_anime_title_slots(info, sync_src["info"])
+            if payload_paint and isinstance(payload_paint.get("info"), dict):
+                merge_anime_title_slots(info, payload_paint["info"])
+            ensure_anime_title_slots(info)
         painted = _ensure_paint_action_args(painted, ref.get("catalog"))
         if _apply_list_filters(painted, media_type, hide_unaired=hide_unaired, hide_watched=hide_watched):
             continue
@@ -926,7 +1038,16 @@ def paint_catalog_page_rows(
         if cached is not None:
             from resources.lib.meta.menu_paint_profile import record_paint_cache_context
             from resources.lib.meta.paint_complete import rows_page_paint_ready
+            from resources.lib.simkl.field_map import paint_page_has_collapsed_anime_titles
 
+            if paint_page_has_collapsed_anime_titles(cached):
+                cached = None
+        if cached is not None:
+            from resources.lib.meta.menu_paint_profile import record_paint_cache_context
+            from resources.lib.meta.paint_complete import rows_page_paint_ready
+            from resources.lib.database.session import get_sync_database
+
+            cached = overlay_page_watch_fields(cached, get_sync_database())
             record_paint_cache_context(
                 layer="session_page",
                 prepare_skipped=rows_page_paint_ready(cached, profile=paint_profile),
@@ -936,6 +1057,9 @@ def paint_catalog_page_rows(
             )
             return cached
 
+    from resources.lib.database.session import get_sync_database
+
+    db = get_sync_database()
     painted = paint_discover_page_rows(
         page_refs,
         payload_rows,
@@ -944,6 +1068,7 @@ def paint_catalog_page_rows(
         prefer_rich_payload=prefer_rich_payload,
         paint_profile=paint_profile,
     )
+    painted = overlay_page_watch_fields(painted, db)
     if cache_key is not None:
         set_session_page_paint(cache_key, painted)
     return painted

@@ -3139,9 +3139,10 @@ class SimklSyncDatabase(Database):
     def set_simkl_status(self, simkl_id: int, catalog: str, status: str | None) -> None:
         """Persist Simkl list status on a movie or show row for My Library menus."""
         table = "movies" if catalog == "movie" else "shows"
-        row = self.fetchone(f"SELECT info FROM {table} WHERE simkl_id=?", (int(simkl_id),))
+        row = self.fetchone(f"SELECT simkl_status, info FROM {table} WHERE simkl_id=?", (int(simkl_id),))
         if not row:
             return
+        prior_status = row.get("simkl_status")
         info = row.get("info")
         if not isinstance(info, dict):
             info = {}
@@ -3153,6 +3154,14 @@ class SimklSyncDatabase(Database):
             f"UPDATE {table} SET info=?, simkl_status=? WHERE simkl_id=?",
             (info, status, int(simkl_id)),
         )
+        if str(status or "") != str(prior_status or ""):
+            from resources.lib.simkl.library_cache import invalidate_library_cache
+
+            if catalog == "movie":
+                invalidate_library_cache("movie")
+            else:
+                invalidate_library_cache("tv")
+                invalidate_library_cache("anime")
 
     def set_user_rating(self, simkl_id: int, catalog: str, rating: int | None) -> None:
         """Persist Simkl user rating (1-10) on a movie or show row."""

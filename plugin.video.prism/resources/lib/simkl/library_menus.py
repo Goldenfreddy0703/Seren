@@ -122,6 +122,13 @@ def render_status_list(catalog: str, status: str) -> None:
     page_refs, no_paging = library_list_page(refs)
     list_kwargs["no_paging"] = no_paging
 
+    from resources.lib.discover.catalog_store import sync_items_for_refs
+    from resources.lib.discover.sync_bridge import insert_discover_page
+
+    payload_rows = sync_items_for_refs(catalog, page_refs)
+    if payload_rows:
+        insert_discover_page(catalog, payload_rows, force_simkl_meta=True)
+
     render_catalog_discover_refs(
         catalog,
         page_refs,
