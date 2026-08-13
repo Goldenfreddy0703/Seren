@@ -1,3 +1,6 @@
+Changelog 5.0.21
+[BUG] Kodi 21: fix startup TypeError from union type hint in globals.py (Python 3.9 compatibility)
+
 Changelog 5.0.20
 [BUG] Kodi 22 (Piers): resolve MyVideos146 database version — fixes "Unsupported kodi version" on startup
 

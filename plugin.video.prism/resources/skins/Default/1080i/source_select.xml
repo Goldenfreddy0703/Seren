@@ -347,6 +347,7 @@
                         <textcolor>FFFFFFFF</textcolor>
                         <align>left</align>
                         <aligny>center</aligny>
+                        <scroll>true</scroll>
                         <label>[B][UPPERCASE]$INFO[ListItem.Property(release_title)][/UPPERCASE][/B]</label>
                     </control>
 

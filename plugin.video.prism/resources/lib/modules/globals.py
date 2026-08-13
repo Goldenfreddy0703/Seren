@@ -1,5 +1,7 @@
 # Import Thread lock workaround
 # noinspection PyUnresolvedReferences
+from __future__ import annotations
+
 import contextlib
 import datetime
 import html
