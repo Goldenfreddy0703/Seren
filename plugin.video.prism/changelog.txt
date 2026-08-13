@@ -1,3 +1,6 @@
+Changelog 5.0.20
+[BUG] Kodi 22 (Piers): resolve MyVideos146 database version — fixes "Unsupported kodi version" on startup
+
 Changelog 4.0.1
 [FEATURE] Added Offcloud debrid service support - OAuth device auth, torrent cache checking, cloud scraping, hoster resolution, cache assist, and My Files browser
 [FEATURE] Added TorBox debrid service support - full integration including cache checking, source resolving, and cloud scraping

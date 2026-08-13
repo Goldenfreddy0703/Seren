@@ -930,12 +930,41 @@ class GlobalVariables:
             19: 119,
             20: 121,
             21: 131,
+            22: 146,
         }
 
-        if (db_version := kodi_myvideos_version_map.get(self.KODI_VERSION)) is None:
-            raise KeyError("Unsupported kodi version")
+        if (db_version := kodi_myvideos_version_map.get(self.KODI_VERSION)) is not None:
+            return db_version
 
-        return db_version
+        detected = self._detect_myvideos_db_version()
+        if detected is not None:
+            return detected
+
+        raise KeyError(f"Unsupported kodi version {self.KODI_VERSION}")
+
+    def _detect_myvideos_db_version(self) -> int | None:
+        """Pick the highest MyVideos schema present (covers Kodi alphas with bumped DB versions)."""
+        import re
+
+        highest = 0
+        pattern = re.compile(r"^MyVideos(\d+)\.db$", re.IGNORECASE)
+        try:
+            if not xbmcvfs.exists(self.KODI_DATABASE_PATH):
+                return None
+            for name in xbmcvfs.listdir(self.KODI_DATABASE_PATH):
+                match = pattern.match(name)
+                if match:
+                    highest = max(highest, int(match.group(1)))
+        except Exception:
+            self.log_stacktrace()
+            return None
+        if highest > 0:
+            self.log(
+                f"Resolved MyVideos{highest} from database folder for Kodi {self.KODI_VERSION}",
+                "debug",
+            )
+            return highest
+        return None
 
     def get_kodi_video_db_config(self):
         result = {"type": "sqlite3", "database": f"MyVideos{self.get_kodi_database_version()}"}
