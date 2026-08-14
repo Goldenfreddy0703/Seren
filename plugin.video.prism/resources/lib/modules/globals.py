@@ -1574,9 +1574,6 @@ class GlobalVariables:
                         relation = info.get("relation_type")
                         if relation:
                             display = f"{display} ({relation})"
-                        info["title"] = display
-                        if info.get("mediatype") == "tvshow":
-                            info["tvshowtitle"] = display
         except Exception:
             pass
 
@@ -1598,9 +1595,6 @@ class GlobalVariables:
 
             if has_dub(mal_id):
                 display = f"{self.color_string('(Dub)', 'blue')} {display}"
-                info["title"] = display
-                if info.get("mediatype") == "tvshow":
-                    info["tvshowtitle"] = display
         except Exception:
             self.log_stacktrace()
 

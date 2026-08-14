@@ -110,6 +110,7 @@ def _merge_from_trending_blob(row: dict[str, Any], blob: dict[str, Any]) -> None
     genres = blob.get("genres")
     _merge_str_field(row, "slug", ids.get("slug"))
     _merge_str_field(row, "title", blob.get("title"))
+    _merge_str_field(row, "title_romaji", blob.get("title_romaji"))
     _merge_str_field(row, "url", blob.get("url"))
     _merge_str_field(row, "poster", blob.get("poster"))
     _merge_str_field(row, "fanart", blob.get("fanart"))

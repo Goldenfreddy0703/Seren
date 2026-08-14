@@ -219,6 +219,19 @@ def _anime_row_needs_title_gapfill(item: dict) -> bool:
     return _is_anime_info(info) and anime_title_slots_collapsed(info)
 
 
+def _row_needs_discover_gapfill(item: dict) -> bool:
+    """True when a list row still needs discover CDN / catalog gap-fill."""
+    if _anime_row_needs_title_gapfill(item):
+        return True
+    if not _row_has_list_paint_fields(item):
+        return True
+    blob = item.get("simkl_object") or {}
+    info = blob.get("info") if isinstance(blob.get("info"), dict) else {}
+    if not info and isinstance(item.get("info"), dict):
+        info = item["info"]
+    return not (info.get("plot") or info.get("overview"))
+
+
 def _merge_discover_db_gaps(item: dict) -> dict:
     """Gap-fill from cached Simkl CDN discover rows when Simkl detail is thin."""
     simkl_id = item.get("simkl_id")
@@ -226,28 +239,30 @@ def _merge_discover_db_gaps(item: dict) -> dict:
     if simkl_id is None or catalog not in ("movie", "tv", "anime"):
         return item
 
-    if _row_has_list_paint_fields(item) and not _anime_row_needs_title_gapfill(item):
-        return item
+    working = item
+    if _row_needs_discover_gapfill(working):
+        from resources.lib.discover.catalog_store import get_items_batch
 
-    from resources.lib.discover.catalog_store import get_items_batch
+        cached = get_items_batch(catalog, [int(simkl_id)]).get(int(simkl_id))
+        if cached:
+            working = _merge_sync_item_rows(working, cached)
 
-    cached = get_items_batch(catalog, [int(simkl_id)]).get(int(simkl_id))
-    if cached:
-        return _merge_sync_item_rows(item, cached)
+    if not _row_needs_discover_gapfill(working):
+        return working
 
     from resources.lib.discover.cdn_store import get_row
 
     row = get_row(catalog, int(simkl_id))
     if not row:
-        return item
+        return working
 
     from resources.lib.discover.normalize import db_row_to_sync_dict
 
     discover_sync = db_row_to_sync_dict(row, catalog)
     if not discover_sync:
-        return item
+        return working
 
-    return _merge_sync_item_rows(item, discover_sync)
+    return _merge_sync_item_rows(working, discover_sync)
 
 
 def _sync_row_display_ready(item: dict) -> bool:

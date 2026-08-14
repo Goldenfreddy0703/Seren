@@ -183,6 +183,18 @@ def invalidate_paint_stamps() -> None:
         get_display_meta_store().clear_paint_stamps()
     except Exception:
         g.log_stacktrace()
+    try:
+        from resources.lib.meta.paint_cache import clear_session_page_paint
+
+        clear_session_page_paint()
+    except Exception:
+        g.log_stacktrace()
+    try:
+        from resources.lib.meta.list_paint import clear_show_menu_context_cache
+
+        clear_show_menu_context_cache()
+    except Exception:
+        g.log_stacktrace()
 
 
 def invalidate_all_menu_caches(

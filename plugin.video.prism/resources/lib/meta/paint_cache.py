@@ -277,6 +277,12 @@ def page_cache_catalog(catalog: str, refs: list[dict] | None = None, *, mixed_li
     return catalog
 
 
+def _anime_title_language_cache_key() -> int:
+    from resources.lib.modules.globals import g
+
+    return g.get_int_setting("general.anime.titlelanguage")
+
+
 def page_paint_cache_key(
     catalog: str,
     refs: list[dict],
@@ -289,7 +295,7 @@ def page_paint_cache_key(
     simkl_ids = tuple(
         sorted(int(ref["simkl_id"]) for ref in refs if isinstance(ref, dict) and ref.get("simkl_id") is not None)
     )
-    return (catalog, simkl_ids, hide_unaired, hide_watched, paint_profile, prefer_rich_payload)
+    return (catalog, simkl_ids, hide_unaired, hide_watched, paint_profile, prefer_rich_payload, _anime_title_language_cache_key())
 
 
 def episode_page_paint_cache_key(
@@ -309,6 +315,7 @@ def episode_page_paint_cache_key(
         flags["hide_watched"],
         paint_profile,
         flags["prefer_rich_payload"],
+        _anime_title_language_cache_key(),
     )
 
 
@@ -334,6 +341,7 @@ def drilldown_list_cache_key(
         hide_specials,
         str(catalog_stamp or ""),
         str(watch_stamp or ""),
+        _anime_title_language_cache_key(),
     )
 
 
@@ -839,7 +847,8 @@ def _paint_media_group(
             elif prefer_rich_payload and payload_paint and row_has_display_meta(payload_paint):
                 # Library watchlist: Simkl detail enrichment wins over incomplete cached rows.
                 use_cached = False
-            elif prefer_rich_payload and payload_paint and row_has_plot_meta(payload_paint) and not row_has_plot_meta(row):
+            elif payload_paint and row_has_plot_meta(payload_paint) and not row_has_plot_meta(row):
+                # Discover/browse: CDN payload often has plot while display_meta/sync cache does not.
                 use_cached = False
         elif prefer_rich_payload and payload_paint and row_has_display_meta(payload_paint):
             use_cached = False
@@ -867,6 +876,23 @@ def _paint_media_group(
             store.set_row(store_type, painted)
         if ref.get("catalog"):
             painted["catalog"] = ref["catalog"]
+        if not row_has_plot_meta(painted):
+            from resources.lib.simkl.enrich import _merge_discover_db_gaps
+
+            gap_item = {
+                "simkl_id": sid,
+                "catalog": ref.get("catalog") or ("movie" if media_type == "movie" else "tv"),
+                "simkl_object": {
+                    "info": dict(painted.get("info") or {}),
+                    "art": dict(painted.get("art") or {}),
+                },
+            }
+            filled = _merge_discover_db_gaps(gap_item)
+            filled_paint = sync_row_to_paint_row(filled)
+            if filled_paint and row_has_plot_meta(filled_paint):
+                painted = filled_paint
+                if ref.get("catalog"):
+                    painted["catalog"] = ref["catalog"]
         info = painted.get("info")
         if isinstance(info, dict) and ref.get("catalog") == "anime":
             from resources.lib.simkl.field_map import ensure_anime_title_slots, merge_anime_title_slots

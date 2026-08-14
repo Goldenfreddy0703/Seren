@@ -426,6 +426,8 @@ def _reconcile_show_watch_entry(
     db.apply_show_watch_counters([entry])
     if status == "completed":
         db.apply_completed_show_watch_flags([entry])
+    if catalog == "anime":
+        db.prune_orphan_anime_seasons(show_id)
     db._refresh_show_and_season_statistics(show_id)
     return local_watched_after
 

@@ -2329,10 +2329,46 @@ class SimklSyncDatabase(Database):
                 return True
         return False
 
+    def _resolve_anime_watch_episode_coords(
+        self,
+        show_id: int,
+        episode: dict,
+        season_num: int,
+        episode_num: int,
+        catalog: str,
+        anime_raw_cache: dict[int, list[dict]],
+        anime_slug_cache: dict[int, str | None],
+    ) -> tuple[int, int]:
+        if catalog != "anime":
+            return season_num, episode_num
+
+        from resources.lib.database.simkl_sync.milling import fetch_raw_show_episodes
+        from resources.lib.simkl.field_map import anime_menu_episode_number, resolve_anime_watch_stub_season
+
+        if show_id not in anime_raw_cache:
+            anime_slug_cache[show_id] = self._meta_slug(show_id, "shows")
+            anime_raw_cache[show_id] = fetch_raw_show_episodes(
+                show_id, "anime", slug=anime_slug_cache[show_id]
+            )
+
+        menu_season = resolve_anime_watch_stub_season(
+            show_id,
+            episode,
+            season_num,
+            slug=anime_slug_cache.get(show_id),
+            raw_episodes=anime_raw_cache.get(show_id),
+        )
+        menu_episode = anime_menu_episode_number(episode, menu_season, episode_num)
+        if menu_episode is None:
+            menu_episode = episode_num
+        return int(menu_season), int(menu_episode)
+
     def apply_episode_watch_state_from_entries(self, entries, shows) -> bool:
         """Apply Simkl per-episode watched and unwatched flags when episode rows are present."""
         show_ids = {int(show["simkl_id"]): show for show in shows if show.get("simkl_id")}
         rows = []
+        anime_raw_cache: dict[int, list[dict]] = {}
+        anime_slug_cache: dict[int, str | None] = {}
 
         for entry in entries or []:
             if not self._entry_has_full_episode_watch_detail(entry):
@@ -2341,6 +2377,11 @@ class SimklSyncDatabase(Database):
             if show_id is None or int(show_id) not in show_ids:
                 continue
             show_id = int(show_id)
+            show_catalog = (
+                show_ids[show_id].get("catalog")
+                or self.show_catalog(show_id)
+                or "tv"
+            )
 
             for season in entry.get("seasons") or []:
                 if not isinstance(season, dict):
@@ -2356,6 +2397,15 @@ class SimklSyncDatabase(Database):
                     )
                     if episode_num is None:
                         continue
+                    season_num, episode_num = self._resolve_anime_watch_episode_coords(
+                        show_id,
+                        episode,
+                        int(season_num),
+                        int(episode_num),
+                        show_catalog,
+                        anime_raw_cache,
+                        anime_slug_cache,
+                    )
                     watched = 1 if self._episode_marked_watched(episode, entry) else 0
                     last_watched_at = None
                     if watched:
@@ -2469,11 +2519,13 @@ class SimklSyncDatabase(Database):
         if not show_ids:
             return
 
-        from resources.lib.simkl.field_map import anime_menu_episode_number
+        from resources.lib.simkl.field_map import anime_menu_episode_number, resolve_anime_watch_stub_season
         from resources.lib.simkl.ids import attach_tv_context, season_key, synthetic_episode_id
 
         season_items: dict[tuple[int, int], dict] = {}
         episode_items: dict[tuple[int, int, int], dict] = {}
+        anime_raw_cache: dict[int, list[dict]] = {}
+        anime_slug_cache: dict[int, str | None] = {}
 
         for entry in entries or []:
             show_id = self._entry_show_simkl_id(entry)
@@ -2486,43 +2538,57 @@ class SimklSyncDatabase(Database):
                 blob = entry.get("anime") or entry.get("show") or entry
                 entry_catalog = "anime" if (blob.get("ids") or {}).get("mal") else "tv"
 
+            if entry_catalog == "anime" and show_id not in anime_raw_cache:
+                from resources.lib.database.simkl_sync.milling import fetch_raw_show_episodes
+
+                anime_slug_cache[show_id] = self._meta_slug(show_id, "shows")
+                anime_raw_cache[show_id] = fetch_raw_show_episodes(
+                    show_id, "anime", slug=anime_slug_cache[show_id]
+                )
+
             for season in entry.get("seasons") or []:
-                season_num = season.get("number") if season.get("number") is not None else season.get("season")
-                if season_num is None:
+                watch_season_num = season.get("number") if season.get("number") is not None else season.get("season")
+                if watch_season_num is None:
                     continue
-                season_num = int(season_num)
-                season_row_id = season_key(show_id, season_num)
+                watch_season_num = int(watch_season_num)
                 episodes = season.get("episodes") or []
 
-                if (show_id, season_num) not in season_items:
-                    season_info = {
-                        "simkl_id": season_row_id,
-                        "mediatype": "season",
-                        "catalog": entry_catalog,
-                        "season": season_num,
-                        "simkl_show_id": show_id,
-                        "episode_count": len(episodes),
-                    }
-                    attach_tv_context(
-                        season_info,
-                        show_id,
-                        season_num=season_num,
-                        season_row_id=season_row_id,
-                    )
-                    season_items[(show_id, season_num)] = {
-                        "simkl_id": season_row_id,
-                        "simkl_show_id": show_id,
-                        "simkl_object": {"info": season_info},
-                    }
-                else:
-                    existing_info = season_items[(show_id, season_num)]["simkl_object"]["info"]
-                    if len(episodes) > int(existing_info.get("episode_count") or 0):
-                        existing_info["episode_count"] = len(episodes)
-
                 for episode in episodes:
+                    season_num = watch_season_num
+                    if entry_catalog == "anime":
+                        season_num = resolve_anime_watch_stub_season(
+                            show_id,
+                            episode,
+                            season_num,
+                            slug=anime_slug_cache.get(show_id),
+                            raw_episodes=anime_raw_cache.get(show_id),
+                        )
+                    season_row_id = season_key(show_id, season_num)
+
+                    if (show_id, season_num) not in season_items:
+                        season_info = {
+                            "simkl_id": season_row_id,
+                            "mediatype": "season",
+                            "catalog": entry_catalog,
+                            "season": season_num,
+                            "simkl_show_id": show_id,
+                            "episode_count": 0,
+                        }
+                        attach_tv_context(
+                            season_info,
+                            show_id,
+                            season_num=season_num,
+                            season_row_id=season_row_id,
+                        )
+                        season_items[(show_id, season_num)] = {
+                            "simkl_id": season_row_id,
+                            "simkl_show_id": show_id,
+                            "simkl_object": {"info": season_info},
+                        }
+
                     ep_num = episode.get("number") if episode.get("number") is not None else episode.get("episode")
-                    if ep_num is None and entry_catalog == "anime":
-                        ep_num = anime_menu_episode_number(episode, season_num, None)
+                    if entry_catalog == "anime":
+                        ep_num = anime_menu_episode_number(episode, season_num, ep_num)
                     if ep_num is None:
                         continue
                     ep_num = int(ep_num)
@@ -2533,6 +2599,9 @@ class SimklSyncDatabase(Database):
                     ep_key = (show_id, season_num, ep_num)
                     if ep_key in episode_items:
                         continue
+
+                    season_info = season_items[(show_id, season_num)]["simkl_object"]["info"]
+                    season_info["episode_count"] = int(season_info.get("episode_count") or 0) + 1
 
                     ep_ids = episode.get("ids") or {}
                     ep_simkl_id = ep_ids.get("simkl_id") or ep_ids.get("simkl")
@@ -2590,7 +2659,80 @@ class SimklSyncDatabase(Database):
                 f"Simkl sync stubs: {len(seasons)} season(s), {len(episodes)} episode(s)",
                 "debug",
             )
+        for stub_show_id in show_ids:
+            stub_catalog = catalog or self.show_catalog(int(stub_show_id)) or "tv"
+            if stub_catalog == "anime":
+                self.prune_orphan_anime_seasons(int(stub_show_id))
 
+
+    def prune_orphan_anime_seasons(self, show_id: int) -> int:
+        """Remove anime season rows that only exist from Simkl watch-sync cour numbering."""
+        show_id = int(show_id)
+        catalog = self.show_catalog(show_id) or "tv"
+        if catalog != "anime":
+            return 0
+
+        from resources.lib.database.simkl_sync.milling import fetch_raw_show_episodes
+        from resources.lib.simkl.field_map import anime_menu_season
+
+        slug = self._meta_slug(show_id, "shows")
+        raw_episodes = fetch_raw_show_episodes(show_id, "anime", slug=slug)
+        valid = {anime_menu_season(ep) for ep in raw_episodes if isinstance(ep, dict)}
+        if not valid:
+            return 0
+
+        rows = self.fetchall(
+            "SELECT season FROM seasons WHERE simkl_show_id=?",
+            (show_id,),
+        )
+        stale = sorted({int(row["season"]) for row in rows or [] if int(row["season"]) not in valid})
+        if not stale:
+            return 0
+
+        canonical = max((season for season in valid if season > 0), default=None)
+        for season_num in stale:
+            if canonical is not None and season_num != canonical:
+                self.execute_sql(
+                    """
+                    UPDATE episodes
+                    SET watched = CASE
+                            WHEN COALESCE(watched, 0) > 0 THEN watched
+                            ELSE COALESCE((
+                                SELECT e1.watched
+                                FROM episodes AS e1
+                                WHERE e1.simkl_show_id = episodes.simkl_show_id
+                                  AND e1.season = ?
+                                  AND e1.number = episodes.number
+                                LIMIT 1
+                            ), 0)
+                        END,
+                        last_watched_at = COALESCE(
+                            last_watched_at,
+                            (
+                                SELECT e1.last_watched_at
+                                FROM episodes AS e1
+                                WHERE e1.simkl_show_id = episodes.simkl_show_id
+                                  AND e1.season = ?
+                                  AND e1.number = episodes.number
+                                LIMIT 1
+                            )
+                        )
+                    WHERE simkl_show_id = ? AND season = ?
+                    """,
+                    (season_num, season_num, show_id, canonical),
+                )
+
+            self.execute_sql(
+                "DELETE FROM episodes WHERE simkl_show_id=? AND season=?",
+                (show_id, season_num),
+            )
+            self.execute_sql(
+                "DELETE FROM seasons WHERE simkl_show_id=? AND season=?",
+                (show_id, season_num),
+            )
+
+        self._refresh_show_and_season_statistics(show_id)
+        return len(stale)
 
     @staticmethod
     def _milled_catalog_season_guard_sql(episode_alias: str = "e") -> str:
@@ -2906,11 +3048,19 @@ class SimklSyncDatabase(Database):
     def apply_watched_episodes_from_entries(self, entries, shows):
         show_ids = {show["simkl_id"]: show for show in shows if show.get("simkl_id")}
         rows = []
+        anime_raw_cache: dict[int, list[dict]] = {}
+        anime_slug_cache: dict[int, str | None] = {}
 
         for entry in entries or []:
             show_id = self._entry_show_simkl_id(entry)
             if show_id is None or show_id not in show_ids:
                 continue
+            show_id = int(show_id)
+            show_catalog = (
+                show_ids[show_id].get("catalog")
+                or self.show_catalog(show_id)
+                or "tv"
+            )
 
             for season in entry.get("seasons") or []:
                 season_num = season.get("number") if season.get("number") is not None else season.get("season")
@@ -2922,6 +3072,15 @@ class SimklSyncDatabase(Database):
                         continue
                     if not self._episode_marked_watched(episode, entry):
                         continue
+                    season_num, episode_num = self._resolve_anime_watch_episode_coords(
+                        show_id,
+                        episode,
+                        int(season_num),
+                        int(episode_num),
+                        show_catalog,
+                        anime_raw_cache,
+                        anime_slug_cache,
+                    )
                     rows.append(
                         {
                             "simkl_show_id": show_id,

@@ -1013,6 +1013,31 @@ def _copy_mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+_SHOW_MENU_CTX_CACHE: dict[tuple[int, int], dict[str, Any]] = {}
+
+
+def clear_show_menu_context_cache() -> None:
+    _SHOW_MENU_CTX_CACHE.clear()
+
+
+def _finalize_anime_show_context(show_ctx: dict[str, Any] | None, simkl_show_id: int) -> dict[str, Any] | None:
+    if not isinstance(show_ctx, dict):
+        return show_ctx
+    info = show_ctx.get("show_info")
+    if not isinstance(info, dict):
+        return show_ctx
+    if not (info.get("catalog") == "anime" or info.get("mal_id")):
+        return show_ctx
+
+    from resources.lib.simkl.field_map import hydrate_collapsed_anime_titles
+
+    catalog = info.get("catalog") or "anime"
+    hydrate_collapsed_anime_titles(info, int(simkl_show_id), catalog=catalog)
+    if info.get("title") or info.get("tvshowtitle"):
+        show_ctx["title"] = info.get("title") or info.get("tvshowtitle")
+    return show_ctx
+
+
 def _fetch_show_sync_row(simkl_id: int) -> dict[str, Any] | None:
     from resources.lib.database.session import get_sync_database
 
@@ -1114,6 +1139,12 @@ def load_show_menu_context(simkl_show_id: int) -> dict[str, Any] | None:
         return None
 
     sid = int(simkl_show_id)
+    from resources.lib.modules.globals import g
+
+    cache_key = (sid, g.get_int_setting("general.anime.titlelanguage"))
+    cached_ctx = _SHOW_MENU_CTX_CACHE.get(cache_key)
+    if cached_ctx is not None:
+        return cached_ctx
 
     from resources.lib.database.sync_meta_cache import row_has_display_meta
     from resources.lib.meta.display_store import get_display_meta_store
@@ -1145,12 +1176,16 @@ def load_show_menu_context(simkl_show_id: int) -> dict[str, Any] | None:
             "show_art": art,
             "show_cast": cast,
         }
+        show_ctx = _finalize_anime_show_context(show_ctx, sid)
+        _SHOW_MENU_CTX_CACHE[cache_key] = show_ctx
         return show_ctx
 
     if not isinstance(sync_row, dict):
         return None
 
     show_ctx = _show_context_from_sync_row(sync_row)
+    show_ctx = _finalize_anime_show_context(show_ctx, sid)
+    _SHOW_MENU_CTX_CACHE[cache_key] = show_ctx
     return show_ctx
 
 
@@ -1236,8 +1271,14 @@ def _apply_parent_show_episode_thumb(merged: dict[str, Any]) -> None:
     info["thumb"] = thumb
 
 
-def _parent_context_stamp(show_id: int, season_num: int | None = None) -> tuple[int, int | None]:
-    return (int(show_id), int(season_num) if season_num is not None else None)
+def _parent_context_stamp(show_id: int, season_num: int | None = None) -> tuple[int, int | None, int]:
+    from resources.lib.modules.globals import g
+
+    return (
+        int(show_id),
+        int(season_num) if season_num is not None else None,
+        g.get_int_setting("general.anime.titlelanguage"),
+    )
 
 
 def _resolve_parent_episode_thumb(
@@ -1269,7 +1310,14 @@ def _overlay_episode_row_fast(
     info = dict(item.get("info") or {})
     art = dict(item.get("art") or {})
     if show_info:
-        if not info.get("tvshowtitle"):
+        catalog = info.get("catalog") or show_info.get("catalog")
+        if catalog == "anime":
+            from resources.lib.simkl.field_map import localized_anime_show_title
+
+            localized = localized_anime_show_title(info, source=show_info)
+            if localized:
+                info["tvshowtitle"] = localized
+        elif not info.get("tvshowtitle"):
             info["tvshowtitle"] = show_info.get("title")
         if not info.get("tmdb_show_id") and show_info.get("tmdb_id"):
             info["tmdb_show_id"] = show_info.get("tmdb_id")
@@ -1357,6 +1405,14 @@ def overlay_parent_context_on_rows(
         MetadataHandler._add_season_show_cast(merged, season_cast, show_cast)
         if show_info:
             _fill_missing_display_fields(merged["info"], show_info)
+            if (merged["info"].get("mediatype") or "").lower() == "episode":
+                catalog = merged["info"].get("catalog") or show_info.get("catalog")
+                if catalog == "anime":
+                    from resources.lib.simkl.field_map import localized_anime_show_title
+
+                    localized = localized_anime_show_title(merged["info"], source=show_info)
+                    if localized:
+                        merged["info"]["tvshowtitle"] = localized
         _apply_parent_show_episode_thumb(merged)
 
         item["info"] = merged["info"]

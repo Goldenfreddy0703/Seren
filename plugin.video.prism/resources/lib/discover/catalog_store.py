@@ -346,6 +346,7 @@ def get_items_batch(catalog: str, simkl_ids: list[int]) -> dict[int, dict[str, A
     still_missing = [sid for sid in misses if sid not in hits]
     if still_missing:
         hits.update(_fallback_sync_items_from_library_db(catalog, still_missing))
+
     return hits
 
 

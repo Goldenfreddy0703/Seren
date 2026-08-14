@@ -1826,7 +1826,17 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         if not media_list:
             return
         media_list = media_list if isinstance(media_list, list) else [media_list]
-        self.insert_simkl_shows(media_list)
+        from resources.lib.modules.metadataHandler import MetadataHandler
+
+        insertable = [
+            item
+            for item in media_list
+            if isinstance(item, dict)
+            and isinstance(MetadataHandler.simkl_info(item), dict)
+            and MetadataHandler.simkl_info(item).get("simkl_id") is not None
+        ]
+        if insertable:
+            self.insert_simkl_shows(insertable)
         self._update_shows(media_list)
         if not skip_mill:
             self._mill_if_needed(media_list, None, mill_episodes)

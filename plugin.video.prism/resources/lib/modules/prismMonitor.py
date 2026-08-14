@@ -6,7 +6,12 @@ from resources.lib.modules.globals import g
 
 ONWAKE_NETWORK_UP_DELAY = 5
 
-_UI_REFRESH_SETTING_KEYS = ("searchHistory", "general.menucaching")
+_UI_REFRESH_SETTING_KEYS = (
+    "searchHistory",
+    "general.menucaching",
+    "general.anime.titlelanguage",
+    "general.anime.showDubLabel",
+)
 
 
 class PrismMonitor(xbmc.Monitor):

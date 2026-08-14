@@ -1033,7 +1033,8 @@ class ListBuilder:
         catalog = item.get("catalog") or info.get("catalog")
         if catalog and not info.get("catalog"):
             info["catalog"] = catalog
-        if catalog == "anime":
+        mediatype = info.get("mediatype")
+        if catalog == "anime" and mediatype not in ("season", "episode"):
             from resources.lib.simkl.field_map import ensure_anime_title_slots
 
             ensure_anime_title_slots(info)
@@ -1056,7 +1057,9 @@ class ListBuilder:
             name = info.get("title") or item.get("name")
 
         ids = info.get("ids") if isinstance(info.get("ids"), dict) else {}
-        if catalog == "anime" or info.get("mal_id") or ids.get("mal"):
+        if mediatype not in ("season", "episode") and (
+            catalog == "anime" or info.get("mal_id") or ids.get("mal")
+        ):
             from resources.lib.simkl.field_map import pick_anime_display_title
 
             prefer_romaji = g.get_int_setting("general.anime.titlelanguage") == 1
@@ -1066,6 +1069,8 @@ class ListBuilder:
                 name = f"{localized} ({relation})" if relation else localized
 
         if not name and info.get("mediatype") == "season":
+            if info.get("season") is None and item.get("season") is not None:
+                info["season"] = int(item["season"])
             from resources.lib.simkl.field_map import ensure_season_title
 
             ensure_season_title(info)
@@ -1127,7 +1132,28 @@ class ListBuilder:
         info = item.get("info") if isinstance(item.get("info"), dict) else {}
         season = info.get("season")
         episode = episode_num_from_info(info)
+        catalog = info.get("catalog")
+        ids = info.get("ids") if isinstance(info.get("ids"), dict) else {}
         show_title = info.get("tvshowtitle")
+        show_source = None
+        if catalog == "anime" or info.get("mal_id") or ids.get("mal"):
+            from resources.lib.simkl.field_map import localized_anime_show_title
+
+            prefer_romaji = g.get_int_setting("general.anime.titlelanguage") == 1
+            show_id = info.get("simkl_show_id")
+            if show_id is not None:
+                from resources.lib.meta.list_paint import load_show_menu_context
+
+                show_ctx = load_show_menu_context(int(show_id))
+                if isinstance(show_ctx, dict):
+                    show_source = show_ctx.get("show_info")
+            resolved = localized_anime_show_title(
+                info,
+                source=show_source,
+                prefer_romaji=prefer_romaji,
+            )
+            if resolved:
+                show_title = resolved
         if not show_title:
             tvshow = info.get("tvshow")
             if isinstance(tvshow, dict):
