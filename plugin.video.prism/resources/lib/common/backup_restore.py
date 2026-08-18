@@ -26,9 +26,13 @@ BACKUP_FILES = frozenset(
     {
         "settings.xml",
         "simklSync.db",
+        "simklSync.db.md5",
         "providers.db",
+        "providers.db.md5",
         "skins.db",
+        "skins.db.md5",
         "premiumize.db",
+        "premiumize.db.md5",
     }
 )
 BACKUP_FOLDERS = frozenset(

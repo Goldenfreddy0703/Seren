@@ -628,25 +628,6 @@ def enrichment_refs_for_paint_rows(rows: list[dict[str, Any]], media_type: str) 
     return refs
 
 
-def _record_paint_cache_layer(layers: set[str], prepare_skipped: bool, *, stamp_trusted: bool = False) -> None:
-    try:
-        from resources.lib.meta.menu_paint_profile import record_paint_cache_context
-
-        if not prepare_skipped:
-            layer = "provider"
-        elif "display_meta" in layers and "simkl_sync" in layers:
-            layer = "mixed"
-        elif "simkl_sync" in layers:
-            layer = "simkl_sync"
-        elif "display_meta" in layers:
-            layer = "display_meta"
-        else:
-            layer = "provider"
-        record_paint_cache_context(layer=layer, prepare_skipped=prepare_skipped, stamp_trusted=stamp_trusted)
-    except Exception:
-        pass
-
-
 def try_fast_paint_list(
     media_list: list[dict],
     media_type: str,
@@ -718,13 +699,6 @@ def try_fast_paint_list(
         enrichment_refs or enrichment_refs_for_paint_rows(prepared, media_type),
         media_type,
     )
-    layers: set[str] = set()
-    if used_display:
-        layers.add("display_meta")
-    if used_sync:
-        layers.add("simkl_sync")
-    stamp_trusted = prepare_skipped and bool(used_display) and not used_sync
-    _record_paint_cache_layer(layers, prepare_skipped, stamp_trusted=stamp_trusted)
     return MetadataHandler.sort_list_items(prepared, media_list)
 
 
@@ -749,7 +723,6 @@ def paint_sync_list_rows(
     prepared, enrichment_refs, prepare_skipped = paint_rows_fast_or_prepare(
         rows, media_type, db, profile=profile
     )
-    _record_paint_cache_layer({"display_meta"}, prepare_skipped)
     db.set_list_enrichment_refs(enrichment_refs, media_type)
     return MetadataHandler.sort_list_items(prepared, media_list)
 
@@ -916,28 +889,6 @@ def _paint_media_group(
         prepared = rows
         enrichment_refs: list[dict] = []
         prepare_skipped = True
-        try:
-            from resources.lib.meta.menu_paint_profile import record_paint_cache_context, record_prepare_stats
-
-            record_prepare_stats(
-                {
-                    "complete": len(prepared),
-                    "incomplete": 0,
-                    "prepare_skipped": 1,
-                    "cast_batch": 0,
-                    "art_fetch": 0,
-                    "art_deduped": 0,
-                    "cast_art_parallel_ms": 0.0,
-                    "prepare_ms": 0.0,
-                }
-            )
-            record_paint_cache_context(
-                layer="display_meta",
-                prepare_skipped=True,
-                stamp_trusted=True,
-            )
-        except Exception:
-            pass
     else:
         prepared, enrichment_refs, prepare_skipped = paint_rows_fast_or_prepare(
             rows, media_type, db, profile=paint_profile
@@ -950,15 +901,6 @@ def _paint_media_group(
         enrichment_refs or enrichment_refs_for_paint_rows(prepared, media_type),
         media_type,
     )
-    layers: set[str] = set()
-    if used_display:
-        layers.add("display_meta")
-    if used_sync:
-        layers.add("simkl_sync")
-    if used_payload:
-        layers.add("provider")
-    stamp_trusted = prepare_skipped and bool(used_display) and not used_sync and not used_payload
-    _record_paint_cache_layer(layers or {"provider"}, prepare_skipped, stamp_trusted=stamp_trusted)
     return MetadataHandler.sort_list_items(prepared, refs)
 
 
@@ -1062,25 +1004,14 @@ def paint_catalog_page_rows(
         )
         cached = get_session_page_paint(cache_key)
         if cached is not None:
-            from resources.lib.meta.menu_paint_profile import record_paint_cache_context
-            from resources.lib.meta.paint_complete import rows_page_paint_ready
             from resources.lib.simkl.field_map import paint_page_has_collapsed_anime_titles
 
             if paint_page_has_collapsed_anime_titles(cached):
                 cached = None
         if cached is not None:
-            from resources.lib.meta.menu_paint_profile import record_paint_cache_context
-            from resources.lib.meta.paint_complete import rows_page_paint_ready
             from resources.lib.database.session import get_sync_database
 
             cached = overlay_page_watch_fields(cached, get_sync_database())
-            record_paint_cache_context(
-                layer="session_page",
-                prepare_skipped=rows_page_paint_ready(cached, profile=paint_profile),
-                stamp_trusted=all(
-                    row.get("_paint_stamp") for row in cached if isinstance(row, dict) and row.get("simkl_id")
-                ),
-            )
             return cached
 
     from resources.lib.database.session import get_sync_database

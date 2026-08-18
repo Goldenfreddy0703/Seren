@@ -628,18 +628,6 @@ class GlobalVariables:
                 do_version_change()
             except Exception:
                 self.log_stacktrace()
-            try:
-                from resources.lib.database.sync_meta_cache import maybe_prefetch_sync_meta
-
-                maybe_prefetch_sync_meta()
-            except Exception:
-                self.log_stacktrace()
-            try:
-                from resources.lib.calendar.simkl_calendar import maybe_prefetch_calendars
-
-                maybe_prefetch_calendars()
-            except Exception:
-                self.log_stacktrace()
 
     def _init_kodi(self):
         self.PLAYLIST = xbmc.PlayList(xbmc.PLAYLIST_VIDEO)
@@ -1629,7 +1617,11 @@ class GlobalVariables:
             ep_count = int(menu_item["episode_count"])
             watched_eps = int(menu_item["watched_episodes"])
             if ep_count == watched_eps:
-                info["playcount"] = 1
+                # Single-episode stub catalogs from Simkl sync are not full seasons.
+                if mediatype == "season" and ep_count <= 1:
+                    info["playcount"] = 0
+                else:
+                    info["playcount"] = 1
             else:
                 item.setProperty(
                     "WatchedProgress",

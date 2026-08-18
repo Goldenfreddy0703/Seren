@@ -48,6 +48,59 @@ def _mark_verified(catalog: str, status: str) -> None:
     g.set_runtime_setting(_verify_setting_key(catalog, status), str(time.time()))
 
 
+def library_list_needs_verify(catalog: str, status: str, *, force: bool = False) -> bool:
+    """
+    True when this library bucket should hit Simkl for membership verify.
+
+    Skips API when background sync watermark matches and local cache/DB agree.
+    """
+    if force:
+        return True
+
+    from resources.lib.database.session import get_sync_database
+    from resources.lib.simkl.library_cache import (
+        _cache_is_fresh,
+        _cached_refs_match_db,
+        _get_cached_last_updated,
+        _get_cached_refs,
+        _load_refs_from_sync_db,
+        get_library_sync_watermark,
+        record_library_sync_watermark,
+    )
+
+    db = get_sync_database()
+    stored_watermark = get_library_sync_watermark(catalog)
+    current_watermark = str(db.activities.get("all_activities") or "")
+
+    if stored_watermark and stored_watermark != current_watermark:
+        return True
+
+    db_refs = _load_refs_from_sync_db(catalog, status)
+    if not db_refs:
+        return current_watermark == db.base_date
+
+    cached = _get_cached_refs(catalog, status)
+    if not cached:
+        if stored_watermark == current_watermark or current_watermark != db.base_date:
+            if not stored_watermark:
+                record_library_sync_watermark(db, catalog)
+            return False
+        return True
+
+    if not _cached_refs_match_db(catalog, status, cached):
+        return True
+
+    if not _cache_is_fresh(_get_cached_last_updated(catalog, status)):
+        if stored_watermark == current_watermark:
+            return False
+        return True
+
+    if not stored_watermark:
+        record_library_sync_watermark(db, catalog)
+
+    return False
+
+
 def fetch_remote_status_simkl_ids(api, catalog: str, status: str) -> set[int]:
     """Lightweight membership read for one watchlist bucket."""
     media_key = _media_key(catalog)
@@ -147,7 +200,7 @@ def refresh_library_status_list(catalog: str, status: str, *, force: bool = Fals
     from resources.lib.simkl.library_cache import (
         _load_refs_from_sync_db,
         _save_cached_refs,
-        invalidate_library_cache,
+        record_library_sync_watermark,
     )
 
     db = get_sync_database()
@@ -176,6 +229,7 @@ def refresh_library_status_list(catalog: str, status: str, *, force: bool = Fals
         refs = _load_refs_from_sync_db(catalog, status)
         if refs:
             _save_cached_refs(catalog, status, refs)
+        record_library_sync_watermark(db, catalog)
         return True
 
     g.log(
@@ -207,7 +261,6 @@ def refresh_library_status_list(catalog: str, status: str, *, force: bool = Fals
     if removed_ids:
         _clear_local_status_membership(db, catalog, status, removed_ids)
 
-    invalidate_library_cache(catalog)
     refs = _load_refs_from_sync_db(catalog, status)
     final_ids = {int(ref["simkl_id"]) for ref in refs if ref.get("simkl_id") is not None}
     if final_ids != remote_ids:
@@ -220,4 +273,5 @@ def refresh_library_status_list(catalog: str, status: str, *, force: bool = Fals
         _mark_verified(catalog, status)
     if refs:
         _save_cached_refs(catalog, status, refs)
+    record_library_sync_watermark(db, catalog)
     return True

@@ -70,9 +70,7 @@ def _user_browsing() -> bool:
 
 
 def _should_abort_prefetch() -> bool:
-    from resources.lib.modules.page_prefetch import foreground_browse_busy
-
-    return drilldown_navigation_active() or _user_browsing() or foreground_browse_busy()
+    return drilldown_navigation_active() or _user_browsing()
 
 
 def schedule_show_episode_premill(show_id: int, catalog: str | None = None) -> None:

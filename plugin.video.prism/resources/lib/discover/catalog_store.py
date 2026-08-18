@@ -176,7 +176,13 @@ def _upsert_catalog_record(
     )
     now = int(time.time())
     if existing:
-        final_base = base_json if base_json is not None else _decode(existing.get("base_json")) or {}
+        existing_base = _decode(existing.get("base_json")) or {}
+        if base_json is not None:
+            from resources.lib.simkl.enrich import _merge_sync_item_rows
+
+            final_base = _merge_sync_item_rows(existing_base, base_json)
+        else:
+            final_base = existing_base
         final_discover = _merge_fragments(_decode(existing.get("discover_json")), discover_json or {})
         final_library = _merge_fragments(_decode(existing.get("library_json")), library_json or {})
     else:

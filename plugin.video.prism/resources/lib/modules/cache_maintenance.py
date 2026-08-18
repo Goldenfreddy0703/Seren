@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import xbmcvfs
 
@@ -13,12 +14,23 @@ from resources.lib.modules.globals import g
 # Tighter defaults — user prefers smaller on-disk caches.
 API_CACHE_MAX_ROWS = 2000
 API_CACHE_MAX_AGE_HOURS = 18
-DISPLAY_META_PREFETCH_LIMIT = 750
 SYNC_META_PREFETCH_LIMIT = 250
+DISPLAY_META_PREFETCH_LIMIT = 750
 CATALOG_ITEMS_MAX_ROWS = 12000
 CATALOG_ITEMS_MAX_AGE_DAYS = 21
-SERVICE_BOOT_DEFER_SEC = 120
 PROVIDER_BLOB_TYPES = ("tmdb", "tvdb", "fanart")
+
+VACUUM_MIN_BYTES = 4 * 1024 * 1024
+VACUUM_INTERVAL_SEC = 24 * 60 * 60
+STARTUP_GRACE_SEC_ANDROID = 10 * 60
+STARTUP_GRACE_SEC_DEFAULT = 5 * 60
+
+_SERVICE_STARTED_KEY = "cache_maintenance.service_started_at"
+_SYNC_VACUUM_PENDING_KEY = "cache_maintenance.sync_vacuum.pending"
+_SYNC_VACUUM_LAST_RUN_KEY = "cache_maintenance.sync_vacuum.last_run"
+_META_VACUUM_PENDING_KEY = "cache_maintenance.meta_vacuum.pending"
+_META_VACUUM_LAST_RUN_KEY = "cache_maintenance.meta_vacuum.last_run"
+_ENRICH_IN_FLIGHT_KEY = "meta_enrich.in_flight"
 
 
 def trim_api_cache(max_rows: int = API_CACHE_MAX_ROWS) -> int:
@@ -56,15 +68,37 @@ def purge_stale_api_cache(max_age_hours: int = API_CACHE_MAX_AGE_HOURS) -> int:
         return 0
 
 
-def vacuum_sqlite_if_large(path: str, min_bytes: int = 4 * 1024 * 1024) -> bool:
-    """Run VACUUM on a SQLite file when it exceeds min_bytes."""
+def _sqlite_file_size(path: str) -> int:
     if not path or not xbmcvfs.exists(path):
-        return False
+        return 0
     try:
         stat = xbmcvfs.Stat(path)
-        size = stat.st_size() if hasattr(stat, "st_size") else 0
-        if size < min_bytes:
-            return False
+        return stat.st_size() if hasattr(stat, "st_size") else 0
+    except Exception:
+        return 0
+
+
+def _sqlite_needs_vacuum(path: str, min_bytes: int = VACUUM_MIN_BYTES) -> bool:
+    """Return True when path exists and exceeds the vacuum size threshold."""
+    return _sqlite_file_size(path) >= min_bytes
+
+
+def _startup_grace_seconds() -> int:
+    return STARTUP_GRACE_SEC_ANDROID if g.PLATFORM == "android" else STARTUP_GRACE_SEC_DEFAULT
+
+
+def _vacuum_interval_elapsed(last_run_key: str) -> bool:
+    last_run = g.get_float_runtime_setting(last_run_key, 0)
+    if not last_run:
+        return True
+    return time.time() - last_run >= VACUUM_INTERVAL_SEC
+
+
+def vacuum_sqlite_if_large(path: str, min_bytes: int = VACUUM_MIN_BYTES) -> bool:
+    """Run VACUUM on a SQLite file when it exceeds min_bytes."""
+    if not _sqlite_needs_vacuum(path, min_bytes):
+        return False
+    try:
         import sqlite3
 
         conn = sqlite3.connect(tools.translate_path(path))
@@ -75,6 +109,86 @@ def vacuum_sqlite_if_large(path: str, min_bytes: int = 4 * 1024 * 1024) -> bool:
     except Exception:
         g.log_stacktrace()
         return False
+
+
+def _queue_vacuum_if_needed(
+    path: str,
+    pending_key: str,
+    last_run_key: str,
+    min_bytes: int = VACUUM_MIN_BYTES,
+) -> None:
+    if not _sqlite_needs_vacuum(path, min_bytes):
+        return
+    if not _vacuum_interval_elapsed(last_run_key):
+        return
+    if g.get_bool_runtime_setting(pending_key):
+        return
+    g.set_runtime_setting(pending_key, True)
+    size_mb = _sqlite_file_size(path) / (1024 * 1024)
+    g.log(f"Deferred vacuum queued for {os.path.basename(path)} ({size_mb:.1f} MB)", "debug")
+
+
+def queue_deferred_vacuums() -> None:
+    """Mark sync/meta DB vacuums pending for the service idle loop."""
+    _queue_vacuum_if_needed(g.SIMKL_SYNC_DB_PATH, _SYNC_VACUUM_PENDING_KEY, _SYNC_VACUUM_LAST_RUN_KEY)
+    _queue_vacuum_if_needed(g.PRISM_META_DB_PATH, _META_VACUUM_PENDING_KEY, _META_VACUUM_LAST_RUN_KEY)
+
+
+def service_background_idle_ready(*, block_when_enrichment_busy: bool = False) -> bool:
+    """True when heavy background DB work should not contend with foreground menus."""
+    if g.abort_requested():
+        return False
+    if g.is_addon_visible():
+        return False
+    if block_when_enrichment_busy:
+        if g.get_bool_runtime_setting(_ENRICH_IN_FLIGHT_KEY):
+            return False
+        try:
+            from resources.lib.meta.enrichment import MetaEnrichmentQueue
+
+            if MetaEnrichmentQueue._has_work() and g.get_bool_runtime_setting(_ENRICH_IN_FLIGHT_KEY):
+                return False
+        except Exception:
+            g.log_stacktrace()
+            return False
+    started_at = g.get_float_runtime_setting(_SERVICE_STARTED_KEY, 0)
+    if started_at and time.time() - started_at < _startup_grace_seconds():
+        return False
+    return True
+
+
+def _deferred_vacuum_idle_ready() -> bool:
+    if not service_background_idle_ready(block_when_enrichment_busy=True):
+        return False
+    try:
+        from resources.lib.meta.enrichment import MetaEnrichmentQueue
+
+        if MetaEnrichmentQueue._has_work() and g.get_bool_runtime_setting(_ENRICH_IN_FLIGHT_KEY):
+            return False
+    except Exception:
+        g.log_stacktrace()
+        return False
+    return True
+
+
+def _run_pending_deferred_vacuum(path: str, pending_key: str, last_run_key: str) -> bool:
+    if not g.get_bool_runtime_setting(pending_key):
+        return False
+    if vacuum_sqlite_if_large(path):
+        g.set_runtime_setting(last_run_key, time.time())
+    g.clear_runtime_setting(pending_key)
+    return True
+
+
+def process_idle_deferred_vacuum() -> bool:
+    """Service hook: vacuum sync/meta DBs when idle and uncontended."""
+    if not _deferred_vacuum_idle_ready():
+        return False
+    if _run_pending_deferred_vacuum(g.SIMKL_SYNC_DB_PATH, _SYNC_VACUUM_PENDING_KEY, _SYNC_VACUUM_LAST_RUN_KEY):
+        return True
+    if _run_pending_deferred_vacuum(g.PRISM_META_DB_PATH, _META_VACUUM_PENDING_KEY, _META_VACUUM_LAST_RUN_KEY):
+        return True
+    return False
 
 
 def prune_non_library_provider_blobs() -> int:
@@ -132,44 +246,6 @@ def prune_non_library_provider_blobs() -> int:
     except Exception:
         g.log_stacktrace()
     return removed
-
-
-def mark_service_boot_started() -> None:
-    """Record service start time for boot-phase prefetch deferral."""
-    import time
-
-    g.set_runtime_setting("service.boot_started_at", int(time.time()))
-
-
-def service_boot_phase_active() -> bool:
-    """True during the first minutes after Kodi service start."""
-    import time
-
-    started = g.get_int_runtime_setting("service.boot_started_at")
-    if not started:
-        return False
-    return (time.time() - started) < SERVICE_BOOT_DEFER_SEC
-
-
-def warm_menu_caches() -> int:
-    """POV-style RAM warm at service start (display_meta + sync rows)."""
-    warmed = 0
-    try:
-        from resources.lib.database.sync_meta_cache import SyncMetaCache
-
-        warmed += SyncMetaCache().prefetch(limit=SYNC_META_PREFETCH_LIMIT)
-    except Exception:
-        g.log_stacktrace()
-    try:
-        from resources.lib.meta.display_store import get_display_meta_store
-
-        warmed += get_display_meta_store().prefetch(limit=DISPLAY_META_PREFETCH_LIMIT)
-    except Exception:
-        g.log_stacktrace()
-    if warmed:
-        g.set_runtime_setting("sync_meta.prefetch.done", True)
-        g.log(f"Menu caches warmed {warmed} rows", "debug")
-    return warmed
 
 
 def invalidate_paint_stamps() -> None:
@@ -260,5 +336,4 @@ def run_cache_maintenance() -> None:
     except Exception:
         g.log_stacktrace()
     vacuum_sqlite_if_large(g.CACHE_DB_PATH)
-    vacuum_sqlite_if_large(g.SIMKL_SYNC_DB_PATH)
-    vacuum_sqlite_if_large(g.PRISM_META_DB_PATH)
+    queue_deferred_vacuums()

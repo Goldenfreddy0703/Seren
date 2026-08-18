@@ -12,8 +12,7 @@ from resources.lib.modules.globals import g
 _DONE_KEY = "page_prefetch.done_keys"
 _IN_FLIGHT_KEY = "page_prefetch.in_flight"
 _MENU_ACTIVE_KEY = "browse.menu_active"
-_PREFETCH_PAGES_SETTING = "general.prefetch.pages"
-_PREFETCH_PAGES_DEFAULT = 1
+_PREFETCH_PAGES_DEFAULT = 0
 _PREFETCH_PAGES_MAX = 5
 _MAX_DONE_KEYS = 256
 _prefetch_events: dict[str, threading.Event] = {}
@@ -21,12 +20,8 @@ _prefetch_events_lock = threading.Lock()
 
 
 def prefetch_page_depth() -> int:
-    """How many upcoming list pages to warm (0 disables background page prefetch)."""
-    try:
-        depth = int(g.get_int_setting(_PREFETCH_PAGES_SETTING, _PREFETCH_PAGES_DEFAULT))
-    except (TypeError, ValueError):
-        depth = _PREFETCH_PAGES_DEFAULT
-    return max(0, min(depth, _PREFETCH_PAGES_MAX))
+    """Background page prefetch is disabled (Seren does not prefetch list pages)."""
+    return 0
 
 
 def prefetch_next_page_enabled() -> bool:
@@ -336,7 +331,7 @@ def _prefetch_paint_catalog_page(
         page_sync = enrich_page_for_paint(
             catalog,
             page_sync,
-            force_detail=(paint_profile == "search"),
+            force_detail=False,
         )
 
     paint_catalog_page_rows(
@@ -394,7 +389,7 @@ def _prefetch_search(page_params: dict[str, Any]) -> bool:
 
     page_sync = sync_items_for_refs(catalog, refs)
     if page_sync:
-        enrich_page_for_paint(catalog, page_sync, force_detail=True)
+        enrich_page_for_paint(catalog, page_sync, force_detail=False)
     return _prefetch_paint_catalog_page(
         catalog,
         refs,

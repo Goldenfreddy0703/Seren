@@ -285,7 +285,6 @@ class DiscoverRenderer:
 
         movie_refs = [r for r in page_refs if r.get("catalog") == "movie"]
         show_refs = [r for r in page_refs if r.get("catalog") in ("tv", "anime")]
-        # page_sync + insert_discover_page already seed catalog_items; avoid redundant force_meta upserts.
         if not page_sync:
             from resources.lib.database.session import get_sync_database
 
@@ -298,17 +297,15 @@ class DiscoverRenderer:
                 )
             if show_refs:
                 db.ensure_catalog_refs_seeded(show_refs, catalog, "tvshow")
+            from resources.lib.discover.catalog_store import sync_items_for_refs
 
-        from resources.lib.discover.sync_bridge import insert_discover_page
-        from resources.lib.discover.catalog_store import catalog_refs_need_seed
+            page_sync = sync_items_for_refs(catalog, page_refs)
+
         from resources.lib.modules.list_builder import ListBuilder
-        from resources.lib.meta.list_paint import render_catalog_discover_refs
+        from resources.lib.meta.browse_sync import render_browse_sync_page
         from resources.lib.simkl.field_map import display_rating_priority_for_discover
 
-        if page_sync and catalog_refs_need_seed(catalog, page_refs):
-            insert_discover_page(catalog, page_sync, catalog_only=True)
-
-        list_kwargs = discover_list_kwargs()
+        list_kwargs = discover_list_kwargs(enrichment_reason="discover")
         list_kwargs["display_rating_priority"] = display_rating_priority_for_discover(
             catalog,
             discover_list.db_query if discover_list.source == "db" else None,
@@ -319,13 +316,11 @@ class DiscoverRenderer:
             list_kwargs["list_id"] = list_id
 
         builder = ListBuilder()
-        render_catalog_discover_refs(
+        render_browse_sync_page(
             catalog,
-            page_refs,
+            page_sync or [],
             builder,
             list_kwargs=list_kwargs,
-            enrichment_reason="discover",
-            payload_rows=page_sync,
         )
 
     def _build_full_db_list(self, discover_list: DiscoverList, catalog: Catalog) -> list[dict]:

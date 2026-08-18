@@ -5313,13 +5313,13 @@ msgstr "Updates"
 
 #: /resources/settings.xml
 msgctxt "#31018"
-msgid "Prefetch episode info during sync"
-msgstr "Prefetch episode info during sync"
+msgid "Background episode catalog warm"
+msgstr "Background episode catalog warm"
 
 #: /resources/settings.xml
 msgctxt "#31019"
-msgid "After syncing your watchlist, download episode titles and artwork for Next Up, Continue Watching, and related menus. Disable for faster syncs; menus will load episode info on demand instead."
-msgstr "After syncing your watchlist, download episode titles and artwork for Next Up, Continue Watching, and related menus. Disable for faster syncs; menus will load episode info on demand instead."
+msgid "After syncing your watchlist, warm episode catalogs in the background for Next Up and Continue Watching. Disable for faster syncs; episode menus will warm on demand instead."
+msgstr "After syncing your watchlist, warm episode catalogs in the background for Next Up and Continue Watching. Disable for faster syncs; episode menus will warm on demand instead."
 
 #: /resources/settings.xml
 msgctxt "#31020"

@@ -43,13 +43,45 @@ def _completed_or_dropped_changed(remote_activities, local_watermark: str) -> bo
     return False
 
 
-def build_all_items_params(*, date_from: str, include_all_episodes: bool = False) -> dict:
-    """Simkl all-items params — always paired with date_from.
+def _completed_or_dropped_changed(remote_activities, local_watermark: str) -> bool:
+    """True when completed/dropped lists moved since our last all-items watermark."""
+    from resources.lib.database.simkl_sync.database import SimklSyncDatabase
 
-    ``include_all_episodes`` synthesizes watched-episode rows for completed/dropped
-    shows (watch-state only). Episode display metadata still comes from episode catalog
-    milling, not sync.
-    """
+    for section in ("movies", "tv_shows", "anime"):
+        section_data = remote_activities.get(section) or {}
+        for status in ("completed", "dropped"):
+            ts = section_data.get(status)
+            if ts and SimklSyncDatabase.requires_update(ts, local_watermark):
+                return True
+    return False
+
+
+def _episode_activity_changed(remote_activities, local_watermark: str) -> bool:
+    """True when episode-level Simkl activity moved since our last all-items watermark."""
+    from resources.lib.database.simkl_sync.database import SimklSyncDatabase
+
+    for section in ("movies", "tv_shows", "anime"):
+        section_data = remote_activities.get(section) or {}
+        for field in ("watched", "episodes", "playback"):
+            ts = section_data.get(field)
+            if ts and SimklSyncDatabase.requires_update(ts, local_watermark):
+                return True
+    return False
+
+
+def _playback_activity_changed(db: "SimklSyncDatabase", remote_activities) -> bool:
+    movies_at = (remote_activities.get("movies") or {}).get("playback")
+    if movies_at and db.requires_update(movies_at, db.activities["movies_bookmarked"]):
+        return True
+    for section in ("tv_shows", "anime"):
+        playback_at = (remote_activities.get(section) or {}).get("playback")
+        if playback_at and db.requires_update(playback_at, db.activities["episodes_bookmarked"]):
+            return True
+    return False
+
+
+def build_foundation_params(*, date_from: str, include_all_episodes: bool = True) -> dict:
+    """Phase 1 / heavy baseline — full episode arrays for first sync."""
     params = {
         "date_from": date_from,
         "extended": ALL_ITEMS_EXTENDED,
@@ -62,11 +94,44 @@ def build_all_items_params(*, date_from: str, include_all_episodes: bool = False
     return params
 
 
-def fetch_all_items(api, *, date_from: str, include_all_episodes: bool = False):
-    params = build_all_items_params(
-        date_from=date_from,
-        include_all_episodes=include_all_episodes,
-    )
+def build_lean_delta_params(*, date_from: str) -> dict:
+    """Phase 2 lean delta — membership and counters only."""
+    return {"date_from": date_from, "next_watch_info": "yes"}
+
+
+def build_episode_delta_params(*, date_from: str, include_all_episodes: bool = False) -> dict:
+    """Phase 2 episode delta — per-episode watch arrays when activity requires them."""
+    params = {
+        "date_from": date_from,
+        "extended": ALL_ITEMS_EXTENDED,
+        "next_watch_info": "yes",
+        "episode_watched_at": "yes",
+        "episode_tvdb_id": "yes",
+    }
+    if include_all_episodes:
+        params["include_all_episodes"] = "yes"
+    return params
+
+
+def build_all_items_params(*, date_from: str, include_all_episodes: bool = False) -> dict:
+    """Legacy alias — foundation-style params."""
+    return build_foundation_params(date_from=date_from, include_all_episodes=include_all_episodes)
+
+
+def fetch_all_items(
+    api,
+    *,
+    date_from: str,
+    first_sync: bool = False,
+    episode_detail: bool = False,
+    include_all_episodes: bool = False,
+):
+    if first_sync:
+        params = build_foundation_params(date_from=date_from, include_all_episodes=include_all_episodes or True)
+    elif episode_detail:
+        params = build_episode_delta_params(date_from=date_from, include_all_episodes=include_all_episodes)
+    else:
+        params = build_lean_delta_params(date_from=date_from)
     url = "/sync/all-items/"
     query = dict(params)
     if hasattr(api, "_cdn_query"):
@@ -80,7 +145,13 @@ def fetch_all_items(api, *, date_from: str, include_all_episodes: bool = False):
         return None
 
 
-def ingest_payload(db: "SimklSyncDatabase", payload, *, is_delta: bool = False) -> None:
+def ingest_payload(
+    db: "SimklSyncDatabase",
+    payload,
+    *,
+    is_delta: bool = False,
+    lean_delta: bool = False,
+) -> None:
     """Unified all-items ingest — foundation and delta share one code path."""
     if not payload:
         return
@@ -98,11 +169,20 @@ def ingest_payload(db: "SimklSyncDatabase", payload, *, is_delta: bool = False) 
     if EPISODE_PRUNE_AFTER_SYNC:
         db.prune_library_episodes()
     db.set_sync_progress(60, g.get_language_string(31010))
-    _seed_display_meta_from_payload(db, payload)
-    _upsert_catalog_items_from_payload(payload)
+    if _payload_has_items(payload):
+        _seed_display_meta_from_payload(db, payload)
+    if not lean_delta:
+        _upsert_catalog_items_from_payload(payload)
     rebuild_library_cache_from_db(db)
     phase = "delta" if is_delta else "foundation"
     g.log(f"Simkl all-items ingest complete ({phase})", "info")
+
+
+def _payload_has_items(payload) -> bool:
+    for media_key in ("movies", "shows", "anime"):
+        if _unwrap_sync_items(payload, media_key):
+            return True
+    return False
 
 
 def _reapply_episode_watch_state_after_warm(db: "SimklSyncDatabase", payload) -> None:
@@ -206,18 +286,35 @@ def _finalize_episode_sync_state(
 ) -> None:
     """Post-ingest episode catalog warm + watch-state restore (single hook)."""
     if episode_warm_enabled():
-        db.set_sync_progress(65, g.get_language_string(31012))
-        run_post_sync_episode_warm(
-            db,
-            payload=payload,
-            force=force,
-            notify_silent=db.silent,
-            on_progress=(
-                (lambda c, t, title, bucket: _episode_warm_progress(db, c, t, title, bucket))
-                if blocking_warm
-                else None
-            ),
-        )
+        if blocking_warm:
+            db.set_sync_progress(65, g.get_language_string(31012))
+            run_post_sync_episode_warm(
+                db,
+                payload=payload,
+                force=force,
+                notify_silent=db.silent,
+                on_progress=lambda c, t, title, bucket: _episode_warm_progress(db, c, t, title, bucket),
+            )
+            _reapply_episode_watch_state_after_warm(db, payload)
+            return
+
+        import threading
+
+        def _background_warm() -> None:
+            try:
+                run_post_sync_episode_warm(
+                    db,
+                    payload=payload,
+                    force=force,
+                    notify_silent=not db.silent,
+                )
+                _reapply_episode_watch_state_after_warm(db, payload)
+            except Exception:
+                g.log_stacktrace()
+
+        threading.Thread(target=_background_warm, daemon=True).start()
+        return
+
     _reapply_episode_watch_state_after_warm(db, payload)
 
 
@@ -496,12 +593,17 @@ def sync_simkl_library(db: "SimklSyncDatabase", remote_activities, *, force: boo
     date_from = db.base_date if first_sync else str(db.activities["all_activities"])
     local_watermark = str(db.activities["all_activities"])
     include_all_episodes = first_sync or _completed_or_dropped_changed(remote_activities, local_watermark)
-    blocking_warm = not db.silent
+    episode_detail = first_sync or include_all_episodes or _episode_activity_changed(
+        remote_activities, local_watermark
+    ) or _playback_activity_changed(db, remote_activities)
+    lean_delta = not first_sync and not episode_detail
 
+    phase_label = "foundation" if first_sync else ("episode_delta" if episode_detail else "lean_delta")
+    extended_label = ALL_ITEMS_EXTENDED if episode_detail or first_sync else "none"
     g.log(
-        f"Simkl all-items: extended={ALL_ITEMS_EXTENDED}, "
+        f"Simkl all-items: extended={extended_label}, "
         f"include_all_episodes={'yes' if include_all_episodes else 'no'}, "
-        f"phase={'foundation' if first_sync else 'delta'}",
+        f"phase={phase_label}",
         "debug",
     )
 
@@ -509,19 +611,25 @@ def sync_simkl_library(db: "SimklSyncDatabase", remote_activities, *, force: boo
     payload = fetch_all_items(
         db.simkl_api,
         date_from=date_from,
+        first_sync=first_sync,
+        episode_detail=episode_detail,
         include_all_episodes=include_all_episodes,
     )
     if payload:
-        ingest_payload(db, payload, is_delta=not first_sync)
+        ingest_payload(db, payload, is_delta=not first_sync, lean_delta=lean_delta)
 
     if db._removed_from_list_changed(remote_activities):
         db._reconcile_removed_items()
         rebuild_library_cache_from_db(db)
 
+    from resources.lib.simkl.library_cache import record_library_sync_watermark
+
+    record_library_sync_watermark(db)
+
     _finalize_episode_sync_state(
         db,
         payload,
         force=force,
-        blocking_warm=blocking_warm,
+        blocking_warm=False,
     )
     db.set_sync_progress(100, g.get_language_string(31013))

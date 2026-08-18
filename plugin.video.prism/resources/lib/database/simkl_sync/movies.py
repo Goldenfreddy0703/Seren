@@ -15,7 +15,8 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
     def get_movie_list(self, media_list, **params):
         skip_update = params.pop("skip_update", False)
         paint_only = params.pop("paint_only", False)
-        if skip_update and paint_only:
+        sync_path = params.pop("sync_path", False)
+        if skip_update and paint_only and not sync_path:
             from resources.lib.meta.paint_cache import try_fast_paint_list
 
             fast_rows = try_fast_paint_list(media_list, "movie", self, **params)
@@ -59,17 +60,19 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         rows = self.fetchall(query) or []
         meta_cache.set_many_rows("movie", rows or [])
 
-        from resources.lib.meta.display_store import get_display_meta_store
+        if not sync_path:
+            from resources.lib.meta.display_store import get_display_meta_store
 
-        rows = get_display_meta_store().overlay_rows(rows, "movie")
+            rows = get_display_meta_store().overlay_rows(rows, "movie")
 
-        if skip_update:
+        if skip_update and not sync_path:
             from resources.lib.meta.paint_cache import paint_sync_list_rows
 
             rows = paint_sync_list_rows(rows, media_list, "movie", self, **params)
         else:
             self.set_list_enrichment_refs([], "movie")
-        return MetadataHandler.sort_list_items(rows, media_list)
+        rows = MetadataHandler.sort_list_items(rows, media_list)
+        return rows
 
     @guard_against_none(list)
     def get_watched_movies(self, page):

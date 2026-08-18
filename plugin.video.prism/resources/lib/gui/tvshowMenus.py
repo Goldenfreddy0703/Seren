@@ -301,16 +301,14 @@ class Menus:
         else:
             items = browse.discover_by_year("tv", int(year), g.PAGE, self.page_limit)
             from resources.lib.discover.renderer import discover_list_kwargs
-            from resources.lib.meta.list_paint import render_catalog_discover_refs
-            from resources.lib.simkl.media_ref import enrich_and_persist
+            from resources.lib.meta.browse_sync import render_browse_sync_page
 
             if not items:
                 g.cancel_directory()
                 return
-            refs = enrich_and_persist("tv", items, enrich=False)
-            render_catalog_discover_refs(
+            render_browse_sync_page(
                 "tv",
-                refs,
+                items,
                 self.list_builder,
                 list_kwargs=discover_list_kwargs(),
                 next_action="showYears",

@@ -229,11 +229,27 @@ def list_continue_watching(catalog: str, page: int | None = None) -> list[dict]:
 @simkl_auth_guard
 def render_continue_watching_menu(catalog: str) -> None:
     """Render Continue Watching for movie, tv, or anime."""
+    from resources.lib.database.session import get_sync_database
     from resources.lib.meta.list_paint import render_catalog_episodes, render_catalog_rows
     from resources.lib.meta.menu_paint_profile import MenuPaintProfile, profile_list_kwargs
     from resources.lib.modules.list_builder import ListBuilder
+    from resources.lib.simkl.episode_catalog_sync import schedule_lazy_episode_warm
 
     items = list_continue_watching(catalog)
+    if catalog != CATALOG_MOVIE and not items:
+        db = get_sync_database()
+        bookmark_rows = db.fetchall(
+            """
+            SELECT DISTINCT e.simkl_show_id AS simkl_id
+            FROM bookmarks AS b
+                     INNER JOIN episodes AS e ON e.simkl_id = b.simkl_id
+            WHERE b.type = 'episode'
+            """
+        )
+        show_ids = {int(row["simkl_id"]) for row in bookmark_rows if row.get("simkl_id") is not None}
+        if show_ids:
+            schedule_lazy_episode_warm(db, show_ids)
+
     for item in items:
         if isinstance(item, dict):
             item.setdefault("catalog", catalog)

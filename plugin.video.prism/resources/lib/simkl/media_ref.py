@@ -400,10 +400,10 @@ def render_mixed_sync_list(
     label2_for_item: Callable[[dict[str, Any]], str | None] | None = None,
     **list_kwargs,
 ) -> None:
-    """Enrich, insert, and render a mixed movie + show/anime Kodi directory."""
-    from resources.lib.discover.sync_bridge import insert_discover_page
-    from resources.lib.discover.sync_bridge import simkl_refs
-    from resources.lib.meta.list_paint import attach_preloaded_catalog_paint_mixed, browse_list_kwargs
+    """Render a mixed movie + show/anime Kodi directory via simkl_sync (Seren-mode browse)."""
+    from resources.lib.database.session import get_sync_database
+    from resources.lib.discover.browse_catalog_seed import defer_browse_catalog_seed
+    from resources.lib.meta.list_paint import browse_list_kwargs
     from resources.lib.meta.menu_paint_profile import current_action_profile_kwargs
     from resources.lib.modules.globals import g
     from resources.lib.modules.list_builder import ListBuilder
@@ -412,19 +412,20 @@ def render_mixed_sync_list(
         g.cancel_directory()
         return
 
+    db = get_sync_database()
     movies, tv, anime = partition_by_catalog(sync_items)
     for cat, group in (("movie", movies), ("tv", tv), ("anime", anime)):
         if group:
-            insert_discover_page(cat, group)
+            db.insert_browse_page(cat, group)
+            defer_browse_catalog_seed(cat, group)
 
     builder = ListBuilder()
     paint_overrides = current_action_profile_kwargs()
     paint_overrides.setdefault("no_paging", True)
     paint_overrides.update(list_kwargs or {})
-    kwargs = attach_preloaded_catalog_paint_mixed(
-        sync_items,
-        browse_list_kwargs(**paint_overrides),
-    )
+    kwargs = browse_list_kwargs(**paint_overrides)
+    kwargs.setdefault("sync_path", True)
+    kwargs.setdefault("skip_update", False)
 
     if movies and (tv or anime):
         builder._mixed_media_from_sync_dicts(
@@ -435,15 +436,15 @@ def render_mixed_sync_list(
         )
         return
     if movies and not tv and not anime:
-        builder.movie_discover_builder(simkl_refs(movies), **kwargs)
+        builder.movie_discover_builder(movies, **kwargs)
         return
     if anime and not tv and not movies:
-        builder.anime_discover_builder(simkl_refs(anime), **kwargs)
+        builder.anime_discover_builder(anime, **kwargs)
         return
     if tv and not movies and not anime:
-        builder.show_discover_builder(simkl_refs(tv), **kwargs)
+        builder.show_discover_builder(tv, **kwargs)
         return
-    builder.show_discover_builder(simkl_refs(sync_items), **kwargs)
+    builder.show_discover_builder(sync_items, **kwargs)
 
 
 __all__ = [

@@ -121,7 +121,8 @@ def render_search_results_list(catalog: str, query: str, page_limit: int, list_b
         refs,
         list_builder,
         list_kwargs=list_kwargs,
-        simkl_detail_paint=True,
+        prefer_catalog_payload=True,
+        payload_rows=filtered,
     )
 
 

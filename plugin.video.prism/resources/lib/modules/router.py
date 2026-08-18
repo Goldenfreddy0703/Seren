@@ -918,11 +918,6 @@ def dispatch(params):
 
         run_drilldown_prefetch_invoke(params)
 
-    elif action == "pluginWarmup":
-        from resources.lib.modules.plugin_warmup import run_plugin_warmup
-
-        run_plugin_warmup()
-
     elif action == "chooseTimeZone":
         from resources.lib.modules.manual_timezone import choose_timezone
 

@@ -244,35 +244,34 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         :param force_all: Enforce pulling of all items
         :param catalog: ``tv``, ``anime``, or None for all
         """
-        query = """
+        catalog_ids = self._show_ids_for_catalog(catalog) if catalog else None
+        if catalog_ids is not None and not catalog_ids:
+            return []
+
+        params: list = []
+        catalog_clause = ""
+        if catalog_ids is not None:
+            placeholders = ",".join("?" * len(catalog_ids))
+            catalog_clause = f" AND s.simkl_id IN ({placeholders})"
+            params.extend(int(show_id) for show_id in catalog_ids)
+
+        query = f"""
             SELECT s.simkl_id,
                    sm.value AS simkl_object,
-                   COALESCE(MAX(ep.last_watched_at), MAX(s.last_watched_at)) AS last_watched_at
+                   s.last_watched_at
             FROM shows AS s
                      LEFT JOIN shows_meta AS sm
                                ON sm.id = s.simkl_id AND sm.type = 'simkl'
-                     LEFT JOIN episodes AS ep
-                               ON ep.simkl_show_id = s.simkl_id
-                                   AND (
-                                       COALESCE(ep.watched, 0) > 0
-                                       OR ep.last_watched_at IS NOT NULL
-                                   )
-            WHERE s.last_watched_at IS NOT NULL
-               OR COALESCE(ep.watched, 0) > 0
-               OR ep.last_watched_at IS NOT NULL
-            GROUP BY s.simkl_id
-            HAVING COALESCE(MAX(ep.last_watched_at), MAX(s.last_watched_at)) IS NOT NULL
-            ORDER BY COALESCE(MAX(ep.last_watched_at), MAX(s.last_watched_at)) DESC
+            WHERE (s.last_watched_at IS NOT NULL OR COALESCE(s.watched_episodes, 0) > 0)
+            {catalog_clause}
+            ORDER BY s.last_watched_at DESC
             """
 
-        rows = self.fetchall(query)
-        rows = self._filter_show_rows_by_catalog(rows, catalog)
+        if not force_all:
+            query += " LIMIT ? OFFSET ?"
+            params.extend((self.page_limit, self.page_limit * (page - 1)))
 
-        if force_all:
-            return rows
-
-        offset = self.page_limit * (page - 1)
-        return rows[offset : offset + self.page_limit]
+        return self.fetchall(query, tuple(params) if params else None)
 
     @guard_against_none(list)
     def get_show_list(self, media_list, **params):
@@ -288,7 +287,8 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         skip_mill = params.pop("skip_mill", False)
         skip_update = params.pop("skip_update", False)
         paint_only = params.pop("paint_only", False)
-        if skip_update and paint_only:
+        sync_path = params.pop("sync_path", False)
+        if skip_update and paint_only and not sync_path:
             from resources.lib.meta.paint_cache import try_fast_paint_list
 
             fast_rows = try_fast_paint_list(media_list, "tvshow", self, **params)
@@ -318,16 +318,18 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         rows = self.fetchall(statement)
         meta_cache.set_many_rows("show", rows or [])
 
-        from resources.lib.meta.display_store import get_display_meta_store
+        if not sync_path:
+            from resources.lib.meta.display_store import get_display_meta_store
 
-        rows = get_display_meta_store().overlay_rows(rows, "tvshow")
-        if skip_update:
+            rows = get_display_meta_store().overlay_rows(rows, "tvshow")
+        if skip_update and not sync_path:
             from resources.lib.meta.paint_cache import paint_sync_list_rows
 
             rows = paint_sync_list_rows(rows, media_list, "tvshow", self, **params)
         else:
             self.set_list_enrichment_refs([], "tvshow")
-        return MetadataHandler.sort_list_items(rows, media_list)
+        rows = MetadataHandler.sort_list_items(rows, media_list)
+        return rows
 
     def _has_season_rows(self, simkl_show_id, *, season=None, simkl_id=None) -> bool:
         if season is not None:
@@ -827,6 +829,10 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 play_count = row.get("play_count")
                 if play_count is not None:
                     painted.setdefault("info", {})["playcount"] = play_count
+                painted["simkl_id"] = int(simkl_id)
+                info = painted.get("info")
+                if isinstance(info, dict):
+                    info["simkl_id"] = int(simkl_id)
                 hydrated.append(painted)
             else:
                 hydrated.append(row)
@@ -1082,6 +1088,69 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         for row in sparse or []:
             if row.get("season") is not None:
                 gaps.add(int(row["season"]))
+
+        # Simkl selective sync stubs: one watched episode made episode_count=1 look "complete".
+        stub_complete = self.fetchall(
+            """
+            SELECT se.season
+            FROM seasons AS se
+            WHERE se.simkl_show_id = ?
+              AND se.season > 0
+              AND COALESCE(se.episode_count, 0) > 0
+              AND COALESCE(se.watched_episodes, 0) >= COALESCE(se.episode_count, 0)
+              AND COALESCE(se.episode_count, 0) <= 3
+              AND (
+                    SELECT COUNT(*)
+                    FROM episodes AS e
+                    WHERE e.simkl_show_id = se.simkl_show_id
+                      AND e.season = se.season
+                ) = COALESCE(se.episode_count, 0)
+              AND (
+                    SELECT COUNT(*)
+                    FROM episodes AS e
+                    WHERE e.simkl_show_id = se.simkl_show_id
+                      AND e.season = se.season
+                      AND COALESCE(e.watched, 0) > 0
+                ) = COALESCE(se.episode_count, 0)
+            """,
+            (show_id,),
+        )
+        for row in stub_complete or []:
+            if row.get("season") is not None:
+                gaps.add(int(row["season"]))
+
+        show_row = self.fetchone(
+            "SELECT episode_count, season_count FROM shows WHERE simkl_id = ?",
+            (show_id,),
+        )
+        try:
+            show_episodes = int((show_row or {}).get("episode_count") or 0)
+            show_seasons = int((show_row or {}).get("season_count") or 0)
+        except (TypeError, ValueError):
+            show_episodes = 0
+            show_seasons = 0
+        if show_episodes > 0 and show_seasons > 0:
+            avg_eps = max(2, show_episodes // max(show_seasons, 1))
+            stub_rows = self.fetchall(
+                """
+                SELECT se.season,
+                       COUNT(e.simkl_id) AS local_cnt,
+                       SUM(CASE WHEN COALESCE(e.watched, 0) > 0 THEN 1 ELSE 0 END) AS local_watched
+                FROM seasons AS se
+                LEFT JOIN episodes AS e
+                    ON e.simkl_show_id = se.simkl_show_id AND e.season = se.season
+                WHERE se.simkl_show_id = ?
+                  AND se.season > 0
+                GROUP BY se.season
+                HAVING local_cnt > 0
+                   AND local_watched = local_cnt
+                   AND local_cnt < ?
+                """,
+                (show_id, max(3, avg_eps // 2)),
+            )
+            for row in stub_rows or []:
+                if row.get("season") is not None:
+                    gaps.add(int(row["season"]))
         return gaps
 
     def _ensure_simkl_episode_tree_for_seasons(
@@ -1569,6 +1638,9 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         in_predicate = ",".join([str(i["simkl_id"]) for i in media_items if i.get("simkl_id") is not None])
         if not in_predicate:
             return []
+        hide_unaired = params.pop("hide_unaired", self.hide_unaired)
+        hide_specials = params.pop("hide_specials", self.hide_specials)
+        hide_watched = params.pop("hide_watched", self.hide_watched)
         if g.get_bool_setting("general.showRemainingUnwatched"):
             query = f"""
                 SELECT e.simkl_id,
@@ -1597,18 +1669,20 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 FROM episodes AS e LEFT JOIN bookmarks AS b ON e.simkl_id = b.simkl_id
                 WHERE e.simkl_id IN ({in_predicate})
                 """
-        if params.pop("hide_unaired", self.hide_unaired):
+        if hide_unaired:
             query += (
                 f" AND (e.air_date IS NULL OR Datetime(e.air_date) < Datetime('{self._get_aired_cutoff()}')) "
             )
-        if params.pop("hide_specials", self.hide_specials):
+        if hide_specials:
             query += " AND e.season != 0"
-        if params.pop("hide_watched", self.hide_watched):
+        if hide_watched:
             query += " AND e.watched = 0"
 
         rows = self.fetchall(query)
         if rows:
             rows = self.hydrate_mixed_episode_rows_for_paint(rows)
+        rows = MetadataHandler.sort_list_items(rows, media_items)
+        rows = [row for row in rows if isinstance(row, dict)]
         if skip_update:
             from collections import defaultdict
 
@@ -1631,7 +1705,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                     season_row_id=season_row_id,
                     episode_ids=episode_ids,
                 )
-        return MetadataHandler.sort_list_items(rows, media_items)
+        return rows
 
     @guard_against_none()
     def _get_single_show_meta(self, simkl_id):

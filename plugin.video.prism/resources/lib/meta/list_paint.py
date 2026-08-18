@@ -6,15 +6,20 @@ from typing import Any
 
 from resources.lib.simkl.menu_helpers import list_filter_kwargs
 
-# Browse lists paint from Simkl/local cache first; cast/art enrich in background (POV-style).
-BROWSE_LIST_KWARGS = {**list_filter_kwargs(), "skip_mill": True, "skip_update": True}
+# Browse lists use Seren-style simkl_sync milling (foreground provider update on cold pages).
+BROWSE_LIST_KWARGS = {
+    **list_filter_kwargs(),
+    "skip_mill": True,
+    "skip_update": False,
+    "sync_path": True,
+}
 
 
 def browse_list_kwargs(**overrides) -> dict:
     """Shared list-builder kwargs for discover, search, library, genres, actor, etc."""
     kwargs = dict(BROWSE_LIST_KWARGS)
     kwargs.setdefault("menu_cache", True)
-    kwargs.setdefault("paint_only", True)
+    kwargs.pop("paint_only", None)
     kwargs.update(overrides)
     return kwargs
 
@@ -25,13 +30,15 @@ def _resolve_catalog_paint_flags(
     library_paint: bool = False,
     simkl_detail_paint: bool = False,
     prefer_catalog_payload: bool = False,
-) -> tuple[bool, bool, bool]:
+    genre_paint: bool = False,
+) -> tuple[bool, bool, bool, bool]:
     """Read paint-mode flags from list kwargs when callers only pass profile_list_kwargs."""
     merged = list_kwargs or {}
     return (
         library_paint or bool(merged.get("library_paint")),
         simkl_detail_paint or bool(merged.get("simkl_detail_paint")),
-        merged.get("prefer_catalog_payload", prefer_catalog_payload),
+        bool(merged.get("prefer_catalog_payload", prefer_catalog_payload)),
+        genre_paint or bool(merged.get("genre_paint")),
     )
 
 
@@ -52,7 +59,7 @@ def attach_preloaded_catalog_paint(
     from resources.lib.meta.paint_cache import paint_catalog_page_rows
 
     merged = dict(list_kwargs or {})
-    library_paint, simkl_detail_paint, prefer_catalog_payload = _resolve_catalog_paint_flags(
+    library_paint, simkl_detail_paint, prefer_catalog_payload, genre_paint = _resolve_catalog_paint_flags(
         merged,
         library_paint=library_paint,
         simkl_detail_paint=simkl_detail_paint,
@@ -72,7 +79,7 @@ def attach_preloaded_catalog_paint(
     else:
         paint_profile = MenuPaintProfile.BROWSE.value
 
-    prefer_rich = prefer_catalog_payload or library_paint or simkl_detail_paint
+    prefer_rich = prefer_catalog_payload or library_paint or simkl_detail_paint or genre_paint
     from resources.lib.meta.paint_cache import get_session_page_paint, page_cache_catalog, page_paint_cache_key
 
     cache_catalog = page_cache_catalog(catalog, refs, mixed_list=bool(merged.get("mixed_list")))
@@ -109,6 +116,10 @@ def attach_preloaded_catalog_paint(
 
     if payload_rows:
         page_sync = list(payload_rows)
+        if genre_paint:
+            from resources.lib.simkl.enrich import hydrate_sync_items_local
+
+            page_sync = hydrate_sync_items_local(page_sync)
     elif cache_catalog == "mixed":
         page_sync = sync_items_for_mixed_refs(refs)
     else:
@@ -120,20 +131,16 @@ def attach_preloaded_catalog_paint(
 
     from resources.lib.simkl.enrich import hydrate_sync_items_local
 
-    if payload_rows:
-        # Discover page payload already carries CDN list fields; hydrating would
-        # call cdn_store.get_row -> _load_store() and re-download all trending JSON.
-        pass
-    else:
+    if not payload_rows:
         page_sync = hydrate_sync_items_local(page_sync)
 
-    if library_paint or simkl_detail_paint:
+    if library_paint or simkl_detail_paint or genre_paint:
         from resources.lib.simkl.enrich import enrich_page_for_paint
 
         page_sync = enrich_page_for_paint(
             catalog,
             page_sync,
-            force_detail=simkl_detail_paint,
+            force_detail=False,
         )
     else:
         from resources.lib.meta.paint_cache import publish_sync_rows_to_paint_store
@@ -197,7 +204,7 @@ def render_catalog_discover_refs(
     """Paint refs from catalog_items / display_meta, then render (Simkl-owned metadata)."""
     paint_overrides = dict(list_kwargs or {})
     paint_overrides.update(kwargs)
-    library_paint, simkl_detail_paint, prefer_catalog_payload = _resolve_catalog_paint_flags(
+    library_paint, simkl_detail_paint, prefer_catalog_payload, _genre_paint = _resolve_catalog_paint_flags(
         paint_overrides,
         library_paint=library_paint,
         simkl_detail_paint=simkl_detail_paint,
@@ -370,7 +377,7 @@ def attach_preloaded_catalog_paint_mixed(
     from resources.lib.simkl.media_ref import partition_by_catalog
 
     merged = dict(list_kwargs or {})
-    library_paint, simkl_detail_paint, prefer_catalog_payload = _resolve_catalog_paint_flags(merged)
+    library_paint, simkl_detail_paint, prefer_catalog_payload, _genre_paint = _resolve_catalog_paint_flags(merged)
     hide_unaired = bool(merged.get("hide_unaired", False))
     hide_watched = bool(merged.get("hide_watched", False))
 
@@ -444,7 +451,7 @@ def attach_preloaded_catalog_paint_mixed(
             enrich_page_for_paint(
                 cat,
                 [item for item in all_payload if (item.get("catalog") or cat) == cat],
-                force_detail=simkl_detail_paint,
+                force_detail=False,
             )
     else:
         from resources.lib.meta.paint_cache import publish_sync_rows_to_paint_store
@@ -674,6 +681,8 @@ def _finalize_episode_paint_rows(episode_rows: list[dict], catalog: str) -> list
 
     missing_by_show: dict[int, list[int]] = defaultdict(list)
     for idx, row in enumerate(finalized):
+        if not isinstance(row, dict):
+            continue
         info = row.get("info") or {}
         if not _episode_has_duration(info):
             show_id = show_id_from_item(row)

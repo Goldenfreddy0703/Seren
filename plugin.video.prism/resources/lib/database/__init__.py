@@ -124,17 +124,23 @@ class Database:
 
     def _integrity_check_db(self):
         db_file_checksum = tools.md5_hash(self._database_layout)
+        md5_path = f"{self._db_file}.md5"
         try:
             with GlobalLock(self.__class__.__name__, True, db_file_checksum):
-                md5_match = xbmcvfs.exists(f"{self._db_file}.md5") and (
-                    g.read_all_text(f"{self._db_file}.md5") == db_file_checksum
-                )
+                md5_exists = xbmcvfs.exists(md5_path)
+                stored_checksum = g.read_all_text(md5_path) if md5_exists else None
+                md5_match = md5_exists and stored_checksum == db_file_checksum
                 schema_ok = self._schema_complete()
-                if xbmcvfs.exists(self._db_file) and md5_match and schema_ok:
-                    return
+                db_exists = xbmcvfs.exists(self._db_file)
+                if db_exists and schema_ok:
+                    if md5_match:
+                        return
+                    if not md5_exists:
+                        g.write_all_text(md5_path, db_file_checksum)
+                        return
                 g.log(f"Integrity checked failed - {self._db_file} - {db_file_checksum} - rebuilding db")
                 self.rebuild_database()
-                g.write_all_text(f"{self._db_file}.md5", db_file_checksum)
+                g.write_all_text(md5_path, db_file_checksum)
         except RanOnceAlready:
             self.ensure_schema()
             return

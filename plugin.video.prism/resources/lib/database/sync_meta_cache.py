@@ -270,12 +270,6 @@ def row_has_plot_meta(row: dict[str, Any] | None) -> bool:
 
 
 def maybe_prefetch_sync_meta() -> None:
-    """Prefetch once per Kodi session."""
-    if g.get_bool_runtime_setting("sync_meta.prefetch.done"):
-        return
-    try:
-        from resources.lib.modules.cache_maintenance import warm_menu_caches
+    """No-op — menu RAM warm removed for Seren parity."""
+    return
 
-        warm_menu_caches()
-    except Exception:
-        g.log_stacktrace()

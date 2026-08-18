@@ -1,6 +1,6 @@
 import sqlite3
 import sys
-import threading
+import time
 from random import randint
 
 import xbmc
@@ -49,88 +49,28 @@ try:
 
     xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=torrentCacheCleanup")')
 
-    try:
-        from resources.lib.modules.cache_maintenance import mark_service_boot_started
-
-        mark_service_boot_started()
-
-        def _deferred_warm_menu_caches() -> None:
-            try:
-                import time
-
-                from resources.lib.modules.cache_maintenance import warm_menu_caches
-                from resources.lib.modules.page_prefetch import foreground_browse_busy
-
-                if g.wait_for_abort(8):
-                    return
-                for _ in range(48):
-                    if g.abort_requested():
-                        return
-                    if not foreground_browse_busy():
-                        break
-                    time.sleep(0.25)
-                if foreground_browse_busy():
-                    g.log("Boot menu cache warm deferred — menu active", "debug")
-                    return
-                warm_menu_caches()
-                if not foreground_browse_busy():
-                    xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=pluginWarmup")')
-            except Exception:
-                pass
-
-        threading.Thread(
-            target=_deferred_warm_menu_caches,
-            daemon=True,
-            name="prism-boot-warm",
-        ).start()
-    except Exception:
-        pass
-
-    def _deferred_calendar_prefetch() -> None:
-        try:
-            import time
-
-            from resources.lib.calendar.simkl_calendar import maybe_prefetch_calendars
-            from resources.lib.modules.page_prefetch import foreground_browse_busy
-
-            if not g.wait_for_abort(90):
-                if foreground_browse_busy():
-                    return
-                maybe_prefetch_calendars()
-        except Exception:
-            pass
-
-    threading.Thread(target=_deferred_calendar_prefetch, daemon=True, name="prism-calendar-defer").start()
-
-    def _service_db_idle() -> bool:
-        try:
-            from resources.lib.modules.page_prefetch import foreground_browse_busy
-
-            return not foreground_browse_busy()
-        except Exception:
-            return True
+    g.set_runtime_setting("cache_maintenance.service_started_at", time.time())
 
     while not monitor.abortRequested():
-        if _service_db_idle():
-            try:
-                from resources.lib.meta.enrichment import MetaEnrichmentQueue
+        try:
+            from resources.lib.discover.browse_catalog_seed import process_idle_browse_catalog_seed
+            from resources.lib.meta.enrichment import MetaEnrichmentQueue
+            from resources.lib.modules.cache_maintenance import process_idle_deferred_vacuum
 
-                MetaEnrichmentQueue.process_idle()
-            except Exception:
-                pass
-        if _service_db_idle():
-            if g.get_bool_runtime_setting("maintenance.deferred"):
-                g.log("Running deferred maintenance", "debug")
-            xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=runMaintenance")')
+            MetaEnrichmentQueue.process_idle()
+            process_idle_browse_catalog_seed()
+            process_idle_deferred_vacuum()
+        except Exception:
+            pass
+        xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=runMaintenance")')
         if not g.wait_for_abort(15):  # Sleep to make sure tokens refreshed during maintenance
-            if _service_db_idle():
-                xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=syncSimklActivities")')
+            xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=syncSimklActivities")')
         if not g.wait_for_abort(15):  # Sleep to make sure we don't possibly clobber settings
-            if _service_db_idle():
-                xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=cleanOrphanedMetadata")')
+            xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=cleanOrphanedMetadata")')
         if not g.wait_for_abort(15):  # Sleep to make sure we don't possibly clobber settings
             xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=updateLocalTimezone")')
-        if g.wait_for_abort(60 * randint(13, 17)):
+        sync_wait_minutes = randint(20, 30) if g.PLATFORM == "android" else randint(13, 17)
+        if g.wait_for_abort(60 * sync_wait_minutes):
             break
 finally:
     del monitor

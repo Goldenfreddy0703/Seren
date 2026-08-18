@@ -192,29 +192,26 @@ class ActorMenus:
             notify_empty_search(30768)
             return
 
+        from resources.lib.database.session import get_sync_database
+        from resources.lib.discover.browse_catalog_seed import defer_browse_catalog_seed
         from resources.lib.discover.renderer import discover_list_kwargs
-        from resources.lib.meta.list_paint import attach_preloaded_catalog_paint, browse_list_kwargs
-        from resources.lib.simkl.media_ref import enrich_and_persist
+        from resources.lib.meta.list_paint import browse_list_kwargs
+        from resources.lib.simkl.media_ref import partition_by_catalog
 
-        refs: list[dict] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            catalog = item.get("catalog") or "movie"
-            refs.extend(enrich_and_persist(catalog, [item], force_simkl_meta=True, enrich=False))
-        actor_paint = discover_list_kwargs()
+        db = get_sync_database()
+        movies, tv, anime = partition_by_catalog(items)
+        for cat, group in (("movie", movies), ("tv", tv), ("anime", anime)):
+            if group:
+                db.insert_browse_page(cat, group)
+                defer_browse_catalog_seed(cat, group)
+        actor_paint = browse_list_kwargs(**discover_list_kwargs())
         actor_paint["enrichment_reason"] = "actor"
         actor_paint["mixed_list"] = True
-        list_kwargs = attach_preloaded_catalog_paint(
-            "movie",
-            refs,
-            browse_list_kwargs(**actor_paint),
-            prefer_catalog_payload=True,
-            payload_rows=items,
-        )
+        actor_paint["sync_path"] = True
+        actor_paint["skip_update"] = False
         self.list_builder.actor_credits_builder(
             items,
-            **list_kwargs,
+            **actor_paint,
         )
 
 
@@ -253,14 +250,17 @@ class ActorMenus:
 
         catalog = normalized.get("catalog") or catalog
 
-        from resources.lib.discover.sync_bridge import insert_discover_page, simkl_refs
-        from resources.lib.discover.catalog_store import sync_items_for_refs
-        from resources.lib.meta.paint_cache import paint_catalog_page_rows
+        from resources.lib.database.session import get_sync_database
+        from resources.lib.discover.browse_catalog_seed import defer_browse_catalog_seed
 
-        insert_discover_page(catalog, [normalized])
-        refs = simkl_refs([normalized])
-        page_sync = sync_items_for_refs(catalog, refs)
-        rows = paint_catalog_page_rows(refs, page_sync, hide_unaired=False, hide_watched=False)
+        db = get_sync_database()
+        db.insert_browse_page(catalog, [normalized])
+        defer_browse_catalog_seed(catalog, [normalized])
+        sync_params = {"sync_path": True, "skip_update": False, "hide_unaired": False, "hide_watched": False}
+        if catalog == "movie":
+            rows = db.get_movie_list([normalized], **sync_params)
+        else:
+            rows = db.get_show_list([normalized], skip_mill=True, **sync_params)
         if not rows:
             notify_empty_search(30768)
             return

@@ -289,7 +289,64 @@ def _cached_refs_match_db(catalog: str, status: str, cached: list[dict]) -> bool
     return cache_ids == db_ids
 
 
+def get_library_sync_watermark(catalog: str) -> str | None:
 
+    from resources.lib.database.session import get_sync_database
+
+    db = get_sync_database()
+
+    ensure_library_cache_tables(db)
+
+    row = db.fetchone(
+
+        "SELECT activity_timestamp FROM library_status_activity WHERE catalog=?",
+
+        (catalog,),
+
+    )
+
+    if not row:
+
+        return None
+
+    value = row.get("activity_timestamp")
+
+    return str(value) if value else None
+
+
+def record_library_sync_watermark(db=None, catalog: str | None = None) -> None:
+
+    """Store activities.all after a successful library sync (per-catalog watermark)."""
+
+    from resources.lib.database.session import get_sync_database
+
+    db = db or get_sync_database()
+
+    ensure_library_cache_tables(db)
+
+    watermark = str(db.activities.get("all_activities") or "")
+
+    now = int(time.time())
+
+    catalogs = (catalog,) if catalog else ("movie", "tv", "anime")
+
+    for cat in catalogs:
+
+        db.execute_sql(
+
+            """
+
+            INSERT OR REPLACE INTO library_status_activity
+
+                (catalog, activity_timestamp, last_checked)
+
+            VALUES (?, ?, ?)
+
+            """,
+
+            (cat, watermark, now),
+
+        )
 
 
 def load_library_list_refs(catalog: str, status: str) -> list[dict]:
@@ -310,13 +367,18 @@ def load_library_list_refs(catalog: str, status: str) -> list[dict]:
 
     from resources.lib.modules.widget_loader import mark_widget_session_loaded
 
-    from resources.lib.simkl.library_list_sync import refresh_library_status_list
+    from resources.lib.simkl.library_list_sync import (
+        library_list_needs_verify,
+        refresh_library_status_list,
+    )
 
     from resources.lib.simkl.library_sort import sort_library_refs
 
 
 
-    refresh_library_status_list(catalog, status)
+    if library_list_needs_verify(catalog, status):
+
+        refresh_library_status_list(catalog, status)
 
 
 

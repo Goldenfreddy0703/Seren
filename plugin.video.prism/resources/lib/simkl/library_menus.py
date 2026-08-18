@@ -107,7 +107,6 @@ def my_anime_hub() -> None:
 
 
 def render_status_list(catalog: str, status: str) -> None:
-    from resources.lib.meta.list_paint import render_catalog_discover_refs
     from resources.lib.modules.list_builder import ListBuilder
     from resources.lib.simkl.library_cache import load_library_list_refs
     from resources.lib.simkl.menu_helpers import library_list_page, library_status_list_kwargs
@@ -120,38 +119,44 @@ def render_status_list(catalog: str, status: str) -> None:
 
     list_kwargs = library_status_list_kwargs(catalog, status, refs)
     page_refs, no_paging = library_list_page(refs)
-    list_kwargs["no_paging"] = no_paging
+    list_kwargs.update(
+        {
+            "no_paging": no_paging,
+            "library_paint": True,
+            "library_status": status,
+            "prefer_catalog_payload": True,
+        }
+    )
 
-    from resources.lib.discover.catalog_store import sync_items_for_refs
-    from resources.lib.discover.sync_bridge import insert_discover_page
-
-    payload_rows = sync_items_for_refs(catalog, page_refs)
-    if payload_rows:
-        insert_discover_page(catalog, payload_rows, force_simkl_meta=True)
+    from resources.lib.meta.list_paint import render_catalog_discover_refs
 
     render_catalog_discover_refs(
         catalog,
         page_refs,
         ListBuilder(),
         list_kwargs=list_kwargs,
-        library_status=status,
     )
 
 
 def render_recently_watched_shows(catalog: str) -> None:
     from resources.lib.database.session import get_sync_database
-    from resources.lib.discover.renderer import discover_list_kwargs
     from resources.lib.meta.list_paint import render_catalog_rows
+    from resources.lib.meta.menu_paint_profile import current_action_profile_kwargs
     from resources.lib.modules.list_builder import ListBuilder
     from resources.lib.simkl.menu_helpers import paginate_simkl_lists
 
-    items = get_sync_database().get_recently_watched_shows(g.PAGE, catalog=catalog)
+    no_paging = not paginate_simkl_lists()
+    items = get_sync_database().get_recently_watched_shows(
+        g.PAGE,
+        force_all=no_paging,
+        catalog=catalog,
+    )
 
     render_catalog_rows(
         catalog,
         items,
         ListBuilder(),
-        list_kwargs=discover_list_kwargs(no_paging=not paginate_simkl_lists()),
+        list_kwargs=current_action_profile_kwargs(no_paging=no_paging),
     )
 
 
@@ -177,12 +182,21 @@ def render_next_up(catalog: str) -> None:
     from resources.lib.discover.renderer import discover_list_kwargs
     from resources.lib.meta.list_paint import render_catalog_episodes
     from resources.lib.modules.list_builder import ListBuilder
+    from resources.lib.simkl.episode_catalog_sync import schedule_lazy_episode_warm
 
     show_db = get_sync_database()
     episodes = show_db.get_nextup_episodes(
         g.get_int_setting("nextup.sort") == 1,
         catalog=catalog,
     )
+    if not episodes:
+        watching_ids = {
+            int(ref["simkl_id"])
+            for ref in show_db.get_shows_by_simkl_status("watching", catalog=catalog)
+            if ref.get("simkl_id") is not None
+        }
+        if watching_ids:
+            schedule_lazy_episode_warm(show_db, watching_ids)
     if g.get_bool_setting("limit.nextup"):
         episodes = episodes[: g.get_int_setting("item.limit")]
     render_catalog_episodes(
@@ -195,11 +209,12 @@ def render_next_up(catalog: str) -> None:
 
 def render_recently_watched_movies() -> None:
     from resources.lib.database.session import get_sync_database
-    from resources.lib.discover.renderer import discover_list_kwargs
     from resources.lib.meta.list_paint import render_catalog_rows
+    from resources.lib.meta.menu_paint_profile import current_action_profile_kwargs
     from resources.lib.modules.list_builder import ListBuilder
     from resources.lib.simkl.menu_helpers import paginate_simkl_lists
 
+    no_paging = not paginate_simkl_lists()
     items = get_sync_database().get_watched_movies(g.PAGE)
     for item in items:
         if isinstance(item, dict):
@@ -208,7 +223,7 @@ def render_recently_watched_movies() -> None:
         "movie",
         items,
         ListBuilder(),
-        list_kwargs=discover_list_kwargs(no_paging=not paginate_simkl_lists()),
+        list_kwargs=current_action_profile_kwargs(no_paging=no_paging),
     )
 
 

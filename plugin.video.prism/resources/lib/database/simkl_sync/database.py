@@ -1369,6 +1369,134 @@ class SimklSyncDatabase(Database):
         else:
             self.insert_simkl_shows(sync_items, force_meta=True)
 
+    def _merge_sync_items_with_existing_rows(
+        self,
+        items: list[dict],
+        *,
+        table: str,
+        catalog: str,
+    ) -> list[dict]:
+        """Preserve rich info/art in simkl_sync when ingesting thinner library rows."""
+        if not items:
+            return items
+
+        from resources.lib.simkl.enrich import _merge_sync_item_rows
+
+        merged: list[dict] = []
+        for item in items:
+            if not isinstance(item, dict) or item.get("simkl_id") is None:
+                merged.append(item)
+                continue
+            sid = int(item["simkl_id"])
+            row = self.fetchone(
+                f"SELECT info, art FROM {table} WHERE simkl_id=?",
+                (sid,),
+            )
+            if not row:
+                merged.append(item)
+                continue
+            info = row.get("info") if isinstance(row.get("info"), dict) else {}
+            art = row.get("art") if isinstance(row.get("art"), dict) else {}
+            base = {
+                "simkl_id": sid,
+                "catalog": item.get("catalog") or catalog,
+                "simkl_object": {"info": dict(info), "art": dict(art)},
+            }
+            merged.append(_merge_sync_item_rows(base, item))
+        return merged
+
+    def _merge_browse_page_rows_into_db(self, catalog: str, items: list[dict], *, media_type: str) -> int:
+        """Merge CDN browse payload into existing library rows (preserve watch state)."""
+        if not items:
+            return 0
+
+        from resources.lib.meta.storage import slim_art_dict, slim_info_dict
+        from resources.lib.modules.metadataHandler import MetadataHandler
+        from resources.lib.simkl.enrich import _merge_sync_item_rows
+
+        table = "movies" if media_type == "movie" else "shows"
+        art_kind = "movie" if media_type == "movie" else ("anime" if catalog == "anime" else "tvshow")
+        merged_count = 0
+
+        for item in items:
+            if not isinstance(item, dict) or item.get("simkl_id") is None:
+                continue
+            sid = int(item["simkl_id"])
+            if media_type == "movie":
+                row = self.fetchone(
+                    """
+                    SELECT simkl_id, info, art, watched, simkl_status, tmdb_id, tvdb_id, imdb_id
+                    FROM movies
+                    WHERE simkl_id=?
+                    """,
+                    (sid,),
+                )
+            else:
+                row = self.fetchone(
+                    """
+                    SELECT simkl_id, info, art, watched_episodes, episode_count,
+                           simkl_status, tmdb_id, tvdb_id, imdb_id
+                    FROM shows
+                    WHERE simkl_id=?
+                    """,
+                    (sid,),
+                )
+            if not row:
+                continue
+
+            info = row.get("info") if isinstance(row.get("info"), dict) else {}
+            art = row.get("art") if isinstance(row.get("art"), dict) else {}
+            base = {
+                "simkl_id": sid,
+                "catalog": catalog,
+                "info": dict(info),
+                "art": dict(art),
+                "simkl_object": {"info": dict(info), "art": dict(art)},
+            }
+            merged = _merge_sync_item_rows(base, item)
+            merged_info = slim_info_dict(MetadataHandler.simkl_info(merged) or {}, simkl=True) or {}
+            merged_art = slim_art_dict(MetadataHandler.art(merged.get("simkl_object") or merged) or {}, art_kind) or {}
+
+            if row.get("simkl_status"):
+                merged_info["simkl_status"] = row["simkl_status"]
+            if media_type == "movie":
+                if int(row.get("watched") or 0) > 0:
+                    merged_info["playcount"] = int(row.get("watched") or 0)
+            elif int(row.get("watched_episodes") or 0) > 0:
+                merged_info["playcount"] = int(row.get("watched_episodes") or 0)
+
+            self.execute_sql(
+                f"UPDATE {table} SET info=?, art=? WHERE simkl_id=?",
+                (merged_info or None, merged_art or None, sid),
+            )
+            self.save_to_meta_table([merged], table, "simkl", "simkl_id")
+            merged_count += 1
+
+        return merged_count
+
+    def insert_browse_page(self, catalog: str, items: list[dict]) -> None:
+        """Seed simkl_sync from a browse page payload (Seren-style, no catalog_items)."""
+        if not items:
+            return
+        from resources.lib.simkl.media_ref import partition_by_catalog
+
+        movies, tv, anime = partition_by_catalog(items)
+        from resources.lib.discover.catalog_store import upsert_sync_items
+
+        page_items = [dict(item, catalog=item.get("catalog") or catalog) for item in items if isinstance(item, dict)]
+        if page_items:
+            upsert_sync_items(page_items, catalog_hint=catalog)
+        if movies:
+            self._merge_browse_page_rows_into_db(catalog, movies, media_type="movie")
+        for group, cat in ((tv, "tv"), (anime, "anime")):
+            if group:
+                self._merge_browse_page_rows_into_db(cat, group, media_type="show")
+        if movies:
+            self.insert_simkl_movies(movies)
+        for group in (tv, anime):
+            if group:
+                self.insert_simkl_shows(group)
+
     def insert_simkl_movies(self, movies, force_meta=False):
         if not movies:
             return
@@ -1381,6 +1509,11 @@ class SimklSyncDatabase(Database):
         if not to_insert:
             return
 
+        to_insert = self._merge_sync_items_with_existing_rows(
+            to_insert,
+            table="movies",
+            catalog="movie",
+        )
         self._prepare_sync_inserts(to_insert)
         self._preserve_library_status_on_items(to_insert, "movies")
         g.log(f"Inserting Movies into sync database: {len(to_insert)}")
@@ -1442,6 +1575,11 @@ class SimklSyncDatabase(Database):
         if not to_insert:
             return
 
+        to_insert = self._merge_sync_items_with_existing_rows(
+            to_insert,
+            table="shows",
+            catalog="tv",
+        )
         self._prepare_sync_inserts(to_insert)
         self._preserve_library_status_on_items(to_insert, "shows")
         g.log(f"Inserting Shows into sync database: {len(to_insert)}")
@@ -2600,8 +2738,9 @@ class SimklSyncDatabase(Database):
                     if ep_key in episode_items:
                         continue
 
-                    season_info = season_items[(show_id, season_num)]["simkl_object"]["info"]
-                    season_info["episode_count"] = int(season_info.get("episode_count") or 0) + 1
+                    if not selective:
+                        season_info = season_items[(show_id, season_num)]["simkl_object"]["info"]
+                        season_info["episode_count"] = int(season_info.get("episode_count") or 0) + 1
 
                     ep_ids = episode.get("ids") or {}
                     ep_simkl_id = ep_ids.get("simkl_id") or ep_ids.get("simkl")
@@ -2642,18 +2781,19 @@ class SimklSyncDatabase(Database):
             self.insert_simkl_seasons(seasons)
         if episodes:
             self.insert_simkl_episodes(episodes)
-        for (show_id, season_num), item in season_items.items():
-            info = (item.get("simkl_object") or {}).get("info") or {}
-            ep_count = int(info.get("episode_count") or 0)
-            if ep_count > 0:
-                self.execute_sql(
-                    """
-                    UPDATE seasons
-                    SET episode_count = MAX(COALESCE(episode_count, 0), ?)
-                    WHERE simkl_show_id = ? AND season = ?
-                    """,
-                    (ep_count, int(show_id), int(season_num)),
-                )
+        if not selective:
+            for (show_id, season_num), item in season_items.items():
+                info = (item.get("simkl_object") or {}).get("info") or {}
+                ep_count = int(info.get("episode_count") or 0)
+                if ep_count > 0:
+                    self.execute_sql(
+                        """
+                        UPDATE seasons
+                        SET episode_count = MAX(COALESCE(episode_count, 0), ?)
+                        WHERE simkl_show_id = ? AND season = ?
+                        """,
+                        (ep_count, int(show_id), int(season_num)),
+                    )
         if seasons or episodes:
             g.log(
                 f"Simkl sync stubs: {len(seasons)} season(s), {len(episodes)} episode(s)",

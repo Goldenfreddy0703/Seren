@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 EPISODE_WARM_BATCH_SIZE = 8
 CHANGES_POLL_INTERVAL_SEC = 24 * 60 * 60
 RECENT_WATCHED_SHOW_LIMIT = 100
+WATCHING_WARM_CAP = 50
+LAZY_WARM_SHOW_CAP = 10
 
 BUCKET_NEXT_UP = "next_up"
 BUCKET_CONTINUE = "continue_watching"
@@ -151,10 +153,27 @@ def resolve_warm_targets(
             if show_id not in seen:
                 ordered.append((int(show_id), bucket))
 
+    watching_candidates: list[int] = []
     for catalog in ("tv", "anime"):
-        for ref in db.get_shows_by_simkl_status("watching", catalog=catalog):
-            if ref.get("simkl_id") is not None:
-                add({int(ref["simkl_id"])}, BUCKET_NEXT_UP)
+        rows = db.fetchall(
+            """
+            SELECT simkl_id, watched_episodes, needs_milling
+            FROM shows
+            WHERE COALESCE(simkl_status, '') = 'watching'
+            """
+        )
+        for row in rows or []:
+            show_id = row.get("simkl_id")
+            if show_id is None:
+                continue
+            if db.show_catalog(int(show_id)) != catalog:
+                continue
+            if not row.get("needs_milling"):
+                continue
+            if int(row.get("watched_episodes") or 0) <= 0:
+                continue
+            watching_candidates.append(int(show_id))
+    add(set(watching_candidates[:WATCHING_WARM_CAP]), BUCKET_NEXT_UP)
 
     bookmark_rows = db.fetchall(
         """
@@ -281,3 +300,30 @@ def run_post_sync_episode_warm(
         on_progress=on_progress,
         notify_silent=notify_silent,
     )
+
+
+def schedule_lazy_episode_warm(db: "SimklSyncDatabase", show_ids: set[int] | list[int]) -> None:
+    """On-demand episode catalog warm for Next Up / Continue Watching menus."""
+    if not show_ids or not episode_warm_enabled():
+        return
+
+    import threading
+
+    ids = [int(show_id) for show_id in show_ids if show_id is not None]
+    unwarmed = [show_id for show_id in ids if not show_catalog_is_warm(db, show_id)]
+    if not unwarmed:
+        return
+
+    def _warm() -> None:
+        try:
+            targets: list[tuple[dict, str]] = []
+            for show_id in unwarmed[:LAZY_WARM_SHOW_CAP]:
+                row = _show_row(db, show_id)
+                targets.append((row or {"simkl_id": show_id}, BUCKET_NEXT_UP))
+            if targets:
+                g.log(f"Simkl lazy episode warm: {len(targets)} show(s)", "debug")
+                warm_episode_catalogs(db, targets, notify_silent=True)
+        except Exception:
+            g.log_stacktrace()
+
+    threading.Thread(target=_warm, daemon=True).start()

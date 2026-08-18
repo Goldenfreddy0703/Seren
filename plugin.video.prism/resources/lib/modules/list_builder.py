@@ -209,12 +209,6 @@ class ListBuilder:
         )
 
     @staticmethod
-    def _schedule_next_page_prefetch(page_params: dict | None) -> None:
-        from resources.lib.modules.page_prefetch import schedule_page_prefetch_chain
-
-        schedule_page_prefetch_chain(page_params)
-
-    @staticmethod
     def _build_next_page_params(
         *,
         no_paging: bool,
@@ -492,12 +486,24 @@ class ListBuilder:
         params.pop("hide_specials", None)
         params.pop("ignore_cache", None)
 
-        import time
-
-        paint_start = time.time()
         preloaded_paint_rows = params.pop("preloaded_paint_rows", None)
         preloaded_paint_complete = params.pop("preloaded_paint_complete", False)
-        if preloaded_paint_rows:
+        sync_path = params.pop("sync_path", False)
+        paint_profile = str(params.get("paint_profile") or "browse")
+        if paint_profile in ("browse", "related", "airing") and not preloaded_paint_rows:
+            sync_path = True
+        if sync_path and not preloaded_paint_rows:
+            movie_rows, show_rows = self._load_seren_browse_rows(
+                media_list,
+                hide_unaired=hide_unaired,
+                hide_watched=hide_watched,
+                paint_profile=paint_profile,
+                skip_mill=skip_mill,
+                skip_update=False,
+                **params,
+            )
+            enrichment_batches = self._sync_db().consume_list_enrichment_batches()
+        elif preloaded_paint_rows:
             from resources.lib.meta.paint_cache import overlay_display_meta_stamps
             from resources.lib.meta.paint_complete import rows_page_paint_ready
 
@@ -661,18 +667,9 @@ class ListBuilder:
                         menu_item=g.create_icon_dict("next", base_path=g.ICONS_PATH),
                         **page_params,
                     )
-                    self._schedule_next_page_prefetch(page_params)
                 content_type = self._mixed_media_content_type(catalog_hint, movie_count, show_count)
                 use_cache = menu_cache if menu_cache is not None else g.kodi_menu_caching_enabled()
                 g.close_directory(content_type, sort=sort, cache=use_cache)
-                g.log(
-                    f"list_paint_ms={(time.time() - paint_start) * 1000:.0f} items={len(list_items)}",
-                    "debug",
-                )
-                from resources.lib.meta.menu_paint_profile import log_paint_timing
-
-                action = (g.REQUEST_PARAMS or {}).get("action")
-                log_paint_timing(action, (time.time() - paint_start) * 1000, item_count=len(list_items))
                 for refs, media_type in enrichment_batches:
                     self._schedule_background_enrichment(
                         refs,
@@ -686,31 +683,152 @@ class ListBuilder:
         """Resolve catalog_hint without duplicating the kwarg on _mixed_media_from_sync_dicts."""
         return params.pop("catalog_hint", default_hint)
 
+    @staticmethod
+    def _overlay_page_cdn_rows(db_rows: list[dict], page_items: list[dict]) -> list[dict]:
+        """Overlay CDN browse payload on thin library rows from simkl_sync."""
+        if not db_rows or not page_items:
+            return db_rows or []
+
+        from resources.lib.simkl.enrich import _merge_sync_item_rows
+
+        by_id = {
+            int(item["simkl_id"]): item
+            for item in page_items
+            if isinstance(item, dict) and item.get("simkl_id") is not None
+        }
+        if not by_id:
+            return db_rows
+
+        merged_rows: list[dict] = []
+        for row in db_rows:
+            if not isinstance(row, dict):
+                continue
+            sid = row.get("simkl_id")
+            if sid is None:
+                merged_rows.append(row)
+                continue
+            page_item = by_id.get(int(sid))
+            if not page_item:
+                merged_rows.append(row)
+                continue
+            info = row.get("info") if isinstance(row.get("info"), dict) else {}
+            art = row.get("art") if isinstance(row.get("art"), dict) else {}
+            wrapped = {
+                "simkl_id": int(sid),
+                "catalog": page_item.get("catalog") or row.get("catalog"),
+                "info": dict(info),
+                "art": dict(art),
+                "simkl_object": {"info": dict(info), "art": dict(art)},
+            }
+            if row.get("play_count") is not None:
+                wrapped["info"]["playcount"] = row.get("play_count")
+            merged = _merge_sync_item_rows(wrapped, page_item)
+            updated = dict(row)
+            blob = merged.get("simkl_object") if isinstance(merged.get("simkl_object"), dict) else {}
+            updated["info"] = merged.get("info") or blob.get("info") or info
+            updated["art"] = merged.get("art") or blob.get("art") or art
+            merged_rows.append(updated)
+        return merged_rows
+
+    def _load_seren_browse_rows(self, media_list, **params):
+        """Seren-style: parallel provider update + SQL read from simkl_sync."""
+        from resources.lib.simkl.media_ref import partition_by_catalog
+
+        sync_params = dict(params)
+        sync_params["sync_path"] = True
+        sync_params.setdefault("skip_mill", True)
+        sync_params.setdefault("skip_update", False)
+        sync_params.pop("preloaded_paint_rows", None)
+        sync_params.pop("preloaded_paint_complete", None)
+        sync_params.pop("paint_only", None)
+        db = self._sync_db()
+        movies, tv, anime = partition_by_catalog(media_list)
+        movie_rows: dict[int, dict] = {}
+        show_rows: dict[int, dict] = {}
+        if movies:
+            for row in db.get_movie_list(movies, **sync_params):
+                if isinstance(row, dict) and row.get("simkl_id") is not None:
+                    movie_rows[int(row["simkl_id"])] = row
+            if movie_rows:
+                overlaid = self._overlay_page_cdn_rows(list(movie_rows.values()), media_list)
+                movie_rows = {int(row["simkl_id"]): row for row in overlaid if row.get("simkl_id") is not None}
+        combined = list(tv) + list(anime)
+        if combined:
+            for row in db.get_show_list(combined, **sync_params):
+                if isinstance(row, dict) and row.get("simkl_id") is not None:
+                    show_rows[int(row["simkl_id"])] = row
+            if show_rows:
+                overlaid = self._overlay_page_cdn_rows(list(show_rows.values()), media_list)
+                show_rows = {int(row["simkl_id"]): row for row in overlaid if row.get("simkl_id") is not None}
+        return movie_rows, show_rows
+
+    def _discover_show_action(self) -> str:
+        action = "flatEpisodes" if g.get_bool_setting("general.flatten.episodes") else "showSeasons"
+        if g.get_bool_setting("smartplay.clickresume"):
+            return "forceResumeShow"
+        return action
+
+    def _discover_builder_paint_rows(self, media_list, *, fetch_rows, params):
+        """Use preloaded library/search paint rows when present; else simkl_sync + CDN overlay."""
+        preloaded = params.pop("preloaded_paint_rows", None)
+        params.pop("preloaded_paint_complete", None)
+        params.pop("paint_only", None)
+        if preloaded:
+            return preloaded
+
+        sync_params = dict(params)
+        sync_params["sync_path"] = True
+        sync_params.setdefault("skip_mill", True)
+        sync_params.setdefault("skip_update", False)
+        return self._overlay_page_cdn_rows(fetch_rows(media_list, **sync_params), media_list)
+
     def show_discover_builder(self, media_list, **params):
-        """Discover TV browse lists — mill TMDB/TVDB metadata like anime discover."""
+        """Discover TV browse — Seren-style simkl_sync path."""
         catalog_hint = self._discover_catalog_hint("tv", params)
-        self._mixed_media_from_sync_dicts(
+        rows = self._discover_builder_paint_rows(
             media_list,
+            fetch_rows=self._sync_db().get_show_list,
+            params=params,
+        )
+        self._common_menu_builder(
+            rows,
+            g.CONTENT_SHOW,
+            self._discover_show_action(),
             catalog_hint=catalog_hint,
             **params,
         )
 
     def movie_discover_builder(self, media_list, **params):
-        """Discover movie browse lists — mill TMDB/Fanart metadata like TV/anime discover."""
+        """Discover movie browse — Seren-style simkl_sync path."""
         catalog_hint = self._discover_catalog_hint("movie", params)
-        self._mixed_media_from_sync_dicts(
+        rows = self._discover_builder_paint_rows(
             media_list,
+            fetch_rows=self._sync_db().get_movie_list,
+            params=params,
+        )
+        params["is_folder"] = False
+        params["is_playable"] = True
+        self._common_menu_builder(
+            rows,
+            g.CONTENT_MOVIE,
+            "getSources",
             catalog_hint=catalog_hint,
             **params,
         )
 
     def anime_discover_builder(self, media_list, **params):
-        """Anime browse/search lists — route anime_type=movie rows as playable movies."""
+        """Anime browse — Seren-style simkl_sync path."""
         catalog_hint = self._discover_catalog_hint("anime", params)
-        self._mixed_media_from_sync_dicts(
+        rows = self._discover_builder_paint_rows(
             media_list,
+            fetch_rows=self._sync_db().get_show_list,
+            params=params,
+        )
+        self._common_menu_builder(
+            rows,
+            g.CONTENT_SHOW,
+            self._discover_show_action(),
             catalog_hint=catalog_hint,
-            label2_for_item=lambda item: self._credit_label2(item),
             **params,
         )
 
@@ -845,9 +963,6 @@ class ListBuilder:
         params.pop("ignore_cache", None)
         params.pop("action_args", None)
 
-        import time
-
-        paint_start = time.time()
         try:
             params["bulk_add"] = True
             params["content_type"] = content_type
@@ -888,17 +1003,8 @@ class ListBuilder:
                         menu_item=g.create_icon_dict("next", base_path=g.ICONS_PATH),
                         **page_params,
                     )
-                    self._schedule_next_page_prefetch(page_params)
                 use_cache = menu_cache if menu_cache is not None else g.kodi_menu_caching_enabled()
                 g.close_directory(content_type, sort=sort, cache=use_cache)
-                g.log(
-                    f"list_paint_ms={(time.time() - paint_start) * 1000:.0f} items={len(list_items)}",
-                    "debug",
-                )
-                from resources.lib.meta.menu_paint_profile import log_paint_timing
-
-                action = (g.REQUEST_PARAMS or {}).get("action")
-                log_paint_timing(action, (time.time() - paint_start) * 1000, item_count=len(list_items))
                 self._schedule_background_enrichment(
                     enrichment_refs,
                     enrichment_media_type,

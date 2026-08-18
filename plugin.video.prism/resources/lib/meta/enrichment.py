@@ -130,17 +130,12 @@ class MetaEnrichmentQueue:
 
         # In-process worker when not building a directory (service / maintenance / queue action).
         if g.PLUGIN_HANDLE <= 0:
+            from resources.lib.modules.cache_maintenance import service_background_idle_ready
+
+            if not service_background_idle_ready():
+                return
             cls._start_worker_thread()
             return
-
-        try:
-            from resources.lib.modules.page_prefetch import foreground_browse_busy
-
-            if foreground_browse_busy():
-                cls._touch_defer()
-                return
-        except Exception:
-            pass
 
         import xbmc
 
@@ -167,6 +162,10 @@ class MetaEnrichmentQueue:
     def process_idle(cls) -> bool:
         """Service hook: drain pending enrichment when browse/prefetch is idle."""
         if g.get_bool_runtime_setting(_IN_FLIGHT_KEY) or not cls._has_work():
+            return False
+        from resources.lib.modules.cache_maintenance import service_background_idle_ready
+
+        if not service_background_idle_ready():
             return False
         cls._start_worker_thread()
         return True
@@ -259,6 +258,12 @@ class MetaEnrichmentQueue:
                 pending = cls._load_pending()
                 if not cls._has_work(pending):
                     break
+
+                if g.PLUGIN_HANDLE <= 0:
+                    from resources.lib.modules.cache_maintenance import service_background_idle_ready
+
+                    if not service_background_idle_ready():
+                        break
 
                 child_jobs = list(pending.get("child_jobs") or [])
                 batches = {
@@ -534,7 +539,6 @@ class MetaEnrichmentQueue:
                 scheduled += len(show_ids)
         if scheduled:
             cls._touch_defer()
-            cls._kick_worker()
         return scheduled
 
 

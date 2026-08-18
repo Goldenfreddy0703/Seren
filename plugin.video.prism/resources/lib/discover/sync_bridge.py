@@ -21,6 +21,16 @@ def simkl_refs(items: list[dict]) -> list[dict]:
     return refs
 
 
+def sync_rows_for_library_refs(catalog: str, refs: list[dict]) -> list[dict]:
+    """Return page refs with catalog stamped for library sync_path menus."""
+    rows: list[dict] = []
+    for ref in refs:
+        if not isinstance(ref, dict) or ref.get("simkl_id") is None:
+            continue
+        rows.append({"simkl_id": int(ref["simkl_id"]), "catalog": ref.get("catalog") or catalog})
+    return rows
+
+
 def insert_discover_page(
     catalog: str,
     items: list[dict],

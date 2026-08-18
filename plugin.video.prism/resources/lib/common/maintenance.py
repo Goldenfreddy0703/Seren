@@ -227,14 +227,6 @@ def run_maintenance():
     :return: None
     :rtype: None
     """
-    from resources.lib.modules.page_prefetch import foreground_browse_busy
-
-    if foreground_browse_busy():
-        g.log("Deferring maintenance while a menu or browse task is active", "debug")
-        g.set_runtime_setting("maintenance.deferred", True)
-        return
-
-    g.set_runtime_setting("maintenance.deferred", False)
     g.log("Performing Maintenance")
     # ADD COMMON HOUSE KEEPING ITEMS HERE #
 
@@ -282,20 +274,7 @@ def run_maintenance():
             g.log(f"Failed to cleanup PM transfers: {e}", 'error')
 
     # clean_deprecated_settings()
-    if foreground_browse_busy():
-        g.log("Skipping maintenance DB work while browse prefetch/enrich is active", "debug")
-        g.set_runtime_setting("maintenance.deferred", True)
-        return
-
-    g.set_runtime_setting("maintenance.deferred", False)
     cache.Cache().check_cleanup()
-    try:
-        from resources.lib.modules.cache_maintenance import warm_menu_caches
-
-        if not g.get_bool_runtime_setting("sync_meta.prefetch.done"):
-            warm_menu_caches()
-    except Exception as e:
-        g.log(f"Failed to warm menu caches: {e}", "warning")
     try:
         from resources.lib.meta.enrichment import MetaEnrichmentQueue
 

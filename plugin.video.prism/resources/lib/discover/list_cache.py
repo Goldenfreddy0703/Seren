@@ -150,11 +150,52 @@ def paginate_sync_items_for_refs(
     if not refs:
         return []
 
+    from resources.lib.simkl.enrich import _merge_sync_item_rows, _row_needs_discover_gapfill
+
     page_items = sync_items_for_refs(catalog, refs)
-    if page_items:
+    thin_count = sum(1 for item in page_items if _row_needs_discover_gapfill(item))
+    if page_items and thin_count == 0:
         return page_items
 
-    get_discover_list_items(catalog, list_id, loader, materialize=False)
+    fresh_items = loader()
+    if not fresh_items:
+        return page_items
+
+    from resources.lib.discover.catalog_store import upsert_sync_items
+
+    upsert_sync_items(fresh_items, catalog_hint=catalog)
+    by_id = {
+        int(item["simkl_id"]): item
+        for item in fresh_items
+        if isinstance(item, dict) and item.get("simkl_id") is not None
+    }
+    cached_by_id = {
+        int(item["simkl_id"]): item
+        for item in page_items
+        if isinstance(item, dict) and item.get("simkl_id") is not None
+    }
+    merged_page: list[dict] = []
+    for ref in refs:
+        sid = ref.get("simkl_id")
+        if sid is None:
+            continue
+        sid_int = int(sid)
+        fresh = by_id.get(sid_int)
+        cached = cached_by_id.get(sid_int)
+        if fresh and cached:
+            row = dict(_merge_sync_item_rows(fresh, cached))
+        elif fresh:
+            row = dict(fresh)
+        elif cached:
+            row = dict(cached)
+        else:
+            continue
+        if ref.get("catalog"):
+            row["catalog"] = ref["catalog"]
+        merged_page.append(row)
+
+    if merged_page:
+        return merged_page
     return sync_items_for_refs(catalog, refs)
 
 

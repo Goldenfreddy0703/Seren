@@ -84,7 +84,7 @@ def _browse_hide_filters(**overrides) -> dict:
 
 def _library_hide_filters() -> dict:
     """Library status lists show all membership rows regardless of hide toggles."""
-    return {"hide_unaired": False, "hide_watched": False}
+    return {"hide_unaired": False, "hide_watched": False, "hide_specials": False}
 
 
 def page_paint_flags_for_profile(paint_profile: str) -> dict[str, bool]:
@@ -138,6 +138,9 @@ def profile_list_kwargs(
 
     if profile == MenuPaintProfile.BROWSE:
         base.update(_browse_hide_filters())
+        base["skip_update"] = False
+        base["sync_path"] = True
+        base["paint_only"] = False
         base.setdefault("enrichment_reason", "browse")
     elif profile == MenuPaintProfile.SEARCH:
         base.update(_library_hide_filters())
@@ -160,10 +163,16 @@ def profile_list_kwargs(
         base.setdefault("enrichment_reason", "drilldown")
     elif profile == MenuPaintProfile.RELATED:
         base.update(_browse_hide_filters())
+        base["skip_update"] = False
+        base["sync_path"] = True
+        base["paint_only"] = False
         base.setdefault("no_paging", True)
         base.setdefault("enrichment_reason", "related")
     elif profile == MenuPaintProfile.AIRING:
         base.update(_library_hide_filters())
+        base["skip_update"] = False
+        base["sync_path"] = True
+        base["paint_only"] = False
         base["mixed_list"] = True
         base.setdefault("enrichment_reason", "airing")
 
@@ -188,74 +197,6 @@ def current_action_profile_kwargs(**overrides) -> dict:
     """List kwargs for g.REQUEST_PARAMS action when it maps to a known profile."""
     action = (g.REQUEST_PARAMS or {}).get("action")
     return profile_kwargs_for_action(action, **overrides)
-
-
-_last_prepare_stats: dict | None = None
-_last_paint_cache_context: dict | None = None
-
-
-def record_prepare_stats(stats: dict | None) -> None:
-    """Store latest Seren-style prepare metrics for log_paint_timing."""
-    global _last_prepare_stats
-    _last_prepare_stats = dict(stats) if stats else None
-
-
-def record_paint_cache_context(*, layer: str, prepare_skipped: bool, stamp_trusted: bool = False) -> None:
-    """Store latest cache layer / fast-path context for menu timing logs."""
-    global _last_paint_cache_context
-    _last_paint_cache_context = {
-        "cache_layer": layer,
-        "prepare_skipped": bool(prepare_skipped),
-        "stamp_trusted": bool(stamp_trusted),
-    }
-
-
-def log_paint_timing(action: str | None, elapsed_ms: float, *, item_count: int = 0, prepare_stats: dict | None = None) -> None:
-    """Append menu paint timing to addon_data for baseline comparison (Phase 0)."""
-    import json
-    import os
-    import time
-
-    from resources.lib.common import tools
-
-    if not action:
-        return
-    stats = prepare_stats if prepare_stats is not None else _last_prepare_stats
-    cache_ctx = _last_paint_cache_context or {}
-    try:
-        path = tools.translate_path(
-            os.path.join(g.ADDON_USERDATA_PATH, "menu_paint_timings.jsonl")
-        )
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        sample = {
-            "ts": int(time.time()),
-            "action": str(action),
-            "ms": round(float(elapsed_ms), 1),
-            "items": int(item_count),
-        }
-        if stats:
-            for key in (
-                "complete",
-                "incomplete",
-                "cast_batch",
-                "art_fetch",
-                "art_deduped",
-                "cast_art_parallel_ms",
-                "prepare_ms",
-                "prepare_skipped",
-            ):
-                if key in stats:
-                    sample[key] = stats[key]
-        if cache_ctx.get("cache_layer"):
-            sample["cache_layer"] = cache_ctx["cache_layer"]
-        if cache_ctx.get("stamp_trusted"):
-            sample["stamp_trusted"] = 1
-        if "prepare_skipped" in cache_ctx and "prepare_skipped" not in sample:
-            sample["prepare_skipped"] = cache_ctx["prepare_skipped"]
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(sample, ensure_ascii=False) + "\n")
-    except Exception:
-        g.log_stacktrace()
 
 
 # In-scope router actions from the cleanup plan test matrix.

@@ -222,9 +222,6 @@ class SimklSyncDatabase(shows.SimklSyncDatabase):
 
     def _sync_simkl_library_activity(self):
         self._sync_simkl_library(self._remote_activities)
-        from resources.lib.simkl.library_cache import invalidate_library_cache
-
-        invalidate_library_cache()
 
     def _sync_movie_bookmarks(self):
         try:

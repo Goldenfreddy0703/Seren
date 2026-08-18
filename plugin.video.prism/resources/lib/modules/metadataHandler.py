@@ -225,6 +225,13 @@ class MetadataHandler:
         from resources.lib.simkl.ids import canonicalize_info_identity
 
         canonicalize_info_identity(result["info"])
+        catalog = profile_info.get("catalog") or result["info"].get("catalog")
+        if catalog == "anime":
+            from resources.lib.simkl.field_map import ensure_anime_title_slots, merge_anime_title_slots
+
+            if isinstance(simkl_info, dict):
+                merge_anime_title_slots(result["info"], simkl_info)
+            ensure_anime_title_slots(result["info"])
         finalize_playback_info(result["info"])
         if result["info"].get("mediatype") == "season":
             MetadataHandler._title_fallback(result)
@@ -2811,15 +2818,6 @@ class MetadataHandler:
             g.log_stacktrace()
 
         stats["prepare_skipped"] = 1 if stats["incomplete"] == 0 else 0
-        try:
-            from resources.lib.meta.menu_paint_profile import record_paint_cache_context
-
-            record_paint_cache_context(
-                layer="display_meta" if stats["prepare_skipped"] else "provider",
-                prepare_skipped=bool(stats["prepare_skipped"]),
-            )
-        except Exception:
-            pass
 
         if not enrichment_refs:
             from resources.lib.database.sync_meta_cache import SyncMetaCache
@@ -2855,20 +2853,6 @@ class MetadataHandler:
         enrichment_refs = filtered_refs
 
         stats["prepare_ms"] = round((time.time() - start) * 1000, 1)
-        try:
-            from resources.lib.meta.menu_paint_profile import record_prepare_stats
-
-            record_prepare_stats(stats)
-        except Exception:
-            pass
-        g.log(
-            f"prepare_list_paint complete={stats['complete']} incomplete={stats['incomplete']} "
-            f"prepare_skipped={stats['prepare_skipped']} "
-            f"cast_batch={stats['cast_batch']} art_fetch={stats['art_fetch']} "
-            f"art_deduped={stats['art_deduped']} cast_art_parallel_ms={stats.get('cast_art_parallel_ms', 0)} "
-            f"prepare_ms={stats['prepare_ms']}",
-            "debug",
-        )
         return merged, enrichment_refs, stats
 
     def enrich_list_meta_online(
@@ -3104,33 +3088,40 @@ class MetadataHandler:
         info = db_object.get("info")
         art = db_object.get("art")
         if not isinstance(info, dict) or not isinstance(art, dict):
-            return False
-        if not info.get("title") and not info.get("originaltitle"):
-            return False
-        if not art.get("poster") and not art.get("thumb") and not info.get("poster"):
-            return False
-        if not db_object.get("cast"):
-            return False
-        from resources.lib.meta.provider_settings import ART_FANART, ART_SIMKL, ART_TMDB, ART_TVDB
+            result = False
+        elif not info.get("title") and not info.get("originaltitle"):
+            result = False
+        elif not art.get("poster") and not art.get("thumb") and not info.get("poster"):
+            result = False
+        elif not db_object.get("cast"):
+            result = False
+        else:
+            from resources.lib.meta.provider_settings import ART_FANART, ART_SIMKL, ART_TMDB, ART_TVDB
 
-        preferred = self._preferred_art_source_for_db_object(db_object)
-        if preferred == ART_SIMKL:
-            return True
-        if media_type == "movie":
-            if preferred == ART_TMDB and not self._movie_needs_tmdb_bundle(db_object):
-                return True
-            if preferred == ART_TVDB and not self._movie_needs_tvdb_bundle(db_object):
-                return True
-            if preferred == ART_FANART and not self._fanart_needs_update(db_object):
-                return True
-        elif media_type == "tvshow":
-            if preferred == ART_TMDB and not self._tvshow_needs_tmdb_bundle(db_object):
-                return True
-            if preferred == ART_TVDB and not self._tvshow_needs_tvdb_bundle(db_object):
-                return True
-            if preferred == ART_FANART and not self._fanart_needs_update(db_object):
-                return True
-        return False
+            preferred = self._preferred_art_source_for_db_object(db_object)
+            if preferred == ART_SIMKL:
+                result = True
+            elif media_type == "movie":
+                if preferred == ART_TMDB and not self._movie_needs_tmdb_bundle(db_object):
+                    result = True
+                elif preferred == ART_TVDB and not self._movie_needs_tvdb_bundle(db_object):
+                    result = True
+                elif preferred == ART_FANART and not self._fanart_needs_update(db_object):
+                    result = True
+                else:
+                    result = False
+            elif media_type == "tvshow":
+                if preferred == ART_TMDB and not self._tvshow_needs_tmdb_bundle(db_object):
+                    result = True
+                elif preferred == ART_TVDB and not self._tvshow_needs_tvdb_bundle(db_object):
+                    result = True
+                elif preferred == ART_FANART and not self._fanart_needs_update(db_object):
+                    result = True
+                else:
+                    result = False
+            else:
+                result = False
+        return result
 
     def _tmdb_art_meta_up_to_par(self, media_type, item):
         return self.art_meta_up_to_par(media_type, MetadataHandler.tmdb_object(item))
@@ -3300,7 +3291,15 @@ class MetadataHandler:
     def sort_list_items(db_list, media_list):
         db_list_dict = {}
         for row in db_list:
-            simkl_id = tools.safe_dict_get(row, "info", "simkl_id") or row.get("simkl_id")
-            if simkl_id is not None:
-                db_list_dict[simkl_id] = row
-        return [db_list_dict.get(o.get("simkl_id")) for o in media_list]
+            if not isinstance(row, dict):
+                continue
+            keys: set[int] = set()
+            top_id = row.get("simkl_id")
+            if top_id is not None:
+                keys.add(int(top_id))
+            info_id = tools.safe_dict_get(row, "info", "simkl_id")
+            if info_id is not None:
+                keys.add(int(info_id))
+            for key in keys:
+                db_list_dict[key] = row
+        return [db_list_dict.get(o.get("simkl_id")) if isinstance(o, dict) else None for o in media_list]
