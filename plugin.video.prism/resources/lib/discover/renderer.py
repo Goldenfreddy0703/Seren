@@ -33,9 +33,20 @@ def discover_list_kwargs(**overrides) -> dict:
 
 # DB lists that need extra Python ranking after query_engine pool sort.
 _POST_FILTER_QUERIES = frozenset(
-    {"top_simkl", "top_imdb", "top_mal", "hidden_gems", "completed", "quick_watch"}
+    {"top_simkl", "top_imdb", "top_mal", "completed", "quick_watch"}
 )
 
+# Map discover fixed rows (calendar/search/actor) to localized descriptions per catalog.
+_DISCOVER_SEARCH_DESCRIPTIONS: dict[Catalog, tuple[int, int]] = {
+    "movie": (30371, 30373),  # direct search, search history
+    "tv": (30372, 30374),
+    "anime": (30770, 31040),
+}
+_DISCOVER_ACTOR_DESCRIPTIONS: dict[Catalog, int] = {
+    "movie": 30375,
+    "tv": 30432,
+    "anime": 30776,
+}
 # Icon filenames use the "shows" prefix for the tv catalog.
 _ICON_PREFIX = {"movie": "movies", "tv": "shows", "anime": "anime"}
 
@@ -67,8 +78,6 @@ _LIST_ICON_KIND = {
     "top_simkl": "simkl",
     "top_imdb": "simkl",
     "top_mal": "simkl",
-    "top_mdblist": "simkl",
-    "hidden_gems": "recommended",
     "awards": "recommended",
     "completed": "collected",
     "ended": "collected",
@@ -146,15 +155,17 @@ class DiscoverRenderer:
                 g.add_directory_item(
                     g.get_language_string(30327),
                     action=actor_action,
-                    description=g.get_language_string(30776),
+                    description=g.get_language_string(_DISCOVER_ACTOR_DESCRIPTIONS[catalog]),
                     menu_item=g.create_icon_dict(f"{_ICON_PREFIX.get(catalog, 'movies')}_actor", g.ICONS_PATH),
                 )
             direct_action, history_action = search_actions[catalog]
             action = history_action if g.get_bool_setting("searchHistory") else direct_action
+            direct_desc, history_desc = _DISCOVER_SEARCH_DESCRIPTIONS[catalog]
+            search_desc = history_desc if g.get_bool_setting("searchHistory") else direct_desc
             g.add_directory_item(
                 g.get_language_string(search_labels[catalog]),
                 action=action,
-                description=g.get_language_string(30770 if catalog == "anime" else (30371 if catalog == "movie" else 30372)),
+                description=g.get_language_string(search_desc),
                 menu_item=g.create_icon_dict(f"{_ICON_PREFIX.get(catalog, 'movies')}_search", g.ICONS_PATH),
             )
         g.close_directory(g.CONTENT_MENU, cache=False)
@@ -370,8 +381,6 @@ class DiscoverRenderer:
             return self._sort_ratings(rows, "imdb", min_votes=1000)[:100]
         if query_name == "top_mal":
             return self._sort_ratings(rows, "mal", min_votes=500)[:100]
-        if query_name == "hidden_gems":
-            return self._hidden_gems(rows)[:100]
         if query_name == "completed":
             return self._sort_ratings(rows, "imdb" if catalog != "anime" else "mal", min_votes=100, min_rating=7.5)[:100]
         if query_name == "quick_watch":
@@ -401,29 +410,6 @@ class DiscoverRenderer:
         scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
         return [row for _, _, row in scored[:limit]]
 
-    def _hidden_gems(self, rows: list[dict]) -> list[dict]:
-        watched_values = [r.get("watched") or 0 for r in rows if self._row_quality_score(r) > 0]
-        if not watched_values:
-            return rows
-        median = sorted(watched_values)[len(watched_values) // 2]
-        gems = [r for r in rows if (r.get("watched") or 0) <= median]
-        gems.sort(key=self._row_quality_score, reverse=True)
-        return gems
-
-    def _row_quality_score(self, row: dict) -> float:
-        mdblist_score = row.get("mdblist_score")
-        if mdblist_score:
-            try:
-                return float(mdblist_score)
-            except (TypeError, ValueError):
-                pass
-        ratings = self._parse_ratings(row)
-        simkl = ratings.get("simkl") or {}
-        try:
-            return float(simkl.get("rating") or 0)
-        except (TypeError, ValueError):
-            return 0.0
-
     @staticmethod
     def _quick_watch(rows: list[dict]) -> list[dict]:
         result = []
@@ -437,12 +423,6 @@ class DiscoverRenderer:
 
     @staticmethod
     def _row_quality_score_static(row: dict) -> float:
-        mdblist_score = row.get("mdblist_score")
-        if mdblist_score:
-            try:
-                return float(mdblist_score)
-            except (TypeError, ValueError):
-                pass
         raw = row.get("ratings_json")
         if not raw:
             return 0.0

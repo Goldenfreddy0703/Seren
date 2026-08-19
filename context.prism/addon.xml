@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="context.prism" version="4.0.0" name="Prism - Global Context Menu Items" provider-name="Nixgates">
+<addon id="context.prism" version="4.0.1" name="Prism - Global Context Menu Items" provider-name="Nixgates">
 	<requires>
 		<import addon="xbmc.addon" version="17.9.910" />
 		<import addon="xbmc.python" version="3.0.0" />

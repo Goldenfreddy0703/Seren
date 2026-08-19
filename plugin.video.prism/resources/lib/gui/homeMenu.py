@@ -83,7 +83,7 @@ class Menus:
             g.add_directory_item(
                 g.get_language_string(30769),
                 action='animeSearchHistory',
-                description=g.get_language_string(30771),
+                description=g.get_language_string(31040),
                 menu_item=g.create_icon_dict("anime_search", g.ICONS_PATH),
             )
             if provider_enabled("imdb") or provider_enabled("tmdb"):

@@ -61,9 +61,9 @@ def _parse_rate_limit_headers(headers: Message | Any) -> MdblistRateLimitState:
 def resolve_mdblist_api_key(explicit: str | None = None) -> str:
     if explicit:
         return explicit
-    from resources.lib.meta.provider_settings import mdblist_runtime_enabled
+    from resources.lib.meta.provider_settings import mdblist_calendar_enabled
 
-    if not mdblist_runtime_enabled():
+    if not mdblist_calendar_enabled():
         return ""
     try:
         from resources.lib.database.keys import get_api_key
@@ -149,7 +149,6 @@ def lookup_target(catalog: str, ids: dict[str, Any]) -> tuple[str, str, str | in
             ("tmdb", "show", _parse_int_id(ids.get("tmdb"))),
             ("tvdb", "show", _parse_int_id(ids.get("tvdb"))),
             ("imdb", "show", _imdb_id(ids.get("imdb"))),
-            ("simkl", "show", _parse_int_id(ids.get("simkl") or ids.get("simkl_id"))),
             ("mdblist", "any", _mdblist_id(ids.get("mdblist"))),
         ]
     else:

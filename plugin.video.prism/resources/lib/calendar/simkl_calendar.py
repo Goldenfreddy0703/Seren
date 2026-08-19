@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import datetime
+import html
 import json
 import os
+import re
 import time
+import urllib.error
+from datetime import date as _calendar_date
+from datetime import datetime as _calendar_datetime
 from typing import Any
 
 import xbmcgui
@@ -25,12 +30,15 @@ from resources.lib.indexers.simkl_cdn import SimklCDN
 from resources.lib.modules.globals import g
 from resources.lib.simkl.images import simkl_image_url
 
-CACHE_SECONDS = 86400
-BUNDLE_CACHE_VERSION = 2
-WEEKLY_CACHE_VERSION = 4
+WEEKLY_CACHE_SECONDS = 7 * 86400  # Match Sunday–Saturday calendar window.
+BUNDLE_CACHE_VERSION = 3
+WEEKLY_CACHE_VERSION = 8
 DEFAULT_WINDOW_DAYS = 7  # Sunday–Saturday calendar week containing today.
 CALENDAR_MDBLIST_BATCH_SIZE = DEFAULT_BATCH_SIZE  # MDBList allows up to 200 ids per POST
 CALENDAR_MDBLIST_SLEEP = DEFAULT_SLEEP
+CALENDAR_IMDB_BATCH_SIZE = 50
+CALENDAR_IMDB_SLEEP = 0.25
+CALENDAR_SIMKL_API_SLEEP = 0.15
 
 
 def merge_v2_calendar_rows(
@@ -87,6 +95,72 @@ _CALENDAR_RATING_SOURCES = (
     "mal",
 )
 
+_PLACEHOLDER_PLOTS = frozenset(
+    {
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "-",
+        "tba",
+        "tbd",
+        "unknown",
+        "not available",
+    }
+)
+
+
+_HTML_BREAK_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _normalize_plot_markup(text: str) -> str:
+    """Strip MAL/MDBList-style HTML markup from synopsis text for Kodi labels."""
+    text = html.unescape(text)
+    text = _HTML_BREAK_RE.sub("\n\n", text)
+    text = _HTML_TAG_RE.sub("", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text.strip()
+
+
+def _usable_plot_text(value: Any) -> str | None:
+    """Return plot text when meaningful; treat MDBList-style placeholders as missing."""
+    if not isinstance(value, str):
+        return None
+    text = _normalize_plot_markup(value)
+    if not text:
+        return None
+    normalized = text.lower().rstrip(".")
+    if normalized in _PLACEHOLDER_PLOTS:
+        return None
+    return text
+
+
+def _enrichment_plot_text(item: dict[str, Any] | None) -> str:
+    if not item:
+        return ""
+    for key in ("overview", "plot", "description"):
+        plot = _usable_plot_text(item.get(key))
+        if plot:
+            return plot
+    return ""
+
+
+def _sanitize_enrichment_plots(item: dict[str, Any] | None) -> dict[str, Any]:
+    """Drop placeholder plot strings so later providers can gap-fill."""
+    if not item:
+        return {}
+    cleaned = dict(item)
+    plot = _enrichment_plot_text(cleaned)
+    for key in ("overview", "plot", "description"):
+        if plot:
+            cleaned[key] = plot
+        else:
+            cleaned.pop(key, None)
+    return cleaned
+
 
 def _cache_dir() -> str:
     path = tools.translate_path(os.path.join(g.ADDON_USERDATA_PATH, "calendar"))
@@ -105,6 +179,16 @@ def _weekly_cache_file(catalog: str) -> str:
 def _current_week_start() -> str:
     start, _ = _week_window_bounds()
     return start.date().isoformat()
+
+
+def _bundle_cache_is_valid(payload: dict[str, Any]) -> bool:
+    """CDN bundle cache is valid for the current calendar week (or legacy 7-day TTL)."""
+    if payload.get("version") != BUNDLE_CACHE_VERSION:
+        return False
+    if payload.get("week_start") == _current_week_start():
+        return True
+    ts = float(payload.get("timestamp") or 0)
+    return datetime.datetime.now().timestamp() - ts <= WEEKLY_CACHE_SECONDS
 
 
 def _load_weekly_cache(
@@ -145,7 +229,7 @@ def _load_weekly_cache(
                 if not isinstance(value, dict):
                     continue
                 try:
-                    metadata_cache[int(key)] = value
+                    metadata_cache[int(key)] = _sanitize_enrichment_plots(value)
                 except (TypeError, ValueError):
                     continue
             result = filtered_rows, metadata_cache
@@ -205,8 +289,7 @@ def _load_file_cache(catalog: str) -> list[dict[str, Any]] | None:
             payload = json.load(handle)
         if not isinstance(payload, dict):
             return None
-        ts = float(payload.get("timestamp") or 0)
-        if datetime.datetime.now().timestamp() - ts > CACHE_SECONDS:
+        if not _bundle_cache_is_valid(payload):
             return None
         if payload.get("version") == BUNDLE_CACHE_VERSION:
             calendar = payload.get("calendar")
@@ -226,6 +309,7 @@ def _save_file_cache(catalog: str, bundle: dict[str, Any]) -> None:
     payload = {
         "version": BUNDLE_CACHE_VERSION,
         "timestamp": datetime.datetime.now().timestamp(),
+        "week_start": _current_week_start(),
         "calendar": bundle.get("calendar") or [],
         "metadata": bundle.get("metadata") or {},
     }
@@ -243,18 +327,16 @@ def fetch_calendar_bundle(catalog: str, *, force_refresh: bool = False) -> dict[
             try:
                 with open(path, encoding="utf-8") as handle:
                     payload = json.load(handle)
-                if isinstance(payload, dict) and payload.get("version") == BUNDLE_CACHE_VERSION:
-                    ts = float(payload.get("timestamp") or 0)
-                    if datetime.datetime.now().timestamp() - ts <= CACHE_SECONDS:
-                        calendar = payload.get("calendar")
-                        metadata = payload.get("metadata")
-                        if isinstance(calendar, list) and isinstance(metadata, dict):
-                            g.log(
-                                f"Simkl calendar: using cached v2 {catalog} bundle "
-                                f"({len(calendar)} airings)",
-                                "info",
-                            )
-                            return {"calendar": calendar, "metadata": metadata}
+                if isinstance(payload, dict) and _bundle_cache_is_valid(payload):
+                    calendar = payload.get("calendar")
+                    metadata = payload.get("metadata")
+                    if isinstance(calendar, list) and isinstance(metadata, dict):
+                        g.log(
+                            f"Simkl calendar: using cached v2 {catalog} bundle "
+                            f"({len(calendar)} airings, week {_current_week_start()})",
+                            "info",
+                        )
+                        return {"calendar": calendar, "metadata": metadata}
             except (OSError, json.JSONDecodeError, TypeError, ValueError):
                 pass
 
@@ -420,18 +502,30 @@ def filter_calendar_rows(
     return filtered
 
 
-def _parse_date_only(raw: str | None) -> datetime.date | None:
-    if not raw:
+def _parse_date_only(raw: Any) -> _calendar_date | None:
+    """Parse Simkl CDN date-only or ISO datetime strings for movie calendar rows."""
+    if raw is None:
         return None
-    text = str(raw).strip()[:10]
-    try:
-        return datetime.datetime.strptime(text, "%Y-%m-%d").date()
-    except ValueError:
-        return None
+    if isinstance(raw, _calendar_date) and not isinstance(raw, _calendar_datetime):
+        return raw
+    if isinstance(raw, _calendar_datetime):
+        return _calendar_date(raw.year, raw.month, raw.day)
+
+    text = str(raw).strip()
+    if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+        try:
+            return _calendar_date.fromisoformat(text[:10])
+        except ValueError:
+            pass
+
+    air_dt = _parse_air_datetime(text)
+    if air_dt is not None:
+        return _calendar_date(air_dt.year, air_dt.month, air_dt.day)
+    return None
 
 
-def _format_countdown_from_date(day: datetime.date) -> str:
-    today = datetime.date.today()
+def _format_countdown_from_date(day: _calendar_date) -> str:
+    today = _calendar_date.today()
     delta = (day - today).days
     if delta < 0:
         return "Released"
@@ -445,9 +539,9 @@ def _format_countdown_from_date(day: datetime.date) -> str:
 def _format_air_display(catalog: str, row: dict[str, Any]) -> dict[str, str]:
     """Movies use release_date (date-only). TV/anime use episode air datetime."""
     if catalog == "movie":
-        release_day = _parse_date_only(row.get("release_date"))
+        release_day = _parse_date_only(row.get("release_date") or row.get("date"))
         if release_day is not None:
-            weekday = datetime.datetime.combine(release_day, datetime.time.min).strftime("%A")
+            weekday = _calendar_datetime.combine(release_day, datetime.time.min).strftime("%A")
             date_fmt = release_day.strftime("%d %b")
             return {
                 "raw_time": "",
@@ -584,12 +678,62 @@ def _simkl_ids_from_rows(rows: list[dict[str, Any]]) -> list[int]:
     return ids
 
 
-def _fetch_discover_db_rows(catalog: str, rows: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
-    """Load cached CDN discover rows for calendar enrichment."""
-    simkl_ids = _simkl_ids_from_rows(rows)
-    if not simkl_ids:
+def _fetch_trending_cdn_metadata(
+    catalog: str,
+    simkl_ids: list[int],
+) -> dict[int, dict[str, Any]]:
+    """Gap-fill from Simkl CDN trending JSON (today/week/month + DVD)."""
+    unique_ids = sorted({int(value) for value in simkl_ids if value})
+    if not unique_ids:
         return {}
-    return get_rows_by_ids(catalog, simkl_ids)
+
+    trending_rows = get_rows_by_ids(catalog, unique_ids)
+    out: dict[int, dict[str, Any]] = {}
+    for simkl_id, db_row in trending_rows.items():
+        enrichment = _discover_row_to_enrichment(db_row)
+        if _enrichment_has_plot(enrichment) or _enrichment_has_ratings(enrichment):
+            out[int(simkl_id)] = enrichment
+
+    g.log(
+        f"Simkl calendar: trending CDN matched {len(out)}/{len(unique_ids)} "
+        f"{catalog} titles for plot/rating gap-fill",
+        "info",
+    )
+    return out
+
+
+def _fetch_simkl_api_metadata(
+    catalog: str,
+    simkl_ids: list[int],
+) -> dict[int, dict[str, Any]]:
+    """Last-resort gap-fill via Simkl API title detail."""
+    from resources.lib.simkl.related import _fetch_detail
+
+    unique_ids = sorted({int(value) for value in simkl_ids if value})
+    if not unique_ids:
+        return {}
+
+    out: dict[int, dict[str, Any]] = {}
+    for index, simkl_id in enumerate(unique_ids):
+        try:
+            detail = _fetch_detail(catalog, simkl_id)
+        except Exception:
+            g.log_stacktrace()
+            detail = None
+        if not isinstance(detail, dict) or detail.get("error"):
+            continue
+        enrichment = _simkl_api_to_enrichment(detail)
+        if enrichment:
+            out[simkl_id] = enrichment
+        if index + 1 < len(unique_ids):
+            time.sleep(CALENDAR_SIMKL_API_SLEEP)
+
+    g.log(
+        f"Simkl calendar: Simkl API matched {len(out)}/{len(unique_ids)} "
+        f"{catalog} titles for plot/rating gap-fill",
+        "info",
+    )
+    return out
 
 
 def _discover_row_to_enrichment(db_row: dict[str, Any]) -> dict[str, Any]:
@@ -623,11 +767,12 @@ def _discover_row_to_enrichment(db_row: dict[str, Any]) -> dict[str, Any]:
             )
 
     score_average = db_row.get("mdblist_score")
+    overview = _usable_plot_text(db_row.get("overview"))
     return {
         "title": db_row.get("title"),
         "poster": db_row.get("poster"),
-        "overview": db_row.get("overview"),
-        "description": db_row.get("overview"),
+        "overview": overview,
+        "description": overview,
         "genres": genres,
         "ratings": ratings_list,
         "score_average": score_average,
@@ -636,13 +781,61 @@ def _discover_row_to_enrichment(db_row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _enrichment_has_plot(item: dict[str, Any] | None) -> bool:
+    return bool(_enrichment_plot_text(item))
+
+
+def _enrichment_has_ratings(item: dict[str, Any] | None) -> bool:
     if not item:
         return False
-    for key in ("overview", "plot", "description"):
-        val = item.get(key)
-        if isinstance(val, str) and val.strip():
+    if item.get("score_average") not in (None, "", 0, 0.0):
+        return True
+    ratings_map = mdblist_ratings_to_map(item.get("ratings"))
+    for source in _CALENDAR_RATING_SOURCES:
+        lookup = "myanimelist" if source == "mal" else source
+        entry = ratings_map.get(source) or ratings_map.get(lookup)
+        if entry and _display_rating(entry.get("rating") or entry.get("score")) != "-":
             return True
     return False
+
+
+def _calendar_row_enrichment(row: dict[str, Any] | None) -> dict[str, Any]:
+    """Plot/ratings from Simkl calendar v2 CDN row metadata."""
+    if not row:
+        return {}
+    plot = _usable_plot_text(row.get("overview") or row.get("plot") or row.get("description"))
+    payload: dict[str, Any] = {}
+    if plot:
+        payload["overview"] = plot
+        payload["plot"] = plot
+        payload["description"] = plot
+    ratings = row.get("ratings")
+    if isinstance(ratings, dict) and ratings:
+        payload["ratings"] = _ratings_dict_to_list(ratings)
+    genres = row.get("genres")
+    if genres:
+        payload["genres"] = genres
+    return payload
+
+
+def _simkl_api_to_enrichment(payload: dict[str, Any]) -> dict[str, Any]:
+    """Shape Simkl GET /movies|tv|anime/{id} JSON for calendar gap-fill."""
+    plot = _usable_plot_text(payload.get("overview") or payload.get("description"))
+    ratings_raw = payload.get("ratings")
+    ratings_list: list[dict[str, Any]] = []
+    if isinstance(ratings_raw, dict) and ratings_raw:
+        ratings_list = _ratings_dict_to_list(ratings_raw)
+    genres = payload.get("genres")
+
+    result: dict[str, Any] = {}
+    if plot:
+        result["overview"] = plot
+        result["plot"] = plot
+        result["description"] = plot
+    if ratings_list:
+        result["ratings"] = ratings_list
+    if genres:
+        result["genres"] = genres
+    return result
 
 
 def _merge_ratings_lists(
@@ -683,12 +876,21 @@ def _merge_enrichment(
     base: dict[str, Any] | None,
     extra: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    merged = dict(base or {})
+    merged = _sanitize_enrichment_plots(base)
     if not extra:
         return merged
-    for key in ("title", "poster", "overview", "plot", "description", "score_average", "score"):
+    extra = _sanitize_enrichment_plots(extra)
+    for key in ("title", "poster", "score_average", "score"):
         if not merged.get(key) and extra.get(key):
             merged[key] = extra[key]
+    plot = _enrichment_plot_text(merged) or _enrichment_plot_text(extra)
+    if plot:
+        merged["overview"] = plot
+        merged["plot"] = plot
+        merged["description"] = plot
+    else:
+        for key in ("overview", "plot", "description"):
+            merged.pop(key, None)
     if not merged.get("genres") and extra.get("genres"):
         merged["genres"] = extra["genres"]
     if extra.get("ratings"):
@@ -700,14 +902,16 @@ def _merge_enrichment(
 
 
 def _mdblist_item_to_enrichment(item: dict[str, Any]) -> dict[str, Any]:
-    overview = item.get("overview") or item.get("description") or item.get("plot")
+    overview = _usable_plot_text(
+        item.get("overview") or item.get("description") or item.get("plot")
+    )
     score = item.get("score_average") or item.get("score")
     return {
         "title": item.get("title"),
         "poster": item.get("poster"),
         "overview": overview,
         "plot": overview,
-        "description": item.get("description") or overview,
+        "description": overview,
         "genres": item.get("genres"),
         "ratings": item.get("ratings"),
         "score_average": score,
@@ -715,40 +919,191 @@ def _mdblist_item_to_enrichment(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _metadata_cache_has_mdblist_data(metadata_cache: dict[int, dict[str, Any]]) -> int:
-    return sum(
-        1
-        for item in metadata_cache.values()
-        if isinstance(item, dict) and (item.get("ratings") or item.get("score_average"))
+def _imdb_plot_text(title: dict[str, Any]) -> str:
+    plot = title.get("plot")
+    if isinstance(plot, str):
+        return _usable_plot_text(plot) or ""
+    if not isinstance(plot, dict):
+        return ""
+    plot_text = plot.get("plotText")
+    if isinstance(plot_text, str):
+        return _usable_plot_text(plot_text) or ""
+    if isinstance(plot_text, dict):
+        return _usable_plot_text(plot_text.get("plainText")) or ""
+    return ""
+
+
+def _imdb_title_to_enrichment(title: dict[str, Any]) -> dict[str, Any]:
+    plot = _imdb_plot_text(title)
+    ratings_summary = title.get("ratingsSummary") if isinstance(title.get("ratingsSummary"), dict) else {}
+    aggregate = ratings_summary.get("aggregateRating")
+    vote_count = ratings_summary.get("voteCount")
+
+    ratings_list: list[dict[str, Any]] = []
+    if aggregate not in (None, "", 0, 0.0):
+        ratings_list.append(
+            {
+                "source": "imdb",
+                "value": aggregate,
+                "score": aggregate,
+                "votes": vote_count,
+            }
+        )
+
+    genres_block = title.get("genres")
+    genres: list[str] = []
+    if isinstance(genres_block, dict):
+        for genre in genres_block.get("genres") or []:
+            if isinstance(genre, dict):
+                text = str(genre.get("text") or "").strip()
+                if text:
+                    genres.append(text)
+            elif isinstance(genre, str) and genre.strip():
+                genres.append(genre.strip())
+
+    payload: dict[str, Any] = {}
+    if plot:
+        payload["overview"] = plot
+        payload["plot"] = plot
+        payload["description"] = plot
+    if ratings_list:
+        payload["ratings"] = ratings_list
+    if genres:
+        payload["genres"] = genres
+    return payload
+
+
+def _fetch_imdb_calendar_metadata(
+    catalog: str,
+    rows: list[dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    from resources.lib.indexers.imdb import imdb_runtime_enabled, thread_imdb_api
+    from resources.lib.meta.provider_settings import imdb_metadata_enabled
+    from resources.lib.simkl.field_map import _normalize_imdb_id
+
+    if not imdb_metadata_enabled() or not imdb_runtime_enabled() or not rows:
+        return {}
+
+    imdb_to_simkl: dict[str, list[int]] = {}
+    for row in rows:
+        simkl_id = _simkl_ids_for_row(row)
+        if simkl_id is None:
+            continue
+        ids = row.get("ids") if isinstance(row.get("ids"), dict) else {}
+        imdb_id = _normalize_imdb_id(ids.get("imdb"))
+        if not imdb_id:
+            continue
+        imdb_to_simkl.setdefault(imdb_id, []).append(simkl_id)
+
+    if not imdb_to_simkl:
+        return {}
+
+    api = thread_imdb_api()
+    out: dict[int, dict[str, Any]] = {}
+    id_list = list(imdb_to_simkl.keys())
+    matched_titles = 0
+    for index in range(0, len(id_list), CALENDAR_IMDB_BATCH_SIZE):
+        chunk = id_list[index : index + CALENDAR_IMDB_BATCH_SIZE]
+        try:
+            titles = api.titles_batch(chunk)
+        except Exception:
+            g.log_stacktrace()
+            titles = {}
+        for imdb_id, title in titles.items():
+            if not isinstance(title, dict):
+                continue
+            enrichment = _imdb_title_to_enrichment(title)
+            if not enrichment:
+                continue
+            matched_titles += 1
+            for simkl_id in imdb_to_simkl.get(imdb_id, []):
+                out[int(simkl_id)] = enrichment
+        if index + CALENDAR_IMDB_BATCH_SIZE < len(id_list):
+            time.sleep(CALENDAR_IMDB_SLEEP)
+
+    g.log(
+        f"Simkl calendar: IMDb matched {matched_titles}/{len(imdb_to_simkl)} titles "
+        f"for {catalog} plot/rating gap-fill",
+        "info",
     )
+    return out
 
 
-def _should_save_weekly_cache(
+def _fetch_anilist_calendar_metadata(
+    catalog: str,
+    rows: list[dict[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    from resources.lib.indexers.anilist import anilist_runtime_enabled, thread_anilist_api
+    from resources.lib.meta.provider_settings import anilist_metadata_enabled
+
+    if catalog != "anime" or not anilist_metadata_enabled() or not anilist_runtime_enabled() or not rows:
+        return {}
+
+    mal_to_simkl: dict[int, list[int]] = {}
+    for row in rows:
+        simkl_id = _simkl_ids_for_row(row)
+        if simkl_id is None:
+            continue
+        ids = row.get("ids") if isinstance(row.get("ids"), dict) else {}
+        try:
+            mal_id = int(ids.get("mal"))
+        except (TypeError, ValueError):
+            continue
+        mal_to_simkl.setdefault(mal_id, []).append(simkl_id)
+
+    if not mal_to_simkl:
+        return {}
+
+    metadata_by_mal = thread_anilist_api().get_metadata_batch_by_mal_ids(list(mal_to_simkl.keys()))
+    out: dict[int, dict[str, Any]] = {}
+    matched_titles = 0
+    for mal_id, enrichment in metadata_by_mal.items():
+        if not enrichment:
+            continue
+        matched_titles += 1
+        for simkl_id in mal_to_simkl.get(int(mal_id), []):
+            out[int(simkl_id)] = enrichment
+
+    g.log(
+        f"Simkl calendar: AniList matched {matched_titles}/{len(mal_to_simkl)} anime titles "
+        "for plot/rating gap-fill",
+        "info",
+    )
+    return out
+
+
+def _log_mdblist_weekly_cache_status(
     metadata_cache: dict[int, dict[str, Any]],
     *,
     mdblist_targets: int,
-) -> bool:
+) -> None:
+    """Log when MDBList was expected but returned no scores (cache still saved for the week)."""
     api_key = resolve_mdblist_api_key()
     if not api_key or mdblist_targets <= 0:
-        return True
-    enriched = _metadata_cache_has_mdblist_data(metadata_cache)
+        return
+    enriched = sum(
+        1
+        for item in metadata_cache.values()
+        if isinstance(item, dict) and item.get("score_average") not in (None, "", 0, 0.0)
+    )
     if enriched > 0:
-        return True
+        return
     g.log(
-        "Simkl calendar: skipping weekly cache save — MDBList returned no ratings "
-        f"for {mdblist_targets} lookup targets (likely rate limited)",
+        "Simkl calendar: MDBList returned no scores "
+        f"for {mdblist_targets} lookup targets — keeping weekly cache until next week "
+        "(likely rate limited)",
         "warning",
     )
-    return False
 
 
 def _build_metadata_cache(
     catalog: str,
     rows: list[dict[str, Any]],
 ) -> tuple[dict[int, dict[str, Any]], int]:
-    """Gap-fill overview and MDBList ratings (v2 CDN supplies titles, art, and Simkl ratings)."""
-    discover_rows = _fetch_discover_db_rows(catalog, rows)
+    """Gap-fill overview and ratings (CDN row, MDBList, IMDb, AniList, trending CDN, Simkl API)."""
     mdblist_map, mdblist_targets = _fetch_mdblist_by_simkl_id(catalog, rows)
+    imdb_map = _fetch_imdb_calendar_metadata(catalog, rows)
+    anilist_map = _fetch_anilist_calendar_metadata(catalog, rows)
     row_by_id: dict[int, dict[str, Any]] = {}
     for row in rows:
         simkl_id = _simkl_ids_for_row(row)
@@ -758,34 +1113,47 @@ def _build_metadata_cache(
     cache: dict[int, dict[str, Any]] = {}
 
     for simkl_id in _simkl_ids_from_rows(rows):
-        item: dict[str, Any] = {}
         row = row_by_id.get(simkl_id)
-        if row:
-            row_ratings = row.get("ratings")
-            if isinstance(row_ratings, dict) and row_ratings:
-                item["ratings"] = _ratings_dict_to_list(row_ratings)
-        if simkl_id in discover_rows:
-            item = _merge_enrichment(item, _discover_row_to_enrichment(discover_rows[simkl_id]))
+        item = _merge_enrichment({}, _calendar_row_enrichment(row))
         if simkl_id in mdblist_map:
             item = _merge_enrichment(item, _mdblist_item_to_enrichment(mdblist_map[simkl_id]))
+        if simkl_id in imdb_map:
+            item = _merge_enrichment(item, imdb_map[simkl_id])
+        if simkl_id in anilist_map:
+            item = _merge_enrichment(item, anilist_map[simkl_id])
         cache[simkl_id] = item
 
+    fallback_ids = sorted(
+        sid
+        for sid, item in cache.items()
+        if not _enrichment_has_plot(item) or not _enrichment_has_ratings(item)
+    )
+    trending_map = _fetch_trending_cdn_metadata(catalog, fallback_ids)
+    for simkl_id in fallback_ids:
+        enrichment = trending_map.get(simkl_id)
+        if enrichment:
+            cache[simkl_id] = _merge_enrichment(cache.get(simkl_id), enrichment)
+
+    api_ids = sorted(
+        sid
+        for sid, item in cache.items()
+        if not _enrichment_has_plot(item) or not _enrichment_has_ratings(item)
+    )
+    api_map = _fetch_simkl_api_metadata(catalog, api_ids)
+    for simkl_id in api_ids:
+        enrichment = api_map.get(simkl_id)
+        if enrichment:
+            cache[simkl_id] = _merge_enrichment(cache.get(simkl_id), enrichment)
+
+    for simkl_id, item in cache.items():
+        cache[simkl_id] = _sanitize_enrichment_plots(item)
+
     filled = sum(1 for sid in cache if _enrichment_has_plot(cache.get(sid)))
-    rated = sum(
-        1
-        for sid in cache
-        if isinstance(cache.get(sid), dict) and (cache[sid].get("ratings") or cache[sid].get("score_average"))
-    )
-    discover_hits = len(discover_rows)
-    discover_with_plot = sum(
-        1
-        for row in discover_rows.values()
-        if _enrichment_has_plot(_discover_row_to_enrichment(row))
-    )
+    rated = sum(1 for sid in cache if _enrichment_has_ratings(cache.get(sid)))
     g.log(
         f"Simkl calendar: plot/overview text for {filled}/{len(cache)} titles "
         f"({len(rows)} calendar rows this week); ratings for {rated}/{len(cache)} "
-        f"(CDN / discover DB / MDBList gap-fill)",
+        f"(CDN / MDBList / IMDb / AniList / trending CDN / Simkl API gap-fill)",
         "info",
     )
     return cache, mdblist_targets
@@ -877,6 +1245,20 @@ def _fetch_mdblist_by_simkl_id(
                     )
                 rate_limited = True
                 break
+            except urllib.error.HTTPError as exc:
+                g.log(
+                    f"Simkl calendar: MDBList batch {batch_no}/{batch_total} skipped "
+                    f"({provider}/{media_type}, {len(chunk)} ids) — HTTP {exc.code}",
+                    "warning",
+                )
+                continue
+            except urllib.error.URLError as exc:
+                g.log(
+                    f"Simkl calendar: MDBList batch {batch_no}/{batch_total} skipped "
+                    f"({provider}/{media_type}, {len(chunk)} ids) — {exc.reason}",
+                    "warning",
+                )
+                continue
 
             results = response.items
             if response.rate_limit.remaining is not None:
@@ -1042,14 +1424,7 @@ def format_for_calendar(
         plot = ""
         genres = _format_genres(row.get("genres"))
         if enrichment:
-            plot = (
-                enrichment.get("overview")
-                or enrichment.get("plot")
-                or enrichment.get("description")
-                or ""
-            )
-            if isinstance(plot, str):
-                plot = plot.strip()
+            plot = _enrichment_plot_text(enrichment)
             if not genres:
                 genres = _format_genres(enrichment.get("genres"))
             if not title:
@@ -1112,15 +1487,17 @@ def prefetch_calendar(catalog: str, *, force_refresh: bool = False) -> int:
     if not force_refresh:
         cached, _load_reason = _load_weekly_cache(catalog, _return_reason=True)
         if cached is not None:
+            filtered_rows, _metadata_cache = cached
             g.log(
-                f"Simkl calendar prefetch: {catalog} weekly cache already warm ({len(cached[0])} rows)",
+                f"Simkl calendar prefetch: {catalog} weekly cache already warm "
+                f"({len(filtered_rows)} rows, week {_current_week_start()})",
                 "debug",
             )
-            return len(cached[0])
+            return len(filtered_rows)
 
     filtered, metadata_cache, mdblist_targets = _build_weekly_calendar(catalog)
-    if _should_save_weekly_cache(metadata_cache, mdblist_targets=mdblist_targets):
-        _save_weekly_cache(catalog, filtered, metadata_cache)
+    _log_mdblist_weekly_cache_status(metadata_cache, mdblist_targets=mdblist_targets)
+    _save_weekly_cache(catalog, filtered, metadata_cache)
     g.log(f"Simkl calendar prefetch: built {catalog} weekly cache ({len(filtered)} rows)", "info")
     return len(filtered)
 
@@ -1212,14 +1589,16 @@ def get_calendar_items(catalog: str, *, window_days: int = DEFAULT_WINDOW_DAYS) 
         if cached is not None:
             filtered_rows, metadata_cache = cached
             items = format_for_calendar(filtered_rows, catalog, metadata_cache)
-            g.log(f"Simkl calendar: using prefetched {catalog} weekly cache ({len(items)} items)", "info")
+            g.log(
+                f"Simkl calendar: using prefetched {catalog} weekly cache "
+                f"({len(items)} items, week {_current_week_start()})",
+                "info",
+            )
             return items, week_label
 
     filtered, metadata_cache, mdblist_targets = _build_weekly_calendar(catalog, window_days=window_days)
-    if window_days == DEFAULT_WINDOW_DAYS and _should_save_weekly_cache(
-        metadata_cache,
-        mdblist_targets=mdblist_targets,
-    ):
+    if window_days == DEFAULT_WINDOW_DAYS:
+        _log_mdblist_weekly_cache_status(metadata_cache, mdblist_targets=mdblist_targets)
         _save_weekly_cache(catalog, filtered, metadata_cache)
     return format_for_calendar(filtered, catalog, metadata_cache), week_label
 

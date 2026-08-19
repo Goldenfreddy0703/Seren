@@ -495,15 +495,14 @@ _TOP_RATED_QUERY_PRIMARY: dict[str, str] = {
     "top_simkl": "simkl",
     "top_imdb": "imdb",
     "top_mal": "mal",
-    "top_mdblist": "mdblist",
 }
 
 
 def default_display_rating_priority(catalog: str | None) -> tuple[str, ...]:
     """Browse/default lists: Simkl first, then catalog-appropriate secondary sources."""
     if catalog == "anime":
-        return ("simkl", "mal", "imdb", "tmdb", "mdblist")
-    return ("simkl", "imdb", "mal", "tmdb", "mdblist")
+        return ("simkl", "mal", "imdb", "tmdb")
+    return ("simkl", "imdb", "mal", "tmdb")
 
 
 def display_rating_priority_for_discover(catalog: str, db_query: str | None) -> tuple[str, ...]:
@@ -525,10 +524,6 @@ def promote_named_ratings(info: dict[str, Any]) -> None:
         for source_key, block in nested.items():
             if isinstance(block, dict):
                 _set_named_rating(info, str(source_key), block)
-
-    mdblist_score = info.get("mdblist_score")
-    if mdblist_score is not None and not isinstance(info.get("rating.mdblist"), dict):
-        info["rating.mdblist"] = {"rating": mdblist_score, "votes": 0}
 
 
 def _resolve_rating_from_source(info: dict[str, Any], source: str) -> tuple[Any, Any] | tuple[None, None]:
@@ -580,7 +575,7 @@ def _apply_ratings(info: dict[str, Any], ratings: dict[str, Any] | None) -> None
     if not ratings or not isinstance(ratings, dict):
         return
     info.setdefault("ratings", ratings)
-    for source_key in ("imdb", "simkl", "mal", "tmdb", "mdblist"):
+    for source_key in ("imdb", "simkl", "mal", "tmdb"):
         block = ratings.get(source_key)
         if isinstance(block, dict):
             _set_named_rating(info, source_key, block)

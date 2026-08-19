@@ -40,9 +40,7 @@ _FANART_EXCLUSIVE_SETTINGS = frozenset(
     }
 )
 
-# Discover DB queries that depend on MDBList scores at browse time.
-MDBLIST_DISCOVER_DB_QUERIES = frozenset({"top_mdblist", "hidden_gems"})
-
+# Discover DB queries gated by provider toggles (none currently).
 
 def provider_enabled(provider: str) -> bool:
     setting_id = _SETTING_BY_PROVIDER.get(provider)
@@ -228,21 +226,21 @@ def art_limit(setting_id: str, scope: str) -> int:
     return g.get_int_setting(setting_id, default)
 
 
-def mdblist_runtime_enabled() -> bool:
+def mdblist_calendar_enabled() -> bool:
+    """True when the weekly airing calendar may call the MDBList API."""
     return provider_enabled("mdblist")
 
 
+def mdblist_runtime_enabled() -> bool:
+    """Alias for mdblist_calendar_enabled (calendar-only MDBList usage)."""
+    return mdblist_calendar_enabled()
+
+
 def discover_db_query_allowed(query_name: str | None) -> bool:
-    if not query_name:
-        return True
-    if query_name in MDBLIST_DISCOVER_DB_QUERIES:
-        return mdblist_runtime_enabled()
     return True
 
 
 def discover_list_visible(item: "DiscoverList") -> bool:
-    if item.source == "db" and not discover_db_query_allowed(item.db_query):
-        return False
     return True
 
 

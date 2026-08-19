@@ -3734,8 +3734,10 @@ msgstr "Discover Anime"
 
 #: /resources/lib/gui/homeMenu.py
 msgctxt "#30659"
-msgid "Browse anime TV shows and movies"
-msgstr "Browse anime TV shows and movies"
+msgid ""
+"Discover anime that are Popular, Trending, Recommended for you and more."
+msgstr ""
+"Discover anime that are Popular, Trending, Recommended for you and more."
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30660"
@@ -3769,8 +3771,8 @@ msgstr "Trending (Recently Aired)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30666"
-msgid "New Anime Shows"
-msgstr "New Anime Shows"
+msgid "New Anime"
+msgstr "New Anime"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30667"
@@ -3844,13 +3846,13 @@ msgstr "Search Anime"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30681"
-msgid "Search for anime shows"
-msgstr "Search for anime shows"
+msgid "Search for anime by title"
+msgstr "Search for anime by title"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30682"
-msgid "Popular (TV Shows)"
-msgstr "Popular (TV Shows)"
+msgid "Popular (Series)"
+msgstr "Popular (Series)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30683"
@@ -3859,8 +3861,8 @@ msgstr "Popular (Movies)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30684"
-msgid "Trending (TV Shows)"
-msgstr "Trending (TV Shows)"
+msgid "Trending (Series)"
+msgstr "Trending (Series)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30685"
@@ -3869,8 +3871,8 @@ msgstr "Trending (Movies)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30686"
-msgid "New (TV Shows)"
-msgstr "New (TV Shows)"
+msgid "New (Series)"
+msgstr "New (Series)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30687"
@@ -3879,8 +3881,8 @@ msgstr "New (Movies)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30688"
-msgid "Most Played (TV Shows)"
-msgstr "Most Played (TV Shows)"
+msgid "Most Played (Series)"
+msgstr "Most Played (Series)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30689"
@@ -3889,8 +3891,8 @@ msgstr "Most Played (Movies)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30690"
-msgid "Most Watched (TV Shows)"
-msgstr "Most Watched (TV Shows)"
+msgid "Most Watched (Series)"
+msgstr "Most Watched (Series)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30691"
@@ -3899,8 +3901,8 @@ msgstr "Most Watched (Movies)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30692"
-msgid "Most Collected (TV Shows)"
-msgstr "Most Collected (TV Shows)"
+msgid "Most Collected (Series)"
+msgstr "Most Collected (Series)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30693"
@@ -3909,8 +3911,8 @@ msgstr "Most Collected (Movies)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30694"
-msgid "Anticipated (TV Shows)"
-msgstr "Anticipated (TV Shows)"
+msgid "Anticipated (Series)"
+msgstr "Anticipated (Series)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30695"
@@ -3919,8 +3921,8 @@ msgstr "Anticipated (Movies)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30696"
-msgid "Browse popular anime TV shows"
-msgstr "Browse popular anime TV shows"
+msgid "Browse popular anime series"
+msgstr "Browse popular anime series"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30697"
@@ -3929,8 +3931,8 @@ msgstr "Browse popular anime movies"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30698"
-msgid "Browse trending anime TV shows"
-msgstr "Browse trending anime TV shows"
+msgid "Browse trending anime series"
+msgstr "Browse trending anime series"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30699"
@@ -3939,8 +3941,8 @@ msgstr "Browse trending anime movies"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30700"
-msgid "Browse new anime TV shows"
-msgstr "Browse new anime TV shows"
+msgid "Browse new anime series"
+msgstr "Browse new anime series"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30701"
@@ -3949,8 +3951,8 @@ msgstr "Browse new anime movies"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30702"
-msgid "Browse most played anime TV shows"
-msgstr "Browse most played anime TV shows"
+msgid "Browse most played anime series"
+msgstr "Browse most played anime series"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30703"
@@ -3959,8 +3961,8 @@ msgstr "Browse most played anime movies"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30704"
-msgid "Browse most watched anime TV shows"
-msgstr "Browse most watched anime TV shows"
+msgid "Browse most watched anime series"
+msgstr "Browse most watched anime series"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30705"
@@ -3969,8 +3971,8 @@ msgstr "Browse most watched anime movies"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30706"
-msgid "Browse most collected anime TV shows"
-msgstr "Browse most collected anime TV shows"
+msgid "Browse most collected anime series"
+msgstr "Browse most collected anime series"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30707"
@@ -3979,8 +3981,8 @@ msgstr "Browse most collected anime movies"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30708"
-msgid "Browse anticipated anime TV shows"
-msgstr "Browse anticipated anime TV shows"
+msgid "Browse anticipated anime series"
+msgstr "Browse anticipated anime series"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30709"
@@ -3989,8 +3991,8 @@ msgstr "Browse anticipated anime movies"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30710"
-msgid "Popular Recent (TV Shows)"
-msgstr "Popular Recent (TV Shows)"
+msgid "Popular Recent (Series)"
+msgstr "Popular Recent (Series)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30711"
@@ -3999,8 +4001,8 @@ msgstr "Popular Recent (Movies)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30712"
-msgid "Trending Recent (TV Shows)"
-msgstr "Trending Recent (TV Shows)"
+msgid "Trending Recent (Series)"
+msgstr "Trending Recent (Series)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30713"
@@ -4009,8 +4011,8 @@ msgstr "Trending Recent (Movies)"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30714"
-msgid "Browse recently aired popular anime TV shows"
-msgstr "Browse recently aired popular anime TV shows"
+msgid "Browse recently aired popular anime series"
+msgstr "Browse recently aired popular anime series"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30715"
@@ -4019,8 +4021,8 @@ msgstr "Browse recently released popular anime movies"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30716"
-msgid "Browse recently aired trending anime TV shows"
-msgstr "Browse recently aired trending anime TV shows"
+msgid "Browse recently aired trending anime series"
+msgstr "Browse recently aired trending anime series"
 
 #: /resources/lib/gui/animeMenus.py
 msgctxt "#30717"
@@ -4129,8 +4131,8 @@ msgstr "My Anime"
 
 #: /resources/lib/gui/homeMenu.py
 msgctxt "#30738"
-msgid "View your Simkl anime library"
-msgstr "View your Simkl anime library"
+msgid "View anime and episodes based on your Simkl information"
+msgstr "View anime and episodes based on your Simkl information"
 
 #: /resources/lib/simkl/library_menus.py
 msgctxt "#30740"
@@ -4179,8 +4181,12 @@ msgstr "Movies with saved playback progress"
 
 #: /resources/lib/simkl/library_menus.py
 msgctxt "#30749"
-msgid "Anime with saved playback progress"
-msgstr "Anime with saved playback progress"
+msgid ""
+"View anime episodes that you have recently started watching but have not "
+"yet finished"
+msgstr ""
+"View anime episodes that you have recently started watching but have not "
+"yet finished"
 
 #: /resources/lib/simkl/library_menus.py
 msgctxt "#30760"
@@ -4189,18 +4195,20 @@ msgstr "A list of movies you watched sorted by most recently watched"
 
 #: /resources/lib/simkl/library_menus.py
 msgctxt "#30750"
-msgid "Next anime episode to watch"
-msgstr "Next anime episode to watch"
+msgid ""
+"View the next episode(s) you should watch for all anime you have started"
+msgstr ""
+"View the next episode(s) you should watch for all anime you have started"
 
 #: /resources/lib/simkl/library_menus.py
 msgctxt "#30751"
-msgid "Anime you watched recently"
-msgstr "Anime you watched recently"
+msgid "A list of anime you watch sorted by most recently watched"
+msgstr "A list of anime you watch sorted by most recently watched"
 
 #: /resources/lib/simkl/library_menus.py
 msgctxt "#30752"
-msgid "Anime episodes you have watched"
-msgstr "Anime episodes you have watched"
+msgid "My recent watched episodes"
+msgstr "My recent watched episodes"
 
 #: /resources/lib/gui/simkl_context_menu.py
 msgctxt "#30753"
@@ -5091,7 +5099,7 @@ msgstr "Enable Fanart.tv artwork"
 
 msgctxt "#30958"
 msgid "Enable MDBList metadata"
-msgstr "Enable MDBList discover ranking"
+msgstr "Enable MDBList for calendar"
 
 msgctxt "#30959"
 msgid "TMDB metadata is disabled in settings"
@@ -5110,8 +5118,8 @@ msgid "Fetch disc art, landscape, and character art from Fanart.tv. Disabling st
 msgstr "Fetch disc art, landscape, and character art from Fanart.tv. Disabling stops all Fanart.tv requests; clearlogo, clearart, and banner remain available from TMDB or TVDB."
 
 msgctxt "#30963"
-msgid "Use MDBList for the airing calendar and MDBList discover lists. Offline discover database scores remain available when disabled."
-msgstr "Use MDBList scores for discover list ranking (Top MDBList, Hidden Gems) and calendar. Does not replace Simkl metadata."
+msgid "Use MDBList for weekly airing calendar ratings and plot gap-fill. Does not affect browse or discover lists."
+msgstr "Use MDBList for weekly airing calendar ratings and plot gap-fill. Does not affect browse or discover lists."
 
 msgctxt "#30964"
 msgid "MDBList metadata is disabled in settings"
@@ -5395,3 +5403,34 @@ msgstr "Auto-Delete Offcloud Transfers"
 msgctxt "#31034"
 msgid "Scrape Offcloud Cloud"
 msgstr "Scrape Offcloud Cloud"
+
+#: /resources/lib/simkl/library_menus.py
+msgctxt "#31035"
+msgid "Anime you are currently watching on Simkl"
+msgstr "Anime you are currently watching on Simkl"
+
+#: /resources/lib/simkl/library_menus.py
+msgctxt "#31036"
+msgid "Anime you plan to watch on Simkl"
+msgstr "Anime you plan to watch on Simkl"
+
+#: /resources/lib/simkl/library_menus.py
+msgctxt "#31037"
+msgid "Anime on hold on Simkl"
+msgstr "Anime on hold on Simkl"
+
+#: /resources/lib/simkl/library_menus.py
+msgctxt "#31038"
+msgid "Anime you completed on Simkl"
+msgstr "Anime you completed on Simkl"
+
+#: /resources/lib/simkl/library_menus.py
+msgctxt "#31039"
+msgid "Anime you dropped on Simkl"
+msgstr "Anime you dropped on Simkl"
+
+#: /resources/lib/discover/renderer.py
+#: /resources/lib/gui/homeMenu.py
+msgctxt "#31040"
+msgid "View your anime search history or start a new search"
+msgstr "View your anime search history or start a new search"

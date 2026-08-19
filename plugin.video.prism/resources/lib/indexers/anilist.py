@@ -60,6 +60,24 @@ query ($page: Int, $anilistIds: [Int], $type: MediaType, $perPage: Int) {{
 }}
 """
 
+_MAL_METADATA_FIELDS = """
+    id
+    idMal
+    description(asHtml: false)
+    averageScore
+"""
+
+_MAL_METADATA_BATCH_QUERY = f"""
+query ($page: Int, $malIds: [Int], $type: MediaType) {{
+  Page(page: $page) {{
+    pageInfo {{ hasNextPage }}
+    media(idMal_in: $malIds, type: $type) {{
+      {_MAL_METADATA_FIELDS}
+    }}
+  }}
+}}
+"""
+
 
 def thread_anilist_api() -> "AnilistAPI":
     api = getattr(_thread_local, "anilist_api", None)
@@ -95,6 +113,37 @@ def _studio_name(media: dict[str, Any]) -> str | None:
         if name:
             return name
     return None
+
+
+def media_to_calendar_metadata(media: dict[str, Any] | None) -> dict[str, Any]:
+    """Map AniList media to calendar plot/rating gap-fill payload."""
+    if not isinstance(media, dict):
+        return {}
+
+    description = str(media.get("description") or "").strip()
+    average_score = media.get("averageScore")
+
+    payload: dict[str, Any] = {}
+    if description:
+        payload["overview"] = description
+        payload["plot"] = description
+        payload["description"] = description
+    if average_score not in (None, "", 0, 0.0):
+        try:
+            score = int(average_score)
+        except (TypeError, ValueError):
+            score = 0
+        if score > 0:
+            payload["score_average"] = score
+            payload["score"] = score
+            payload["ratings"] = [
+                {
+                    "source": "anilist",
+                    "value": score,
+                    "score": score,
+                }
+            ]
+    return payload
 
 
 def media_to_cast_and_studio(media: dict[str, Any] | None, *, limit: int = _CAST_CHARACTER_LIMIT) -> tuple[list[dict], str | None]:
@@ -271,6 +320,26 @@ class AnilistAPI:
                 if studio:
                     payload["studio"] = studio
                 result[int(anilist_id)] = payload
+        return result
+
+    def get_metadata_batch_by_mal_ids(self, mal_ids: list[int]) -> dict[int, dict[str, Any]]:
+        """Return {mal_id: calendar metadata} for anime plot/rating gap-fill."""
+        normalized = sorted({int(value) for value in mal_ids if value})
+        if not normalized:
+            return {}
+
+        result: dict[int, dict[str, Any]] = {}
+        for chunk in _chunk_ids(normalized):
+            for media in self._fetch_media_pages(
+                _MAL_METADATA_BATCH_QUERY,
+                {"malIds": chunk, "type": "ANIME"},
+            ):
+                mal_id = media.get("idMal")
+                if mal_id is None:
+                    continue
+                payload = media_to_calendar_metadata(media)
+                if payload:
+                    result[int(mal_id)] = payload
         return result
 
 

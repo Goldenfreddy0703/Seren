@@ -17,11 +17,30 @@ _MOVIE_META = {
 }
 # Icon stems shared by TV and anime library hubs (`shows_*` vs `anime_*`).
 _SHOW_STATUS_ICONS = {
-    "watching": ("progress", 30743),
-    "plantowatch": ("watched", 30744),
-    "hold": ("collected", 30745),
-    "completed": ("watched", 30746),
-    "dropped": ("watched", 30747),
+    "watching": "progress",
+    "plantowatch": "watched",
+    "hold": "collected",
+    "completed": "watched",
+    "dropped": "watched",
+}
+_TV_STATUS_DESCRIPTIONS = {
+    "watching": 30743,
+    "plantowatch": 30744,
+    "hold": 30745,
+    "completed": 30746,
+    "dropped": 30747,
+}
+_ANIME_STATUS_DESCRIPTIONS = {
+    "watching": 31035,
+    "plantowatch": 31036,
+    "hold": 31037,
+    "completed": 31038,
+    "dropped": 31039,
+}
+_ON_DECK_DESCRIPTIONS = {
+    "movie": 30748,
+    "tv": 30433,
+    "anime": 30749,
 }
 
 _MOVIE_STATUSES = tuple((s, lid, *_MOVIE_META[s]) for s, lid in MOVIE_STATUS_OPTIONS)
@@ -33,10 +52,15 @@ def _show_pack_icon(stem: str, catalog: str) -> str:
 
 
 def _show_status_items(catalog: str) -> tuple[tuple[str, int, str, int], ...]:
+    descriptions = _ANIME_STATUS_DESCRIPTIONS if catalog == "anime" else _TV_STATUS_DESCRIPTIONS
     return tuple(
-        (status, label_id, _show_pack_icon(icon_stem, catalog), desc_id)
+        (
+            status,
+            label_id,
+            _show_pack_icon(_SHOW_STATUS_ICONS[status], catalog),
+            descriptions[status],
+        )
         for status, label_id in SHOW_STATUS_OPTIONS
-        for icon_stem, desc_id in (_SHOW_STATUS_ICONS[status],)
     )
 
 
@@ -48,7 +72,7 @@ _SHOW_LIBRARY_ROWS = (
 )
 _SHOW_LIBRARY_DESCRIPTIONS = {
     "tv": (30436, 30479, 30442),
-    "anime": (30750, 30751, 30752),
+    "anime": (30750, 30751, 30442),
 }
 
 
@@ -81,7 +105,7 @@ def _add_show_library_rows(catalog: str) -> None:
 
 @simkl_auth_guard
 def my_movies_hub() -> None:
-    _add_library_item(30731, "libraryOnDeck", "movies_progress", 30748, catalog="movie")
+    _add_library_item(30731, "libraryOnDeck", "movies_progress", _ON_DECK_DESCRIPTIONS["movie"], catalog="movie")
     for status, label_id, icon, desc_id in _MOVIE_STATUSES:
         _add_status_item("movie", status, label_id, icon, desc_id)
     _add_library_item(30090, "libraryRecentlyWatched", "shows_recent", 30760, catalog="movie")
@@ -90,7 +114,7 @@ def my_movies_hub() -> None:
 
 @simkl_auth_guard
 def my_shows_hub() -> None:
-    _add_library_item(30731, "libraryOnDeck", "shows_progress", 30433, catalog="tv")
+    _add_library_item(30731, "libraryOnDeck", "shows_progress", _ON_DECK_DESCRIPTIONS["tv"], catalog="tv")
     for status, label_id, icon, desc_id in _show_status_items("tv"):
         _add_status_item("tv", status, label_id, icon, desc_id)
     _add_show_library_rows("tv")
@@ -99,7 +123,7 @@ def my_shows_hub() -> None:
 
 @simkl_auth_guard
 def my_anime_hub() -> None:
-    _add_library_item(30731, "libraryOnDeck", "anime_progress", 30749, catalog="anime")
+    _add_library_item(30731, "libraryOnDeck", "anime_progress", _ON_DECK_DESCRIPTIONS["anime"], catalog="anime")
     for status, label_id, icon, desc_id in _show_status_items("anime"):
         _add_status_item("anime", status, label_id, icon, desc_id)
     _add_show_library_rows("anime")

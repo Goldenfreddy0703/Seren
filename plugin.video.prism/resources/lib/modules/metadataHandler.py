@@ -127,7 +127,6 @@ class MetadataHandler:
                 self._provider_enabled("tmdb"),
                 self._provider_enabled("tvdb"),
                 self._fanart_art_usable(),
-                self._provider_enabled("mdblist"),
             ]
         )
 
