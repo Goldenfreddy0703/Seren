@@ -103,9 +103,12 @@ class BaseWindow(xbmcgui.WindowXMLDialog):
         :return: The checked control
         :rtype: xbmcgui.ControlProgress
         """
-        control = self.getControl(control_id)
+        try:
+            control = self.getControl(control_id)
+        except RuntimeError:
+            return None
         if not isinstance(control, xbmcgui.ControlProgress):
-            raise AttributeError(f"Control with Id {control_id} should be of type ControlProgress")
+            return None
 
         return control
 

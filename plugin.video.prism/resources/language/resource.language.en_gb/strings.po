@@ -5434,3 +5434,33 @@ msgstr "Anime you dropped on Simkl"
 msgctxt "#31040"
 msgid "View your anime search history or start a new search"
 msgstr "View your anime search history or start a new search"
+
+#: /resources/settings.xml
+msgctxt "#31041"
+msgid "Configure library sorting..."
+msgstr "Configure library sorting..."
+
+#: /resources/skins/Default/1080i/library_select.xml
+msgctxt "#31042"
+msgid "Library Sort Configuration"
+msgstr "Library Sort Configuration"
+
+#: /resources/skins/Default/1080i/library_select.xml
+msgctxt "#31043"
+msgid "Sorting for"
+msgstr "Sorting for"
+
+#: /resources/skins/Default/1080i/library_select.xml
+msgctxt "#31044"
+msgid "Global"
+msgstr "Global"
+
+#: /resources/skins/Default/1080i/library_select.xml
+msgctxt "#31045"
+msgid "All library menus"
+msgstr "All library menus"
+
+#: /resources/skins/Default/1080i/library_select.xml
+msgctxt "#31046"
+msgid "Applies to every library menu"
+msgstr "Applies to every library menu"

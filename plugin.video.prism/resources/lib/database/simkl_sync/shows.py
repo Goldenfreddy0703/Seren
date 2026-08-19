@@ -73,7 +73,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             return refs
         from resources.lib.simkl.library_sort import sort_library_refs
 
-        return sort_library_refs(refs, catalog or "tv")
+        return sort_library_refs(refs, catalog or "tv", status)
 
     def extract_browse_page(self, url, **params):
         """

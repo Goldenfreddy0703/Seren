@@ -949,6 +949,15 @@ def dispatch(params):
         finally:
             del window
 
+    elif action == "chooseLibrarySort":
+        import resources.lib.gui.windows.library_select as library_select
+
+        try:
+            window = library_select.LibrarySelect("library_select.xml", g.ADDON_PATH)
+            window.doModal()
+        finally:
+            del window
+
     elif action == "chooseFilters":
         import resources.lib.gui.windows.filter_select as filter_select
         from resources.lib.modules import catalog_profiles

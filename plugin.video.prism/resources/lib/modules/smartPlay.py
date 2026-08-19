@@ -32,12 +32,19 @@ class SmartPlay:
 
     def __init__(self, item_information):
         self.list_builder = ListBuilder()
-        if "info" not in item_information:
+        if not isinstance(item_information, dict):
             item_information = tools.get_item_information(item_information)
+        elif "info" not in item_information:
+            lookup_args = item_information.get("action_args") or item_information
+            item_information = tools.get_item_information(lookup_args)
         self.item_information = item_information
 
         if not isinstance(self.item_information, dict):
             raise TypeError("Item Information is not a dictionary")
+        if "info" not in self.item_information:
+            action_args = (self.item_information.get("action_args") or {}) if isinstance(self.item_information, dict) else {}
+            episode_id = action_args.get("simkl_id")
+            raise ValueError(f"Unable to load metadata for episode {episode_id}")
 
         self.show_simkl_id = show_id_from_item(self.item_information)
         if not self.show_simkl_id and "action_args" in self.item_information:

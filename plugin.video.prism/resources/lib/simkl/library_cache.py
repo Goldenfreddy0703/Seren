@@ -388,7 +388,7 @@ def load_library_list_refs(catalog: str, status: str) -> list[dict]:
 
         if cached:
 
-            return sort_library_refs(cached, catalog)
+            return sort_library_refs(cached, catalog, status)
 
 
 
@@ -398,7 +398,7 @@ def load_library_list_refs(catalog: str, status: str) -> list[dict]:
 
     if cache_fresh and _cached_refs_match_db(catalog, status, cached):
 
-        return sort_library_refs(cached, catalog)
+        return sort_library_refs(cached, catalog, status)
 
 
 
@@ -408,7 +408,7 @@ def load_library_list_refs(catalog: str, status: str) -> list[dict]:
 
 
 
-    refs = sort_library_refs(_load_refs_from_sync_db(catalog, status), catalog)
+    refs = sort_library_refs(_load_refs_from_sync_db(catalog, status), catalog, status)
 
     if refs:
 

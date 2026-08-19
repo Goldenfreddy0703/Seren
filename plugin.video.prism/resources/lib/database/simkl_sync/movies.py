@@ -112,7 +112,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             return refs
         from resources.lib.simkl.library_sort import sort_library_refs
 
-        return sort_library_refs(refs, "movie")
+        return sort_library_refs(refs, "movie", status)
 
     @guard_against_none()
     def mark_movie_watched(self, simkl_id):

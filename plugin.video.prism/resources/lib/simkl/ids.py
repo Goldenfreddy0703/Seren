@@ -472,7 +472,6 @@ def normalize_action_args(action_args: dict[str, Any] | None) -> dict[str, Any] 
         return args
 
     if mediatype == "episode":
-        args.pop("simkl_show_id", None)
         args.pop("simkl_season_id", None)
         return args
 
@@ -584,7 +583,12 @@ def episode_id_from_args(action_args: dict[str, Any] | None) -> int | None:
 
 def show_id_for_episode_action(action_args: dict[str, Any] | None) -> int | None:
     """Resolve parent show id when action_args only contains the episode simkl_id."""
-    episode_id = episode_id_from_args(action_args)
+    args = normalize_action_args(action_args)
+    if not args or args.get("mediatype") != "episode":
+        return None
+    if args.get("simkl_show_id") is not None:
+        return int(args["simkl_show_id"])
+    episode_id = episode_id_from_args(args)
     if episode_id is None:
         return None
     from resources.lib.database.session import get_sync_database
@@ -628,6 +632,11 @@ def build_action_args(item: dict[str, Any]) -> dict[str, Any]:
             args["simkl_id"] = int(show_id)
         if season_num is not None:
             args["season"] = int(season_num)
+
+    if mediatype == "episode":
+        show_id = show_id_from_info(info) or get(item, "simkl_show_id", info.get("simkl_show_id"))
+        if show_id is not None:
+            args["simkl_show_id"] = int(show_id)
 
     normalized = normalize_action_args(args)
     return normalized if normalized is not None else args

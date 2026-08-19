@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import copy
 import datetime
 import hashlib
@@ -245,6 +247,84 @@ def compare_version_numbers(current, new, include_same=False):
     return False
 
 
+def _episode_item_has_info(item: dict | list | None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    info = item.get("info")
+    return isinstance(info, dict) and info.get("simkl_id") is not None
+
+
+def _resolve_episode_show_id(db, action_args, episode_id):
+    from resources.lib.simkl.ids import show_id_for_episode_action
+
+    show_id = show_id_for_episode_action(action_args)
+    if show_id is not None or episode_id is None:
+        return show_id
+
+    row = db.fetchone(
+        "SELECT simkl_show_id FROM episodes WHERE simkl_id = ?",
+        (int(episode_id),),
+    )
+    if row and row.get("simkl_show_id") is not None:
+        return int(row["simkl_show_id"])
+
+    return _show_id_from_video_playlist()
+
+
+def _show_id_from_video_playlist():
+    """Best-effort show id from other binge playlist items."""
+    try:
+        import json
+        from urllib import parse
+
+        import xbmc
+
+        from resources.lib.simkl.ids import show_id_from_playlist_action_args
+
+        playlist = xbmc.PlayList(xbmc.PLAYLIST_VIDEO)
+        for idx in range(playlist.size()):
+            path = playlist[idx].getPath() or ""
+            if "action_args=" not in path:
+                continue
+            query = path.split("?", 1)[-1]
+            for key, value in parse.parse_qsl(query):
+                if key != "action_args":
+                    continue
+                try:
+                    action_args = json.loads(parse.unquote(value))
+                except (TypeError, ValueError):
+                    continue
+                show_id = show_id_from_playlist_action_args(action_args)
+                if show_id is not None:
+                    return int(show_id)
+    except Exception:
+        pass
+    return None
+
+
+def _load_episode_item_information(db, action_args, episode_id, show_id):
+    if not episode_id or not show_id:
+        return {}
+
+    episode_row = db.get_episode(episode_id, show_id)
+    if isinstance(episode_row, list):
+        episode_row = {}
+    if _episode_item_has_info(episode_row):
+        return episode_row
+
+    rows = db.get_episode_list(
+        show_id,
+        simkl_id=episode_id,
+        hide_unaired=False,
+        hide_watched=False,
+        skip_update=False,
+        skip_watch_refresh=True,
+    )
+    if rows:
+        return rows[0]
+    return {}
+
+
 def get_item_information(action_args):
     """
     Ease of use tool to retrieve items meta from SimklSyncDatabase based on action arguments
@@ -256,11 +336,15 @@ def get_item_information(action_args):
     if action_args is None:
         return None
 
+    if isinstance(action_args, dict) and action_args.get("mediatype") is None:
+        nested_args = action_args.get("action_args")
+        if isinstance(nested_args, dict):
+            action_args = nested_args
+
     from resources.lib.simkl.ids import (
         episode_id_from_args,
         normalize_action_args,
         season_num_from_args,
-        show_id_for_episode_action,
         show_id_from_args,
     )
 
@@ -301,8 +385,10 @@ def get_item_information(action_args):
 
         episode_id = episode_id_from_args(action_args)
         db = get_sync_database()
-        show_id = show_id_for_episode_action(action_args)
-        item_information.update(db.get_episode(episode_id, show_id))
+        show_id = _resolve_episode_show_id(db, action_args, episode_id)
+        episode_row = _load_episode_item_information(db, action_args, episode_id, show_id)
+        if episode_row:
+            item_information.update(episode_row)
         info = item_information.get("info")
         if isinstance(info, dict) and show_id:
             show_row = db.fetchone("SELECT info FROM shows WHERE simkl_id = ?", (show_id,))

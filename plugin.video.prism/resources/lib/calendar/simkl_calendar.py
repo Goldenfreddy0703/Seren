@@ -6,10 +6,12 @@ import html
 import json
 import os
 import re
-import time
+import time as time_module
 import urllib.error
 from datetime import date as _calendar_date
 from datetime import datetime as _calendar_datetime
+from datetime import time as dt_time
+from datetime import timedelta, timezone
 from typing import Any
 
 import xbmcgui
@@ -238,7 +240,7 @@ def _load_weekly_cache(
         except json.JSONDecodeError as exc:
             last_error = f"json_decode_error_attempt_{attempt}:{exc.msg}"
             if attempt == 1:
-                time.sleep(0.05)
+                time_module.sleep(0.05)
                 continue
             break
         except (OSError, TypeError, ValueError) as exc:
@@ -389,15 +391,15 @@ def _week_window_bounds() -> tuple[datetime.datetime, datetime.datetime]:
     today = now.date()
     # Python weekday(): Mon=0 … Sun=6 → days back to most recent Sunday (including today).
     days_since_sunday = (today.weekday() + 1) % 7
-    week_start = today - datetime.timedelta(days=days_since_sunday)
-    start = datetime.datetime.combine(week_start, datetime.time.min, tzinfo=now.tzinfo)
-    end = start + datetime.timedelta(days=DEFAULT_WINDOW_DAYS)
+    week_start = today - timedelta(days=days_since_sunday)
+    start = datetime.datetime.combine(week_start, dt_time.min, tzinfo=now.tzinfo)
+    end = start + timedelta(days=DEFAULT_WINDOW_DAYS)
     return start, end
 
 
 def _week_range_label() -> str:
     start, end = _week_window_bounds()
-    last = end - datetime.timedelta(days=1)
+    last = end - timedelta(days=1)
     if start.year != last.year:
         return f"Sun {start.strftime('%b %d, %Y')} – Sat {last.strftime('%b %d, %Y')}"
     if start.month != last.month:
@@ -416,7 +418,7 @@ def _row_in_week_window(catalog: str, row: dict[str, Any], start: datetime.datet
     if dt is None:
         return False
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.timezone.utc)
+        dt = dt.replace(tzinfo=timezone.utc)
     local_dt = dt.astimezone()
     return start <= local_dt < end
 
@@ -444,7 +446,7 @@ def filter_coming_soon_rows(
             day = _parse_date_only(row.get("release_date") or row.get("date"))
             if day is None or day < today:
                 continue
-            sort_dt = datetime.datetime.combine(day, datetime.time.min, tzinfo=now.tzinfo)
+            sort_dt = datetime.datetime.combine(day, dt_time.min, tzinfo=now.tzinfo)
             upcoming.append((sort_dt, row))
             continue
 
@@ -452,7 +454,7 @@ def filter_coming_soon_rows(
         if dt is None:
             continue
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.timezone.utc)
+            dt = dt.replace(tzinfo=timezone.utc)
         local_dt = dt.astimezone(now.tzinfo)
         if local_dt <= now:
             continue
@@ -482,7 +484,7 @@ def filter_calendar_rows(
 ) -> list[dict[str, Any]]:
     start, end = _week_window_bounds()
     if window_days != DEFAULT_WINDOW_DAYS:
-        end = start + datetime.timedelta(days=max(1, window_days))
+        end = start + timedelta(days=max(1, window_days))
     filtered: list[dict[str, Any]] = []
 
     for row in rows:
@@ -493,7 +495,7 @@ def filter_calendar_rows(
         filtered.append(row)
 
     filtered.sort(
-        key=lambda item: (_row_air_datetime(item) or datetime.datetime.max.replace(tzinfo=datetime.timezone.utc))
+        key=lambda item: (_row_air_datetime(item) or datetime.datetime.max.replace(tzinfo=timezone.utc))
     )
     g.log(
         f"Simkl calendar: Sun–Sat week {_week_range_label()} — {len(filtered)} {catalog} rows",
@@ -541,7 +543,7 @@ def _format_air_display(catalog: str, row: dict[str, Any]) -> dict[str, str]:
     if catalog == "movie":
         release_day = _parse_date_only(row.get("release_date") or row.get("date"))
         if release_day is not None:
-            weekday = _calendar_datetime.combine(release_day, datetime.time.min).strftime("%A")
+            weekday = _calendar_datetime.combine(release_day, dt_time.min).strftime("%A")
             date_fmt = release_day.strftime("%d %b")
             return {
                 "raw_time": "",
@@ -598,7 +600,7 @@ def _format_countdown(episode_date: str | None) -> str:
     if dt is None:
         return "TBA"
     try:
-        now = datetime.datetime.now(dt.tzinfo or datetime.timezone.utc)
+        now = datetime.datetime.now(dt.tzinfo or timezone.utc)
         diff = dt - now
         if diff.total_seconds() < 0:
             return "Released"
@@ -726,7 +728,7 @@ def _fetch_simkl_api_metadata(
         if enrichment:
             out[simkl_id] = enrichment
         if index + 1 < len(unique_ids):
-            time.sleep(CALENDAR_SIMKL_API_SLEEP)
+            time_module.sleep(CALENDAR_SIMKL_API_SLEEP)
 
     g.log(
         f"Simkl calendar: Simkl API matched {len(out)}/{len(unique_ids)} "
@@ -1019,7 +1021,7 @@ def _fetch_imdb_calendar_metadata(
             for simkl_id in imdb_to_simkl.get(imdb_id, []):
                 out[int(simkl_id)] = enrichment
         if index + CALENDAR_IMDB_BATCH_SIZE < len(id_list):
-            time.sleep(CALENDAR_IMDB_SLEEP)
+            time_module.sleep(CALENDAR_IMDB_SLEEP)
 
     g.log(
         f"Simkl calendar: IMDb matched {matched_titles}/{len(imdb_to_simkl)} titles "
@@ -1292,7 +1294,7 @@ def _fetch_mdblist_by_simkl_id(
                     out[int(simkl_id)] = item
 
             if i + CALENDAR_MDBLIST_BATCH_SIZE < len(id_list):
-                time.sleep(CALENDAR_MDBLIST_SLEEP)
+                time_module.sleep(CALENDAR_MDBLIST_SLEEP)
 
     g.log(f"Simkl calendar: MDBList matched {len(out)}/{mdblist_targets} titles", "info")
     return out, mdblist_targets
@@ -1513,13 +1515,13 @@ def _try_acquire_prefetch_lock() -> bool:
             try:
                 with open(path, encoding="utf-8") as handle:
                     payload = json.load(handle)
-                age = time.time() - float(payload.get("timestamp") or 0)
+                age = time_module.time() - float(payload.get("timestamp") or 0)
                 if age < 900:
                     return False
             except (OSError, json.JSONDecodeError, TypeError, ValueError):
                 pass
         with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"timestamp": time.time()}, handle)
+            json.dump({"timestamp": time_module.time()}, handle)
         return True
     except OSError:
         return False
@@ -1649,7 +1651,7 @@ def open_calendar(catalog: str) -> None:
 def _navigate_calendar_selection(selected: dict[str, Any]) -> None:
     from resources.lib.gui.tvshowMenus import Menus as ShowMenus
     from resources.lib.modules.list_builder import ListBuilder
-    from resources.lib.meta.enrichment import MetaEnrichmentQueue
+    from resources.lib.modules.page_prefetch import enrich_refs_blocking
     from resources.lib.simkl.media_ref import enrich_and_persist, normalize_simkl_item
 
     catalog = selected.get("catalog") or "tv"
@@ -1663,16 +1665,23 @@ def _navigate_calendar_selection(selected: dict[str, Any]) -> None:
         g.cancel_directory()
         return
 
-    refs = enrich_and_persist(catalog, [sync], force_simkl_meta=True, enrich=False)
+    title = (sync.get("simkl_object") or {}).get("info", {}).get("title") or sync.get("simkl_id")
+    g.log(f"[CALENDAR] Loading details for {title} ({catalog})", "info")
+
+    refs = enrich_and_persist(
+        catalog,
+        [sync],
+        force_simkl_meta=True,
+        enrich=True,
+        fast_path=False,
+    )
 
     if not refs:
         xbmcgui.Dialog().ok(g.ADDON_NAME, "Could not load item details.")
         g.cancel_directory()
         return
 
-    if fast_path:
-        media_type = "movie" if catalog == "movie" else "tvshow"
-        MetaEnrichmentQueue.schedule_run_plugin(refs, media_type, reason="calendar", catalog=catalog)
+    enrich_refs_blocking(refs, catalog, reason="calendar")
 
     if catalog == "movie":
         from resources.lib.discover.renderer import discover_list_kwargs
