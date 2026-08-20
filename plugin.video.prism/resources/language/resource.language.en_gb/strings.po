@@ -5050,8 +5050,8 @@ msgid "Show (Dub) in anime titles"
 msgstr "Show (Dub) in anime titles"
 
 msgctxt "#30945"
-msgid "Prefix anime menu titles with (Dub) when MAL-Dubs lists an English dub for that show. Uses mal_dub.json in addon userdata."
-msgstr "Prefix anime menu titles with (Dub) when MAL-Dubs lists an English dub for that show. Uses mal_dub.json in addon userdata."
+msgid "Append (Dub) to anime menu titles when MAL-Dubs lists an English dub for that show. Uses mal_dub.json in addon userdata."
+msgstr "Append (Dub) to anime menu titles when MAL-Dubs lists an English dub for that show. Uses mal_dub.json in addon userdata."
 
 msgctxt "#30946"
 msgid "Select All"

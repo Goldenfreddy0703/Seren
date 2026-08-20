@@ -18,28 +18,39 @@ def _mal_dub_path() -> str:
     return os.path.join(g.ADDON_USERDATA_PATH, MAL_DUB_FILENAME)
 
 
+def _read_dub_payload() -> dict | None:
+    try:
+        with open(_mal_dub_path(), encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _payload_to_ids(payload: dict) -> set[str]:
+    dubbed = payload.get("dubbed")
+    if isinstance(dubbed, list):
+        return {str(item) for item in dubbed if item is not None}
+    ids: set[str] = set()
+    for key, value in payload.items():
+        if str(key).startswith("_"):
+            continue
+        if value is True or (isinstance(value, dict) and value.get("dub")):
+            ids.add(str(key))
+    return ids
+
+
 def _load_dub_ids() -> set[str]:
     global _dub_ids
     if _dub_ids is not None:
         return _dub_ids
 
-    _dub_ids = set()
-    try:
-        with open(_mal_dub_path(), encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return _dub_ids
+    payload = _read_dub_payload()
+    if not payload:
+        update_mal_dub_list()
+        payload = _read_dub_payload()
 
-    if isinstance(payload, dict):
-        dubbed = payload.get("dubbed")
-        if isinstance(dubbed, list):
-            _dub_ids = {str(item) for item in dubbed if item is not None}
-        else:
-            for key, value in payload.items():
-                if str(key).startswith("_"):
-                    continue
-                if value is True or (isinstance(value, dict) and value.get("dub")):
-                    _dub_ids.add(str(key))
+    _dub_ids = _payload_to_ids(payload) if payload else set()
     return _dub_ids
 
 

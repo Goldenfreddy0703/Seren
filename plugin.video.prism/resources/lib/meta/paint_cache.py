@@ -46,10 +46,6 @@ def sync_row_to_paint_row(sync_item: dict[str, Any]) -> dict[str, Any] | None:
     if catalog:
         if not info.get("catalog"):
             info["catalog"] = catalog
-        if catalog == "anime":
-            from resources.lib.simkl.field_map import ensure_anime_title_slots
-
-            ensure_anime_title_slots(info)
     row = {
         "simkl_id": int(sync_item["simkl_id"]),
         "info": dict(info),
@@ -791,14 +787,6 @@ def _paint_media_group(
         if sid not in display_hits or not row_has_trusted_paint_stamp(display_hits.get(sid))
     ]
     sync_hits = fetch_simkl_paint_rows_batch(media_type, missing_ids, db) if missing_ids else {}
-    anime_ids = [
-        int(ref["simkl_id"])
-        for ref in refs
-        if ref.get("simkl_id") is not None and ref.get("catalog") == "anime"
-    ]
-    if anime_ids:
-        anime_sync_hits = fetch_simkl_paint_rows_batch(media_type, anime_ids, db)
-        sync_hits = {**sync_hits, **anime_sync_hits}
 
     rows: list[dict[str, Any]] = []
     used_display = False
@@ -866,16 +854,6 @@ def _paint_media_group(
                 painted = filled_paint
                 if ref.get("catalog"):
                     painted["catalog"] = ref["catalog"]
-        info = painted.get("info")
-        if isinstance(info, dict) and ref.get("catalog") == "anime":
-            from resources.lib.simkl.field_map import ensure_anime_title_slots, merge_anime_title_slots
-
-            sync_src = sync_hits.get(sid)
-            if sync_src and isinstance(sync_src.get("info"), dict):
-                merge_anime_title_slots(info, sync_src["info"])
-            if payload_paint and isinstance(payload_paint.get("info"), dict):
-                merge_anime_title_slots(info, payload_paint["info"])
-            ensure_anime_title_slots(info)
         painted = _ensure_paint_action_args(painted, ref.get("catalog"))
         if _apply_list_filters(painted, media_type, hide_unaired=hide_unaired, hide_watched=hide_watched):
             continue
@@ -1003,11 +981,6 @@ def paint_catalog_page_rows(
             prefer_rich_payload=prefer_rich_payload,
         )
         cached = get_session_page_paint(cache_key)
-        if cached is not None:
-            from resources.lib.simkl.field_map import paint_page_has_collapsed_anime_titles
-
-            if paint_page_has_collapsed_anime_titles(cached):
-                cached = None
         if cached is not None:
             from resources.lib.database.session import get_sync_database
 

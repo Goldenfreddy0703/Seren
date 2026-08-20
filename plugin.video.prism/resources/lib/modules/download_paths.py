@@ -40,7 +40,10 @@ def resolve_show_title(item_information):
     info = _item_info(item_information)
     title = info.get('tvshowtitle') or info.get('title') or 'Unknown'
     if is_anime_catalog(item_information):
-        title = g._localize_anime_title(title, info)
+        from resources.lib.simkl.field_map import ensure_anime_title_slots, format_anime_display_name
+
+        ensure_anime_title_slots(info)
+        title = format_anime_display_name(info, fallback=title) or title
     return sanitize_path_component(title)
 
 
@@ -48,7 +51,10 @@ def resolve_movie_title(item_information):
     info = _item_info(item_information)
     title = info.get('title') or 'Unknown'
     if is_anime_catalog(item_information):
-        title = g._localize_anime_title(title, info)
+        from resources.lib.simkl.field_map import ensure_anime_title_slots, format_anime_display_name
+
+        ensure_anime_title_slots(info)
+        title = format_anime_display_name(info, fallback=title) or title
     return sanitize_path_component(title)
 
 

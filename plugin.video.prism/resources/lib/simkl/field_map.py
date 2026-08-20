@@ -154,43 +154,6 @@ def _normalized_anime_title_slots(
     return en_val, romaji_val
 
 
-def _anime_title_slots_from_discover_cdn(info: dict[str, Any]) -> tuple[str | None, str | None]:
-    ids = info.get("ids") if isinstance(info.get("ids"), dict) else {}
-    simkl_id = info.get("simkl_id") or ids.get("simkl") or ids.get("simkl_id")
-    if simkl_id is None:
-        return None, None
-
-    from resources.lib.discover.cdn_store import get_row
-    from resources.lib.discover.normalize import db_row_to_sync_dict
-
-    row = get_row("anime", int(simkl_id))
-    if not row:
-        return None, None
-
-    sync = db_row_to_sync_dict(row, "anime")
-    if not sync:
-        return None, None
-
-    src = (sync.get("simkl_object") or {}).get("info") or {}
-    source = {
-        **src,
-        "title": row.get("title") or src.get("title"),
-        "title_romaji": row.get("title_romaji") or src.get("title_romaji"),
-    }
-    return resolve_anime_titles_from_source(source)
-
-
-def anime_title_slots_collapsed(info: dict[str, Any]) -> bool:
-    """True when anime rows lack distinct English/Romaji slots."""
-    if not info:
-        return True
-    english = (info.get("title_en") or "").strip()
-    romaji = (info.get("title_romaji") or "").strip()
-    if not english or not romaji:
-        return True
-    return english == romaji
-
-
 def pick_anime_display_title(info: dict[str, Any], *, prefer_romaji: bool = False) -> str | None:
     """Choose the menu/calendar display title from stored anime title slots."""
     if not info:
@@ -200,15 +163,10 @@ def pick_anime_display_title(info: dict[str, Any], *, prefer_romaji: bool = Fals
     raw_romaji = _unescape(info.get("title_romaji"))
     canonical_title = _unescape(info.get("title"))
     en_title, romaji_title = _normalized_anime_title_slots(raw_en, raw_romaji, canonical_title)
-
-    if prefer_romaji and (
-        not romaji_title or _is_likely_localized_english_title(romaji_title) or romaji_title == en_title
-    ):
-        cdn_en, cdn_romaji = _anime_title_slots_from_discover_cdn(info)
-        if cdn_romaji and not _is_likely_localized_english_title(cdn_romaji):
-            romaji_title = cdn_romaji
-        if cdn_en:
-            en_title = cdn_en
+    if not en_title:
+        en_title = romaji_title or canonical_title
+    if not romaji_title:
+        romaji_title = en_title or canonical_title
 
     if not en_title and not romaji_title and not canonical_title:
         return None
@@ -220,6 +178,65 @@ def pick_anime_display_title(info: dict[str, Any], *, prefer_romaji: bool = Fals
     else:
         chosen = en_title or romaji_title or canonical_title
     return chosen if chosen else None
+
+
+def format_anime_display_name(
+    info: dict[str, Any],
+    *,
+    fallback: str | None = None,
+    prefer_romaji: bool | None = None,
+    apply_dub: bool = False,
+    apply_relation: bool = True,
+) -> str | None:
+    """Resolve anime list/download label from stored title slots (single pass)."""
+    if not info:
+        return fallback
+
+    if prefer_romaji is None:
+        from resources.lib.modules.globals import g
+
+        prefer_romaji = g.get_int_setting("general.anime.titlelanguage") == 1
+
+    display = pick_anime_display_title(info, prefer_romaji=prefer_romaji) or fallback
+    if not display:
+        return None
+
+    if apply_relation:
+        relation = info.get("relation_type")
+        if relation:
+            display = f"{display} ({relation})"
+
+    if not apply_dub:
+        return display
+
+    from resources.lib.modules.globals import g
+
+    if not g.get_bool_setting("general.anime.showDubLabel", False):
+        return display
+    if info.get("mediatype") not in ("tvshow", "movie"):
+        return display
+    if "(Dub)" in str(display):
+        return display
+
+    from resources.lib.simkl.ids import sync_flat_ids_from_ids, sync_ids_from_flat
+
+    sync_ids_from_flat(info)
+    sync_flat_ids_from_ids(info)
+    mal_id = info.get("mal_id")
+    if mal_id is None and isinstance(info.get("ids"), dict):
+        mal_id = info["ids"].get("mal")
+    if mal_id is None:
+        return display
+
+    try:
+        from resources.lib.anime.mal_dubs import has_dub
+
+        if has_dub(mal_id):
+            display = f"{display} {g.color_string('(Dub)', 'blue')}"
+    except Exception:
+        pass
+
+    return display
 
 
 def localized_anime_show_title(
@@ -271,19 +288,18 @@ def localized_anime_show_title(
 
 
 def merge_anime_title_slots(dst: dict[str, Any], src: dict[str, Any]) -> bool:
-    """Overlay anime title_en/title_romaji from a richer source (sync DB, Simkl detail)."""
+    """Overlay missing anime title_en/title_romaji from a richer source (sync DB, Simkl detail)."""
     if not isinstance(dst, dict) or not isinstance(src, dict):
         return False
-    collapsed = anime_title_slots_collapsed(dst)
     english, romaji = resolve_anime_titles_from_source(src)
     if not english and not romaji:
         english = src.get("title_en")
         romaji = src.get("title_romaji")
     changed = False
-    if english and (collapsed or dst.get("title_en") != english):
+    if english and not dst.get("title_en"):
         dst["title_en"] = english
         changed = True
-    if romaji and (collapsed or dst.get("title_romaji") != romaji):
+    if romaji and not dst.get("title_romaji"):
         dst["title_romaji"] = romaji
         changed = True
     if repair_inverted_anime_title_slots(dst):
@@ -292,84 +308,22 @@ def merge_anime_title_slots(dst: dict[str, Any], src: dict[str, Any]) -> bool:
 
 
 def ensure_anime_title_slots(info: dict[str, Any]) -> bool:
-    """Populate title_en/title_romaji locally. Null CDN title_romaji uses the English title."""
+    """Populate title_en/title_romaji locally from fields already on the row."""
     if not info:
         return False
-    collapsed = anime_title_slots_collapsed(info)
     english, romaji = resolve_anime_titles_from_source(info)
-    if english and (not info.get("title_en") or collapsed):
+    if english and not info.get("title_en"):
         info["title_en"] = english
-    if romaji and (not info.get("title_romaji") or collapsed):
+    if romaji and not info.get("title_romaji"):
         info["title_romaji"] = romaji
-    if not info.get("title") and english:
-        info["title"] = english
-    english = info.get("title_en") or info.get("title")
-    romaji = info.get("title_romaji") or info.get("title")
+    if not info.get("title_en"):
+        info["title_en"] = info.get("title_romaji") or info.get("title")
+    if not info.get("title_romaji"):
+        info["title_romaji"] = info.get("title_en") or info.get("title")
+    if not info.get("title"):
+        info["title"] = info.get("title_en") or info.get("title_romaji")
     repair_inverted_anime_title_slots(info)
-    return bool(english and romaji)
-
-
-def hydrate_collapsed_anime_titles(
-    info: dict[str, Any],
-    simkl_id: int,
-    *,
-    catalog: str = "anime",
-    allow_api: bool = True,
-) -> bool:
-    """Repair collapsed anime title slots from discover CDN or Simkl detail."""
-    if not isinstance(info, dict):
-        return False
-
-    ensure_anime_title_slots(info)
-    if not anime_title_slots_collapsed(info):
-        return True
-
-    wrapper = {
-        "simkl_id": int(simkl_id),
-        "catalog": catalog,
-        "info": dict(info),
-        "simkl_object": {"info": dict(info)},
-    }
-    from resources.lib.simkl.enrich import _merge_discover_db_gaps
-
-    merged = _merge_discover_db_gaps(wrapper)
-    merged_info = (merged.get("simkl_object") or {}).get("info") or {}
-    if merged_info:
-        merge_anime_title_slots(info, merged_info)
-        ensure_anime_title_slots(info)
-
-    if not anime_title_slots_collapsed(info):
-        return True
-
-    if not allow_api:
-        return False
-
-    from resources.lib.simkl.enrich import _simkl_detail_sync_dict
-
-    detail = _simkl_detail_sync_dict(int(simkl_id), catalog)
-    if not detail:
-        return False
-
-    detail_info = (detail.get("simkl_object") or {}).get("info") or {}
-    if detail_info:
-        merge_anime_title_slots(info, detail_info)
-        ensure_anime_title_slots(info)
-
-    return not anime_title_slots_collapsed(info)
-
-
-def paint_page_has_collapsed_anime_titles(rows: list) -> bool:
-    """True when any painted list row still lacks distinct anime title slots."""
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        info = row.get("info") if isinstance(row.get("info"), dict) else {}
-        catalog = row.get("catalog") or info.get("catalog")
-        ids = info.get("ids") if isinstance(info.get("ids"), dict) else {}
-        is_anime = catalog == "anime" or info.get("mal_id") or ids.get("mal")
-        if is_anime and anime_title_slots_collapsed(info):
-            return True
-    return False
+    return bool(info.get("title_en") or info.get("title_romaji") or info.get("title"))
 
 
 def _normalize_imdb_id(value) -> str | None:
@@ -610,11 +564,10 @@ def enrich_info_from_simkl(
 
     # Capture anime English / Romaji titles so the title-language preference can pick at render time.
     if catalog == "anime" or source.get("anime_type") or info.get("mal_id"):
-        collapsed = anime_title_slots_collapsed(info)
         en_title, romaji_title = resolve_anime_titles_from_source(source)
-        if en_title and (not info.get("title_en") or collapsed):
+        if en_title and not info.get("title_en"):
             info["title_en"] = en_title
-        if romaji_title and (not info.get("title_romaji") or collapsed):
+        if romaji_title and not info.get("title_romaji"):
             info["title_romaji"] = romaji_title
 
     if source.get("year") is not None and info.get("year") is None:

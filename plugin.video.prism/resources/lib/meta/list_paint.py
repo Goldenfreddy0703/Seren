@@ -93,19 +93,9 @@ def attach_preloaded_catalog_paint(
     )
     cached_page = get_session_page_paint(session_key)
     if cached_page is not None:
-        from resources.lib.meta.paint_cache import mixed_page_paint_all_complete, overlay_display_meta_stamps
-        from resources.lib.meta.paint_complete import rows_page_paint_ready
-        from resources.lib.simkl.field_map import paint_page_has_collapsed_anime_titles
-
-        if paint_page_has_collapsed_anime_titles(cached_page):
-            cached_page = None
-    if cached_page is not None:
-        from resources.lib.meta.paint_cache import mixed_page_paint_all_complete, overlay_display_meta_stamps
+        from resources.lib.meta.paint_cache import mixed_page_paint_all_complete, overlay_page_watch_fields
         from resources.lib.meta.paint_complete import rows_page_paint_ready
 
-        from resources.lib.meta.paint_cache import overlay_page_watch_fields
-
-        cached_page = overlay_display_meta_stamps(cached_page)
         cached_page = overlay_page_watch_fields(cached_page)
         merged["preloaded_paint_rows"] = cached_page
         merged["preloaded_paint_complete"] = rows_page_paint_ready(cached_page, profile=paint_profile) or mixed_page_paint_all_complete(
@@ -426,14 +416,8 @@ def attach_preloaded_catalog_paint_mixed(
     )
     cached_page = get_session_page_paint(session_key)
     if cached_page is not None:
-        from resources.lib.simkl.field_map import paint_page_has_collapsed_anime_titles
-
-        if paint_page_has_collapsed_anime_titles(cached_page):
-            cached_page = None
-    if cached_page is not None:
         from resources.lib.meta.paint_cache import overlay_page_watch_fields
 
-        cached_page = overlay_display_meta_stamps(cached_page)
         cached_page = overlay_page_watch_fields(cached_page)
         merged["preloaded_paint_rows"] = cached_page
         merged["preloaded_paint_complete"] = rows_page_paint_ready(cached_page, profile=paint_profile) or mixed_page_paint_all_complete(
@@ -1038,10 +1022,9 @@ def _finalize_anime_show_context(show_ctx: dict[str, Any] | None, simkl_show_id:
     if not (info.get("catalog") == "anime" or info.get("mal_id")):
         return show_ctx
 
-    from resources.lib.simkl.field_map import hydrate_collapsed_anime_titles
+    from resources.lib.simkl.field_map import ensure_anime_title_slots
 
-    catalog = info.get("catalog") or "anime"
-    hydrate_collapsed_anime_titles(info, int(simkl_show_id), catalog=catalog)
+    ensure_anime_title_slots(info)
     if info.get("title") or info.get("tvshowtitle"):
         show_ctx["title"] = info.get("title") or info.get("tvshowtitle")
     return show_ctx

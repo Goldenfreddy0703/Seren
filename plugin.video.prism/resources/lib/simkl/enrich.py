@@ -141,8 +141,12 @@ def gapfill_anime_title_rows(rows: list) -> list:
         if not isinstance(row, dict):
             continue
         info = row.get("info")
-        if isinstance(info, dict):
-            ensure_anime_title_slots(info)
+        if not isinstance(info, dict):
+            continue
+        catalog = row.get("catalog") or info.get("catalog")
+        if catalog != "anime" and not _is_anime_info(info):
+            continue
+        ensure_anime_title_slots(info)
     return rows
 
 
@@ -209,20 +213,8 @@ def _row_has_list_paint_fields(item: dict) -> bool:
     return bool(title and poster)
 
 
-def _anime_row_needs_title_gapfill(item: dict) -> bool:
-    from resources.lib.simkl.field_map import anime_title_slots_collapsed
-
-    blob = item.get("simkl_object") or {}
-    info = blob.get("info") if isinstance(blob.get("info"), dict) else {}
-    if not info and isinstance(item.get("info"), dict):
-        info = item["info"]
-    return _is_anime_info(info) and anime_title_slots_collapsed(info)
-
-
 def _row_needs_discover_gapfill(item: dict) -> bool:
     """True when a list row still needs discover CDN / catalog gap-fill."""
-    if _anime_row_needs_title_gapfill(item):
-        return True
     if not _row_has_list_paint_fields(item):
         return True
     blob = item.get("simkl_object") or {}
@@ -298,11 +290,6 @@ def simkl_detail_needed(item: dict) -> bool:
         info = item["info"]
     if not _has_simkl_owned_metadata(info):
         return True
-    if _is_anime_info(info):
-        from resources.lib.simkl.field_map import anime_title_slots_collapsed
-
-        if anime_title_slots_collapsed(info):
-            return True
     return False
 
 

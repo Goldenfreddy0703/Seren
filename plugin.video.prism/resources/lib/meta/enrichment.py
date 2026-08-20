@@ -502,9 +502,19 @@ class MetaEnrichmentQueue:
         )
         if not rows:
             return
+        anime_rows = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            info = row.get("info") if isinstance(row.get("info"), dict) else {}
+            catalog = row.get("catalog") or info.get("catalog")
+            if catalog == "anime" or info.get("mal_id"):
+                anime_rows.append(row)
+        if not anime_rows:
+            return
         from resources.lib.simkl.enrich import gapfill_anime_title_rows
 
-        updated = gapfill_anime_title_rows(rows)
+        updated = gapfill_anime_title_rows(anime_rows)
         db.metadataHandler._persist_list_rows(
             updated,
             "movie" if media_type == "movie" else "tvshow",

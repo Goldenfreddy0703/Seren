@@ -275,7 +275,7 @@ class ListBuilder:
         :return: List list_items if smart_play Kwarg is True else None
         """
         catalog = params.pop("catalog", None)
-        content_type = g.CONTENT_ANIME if catalog == "anime" else g.CONTENT_SHOW
+        content_type = self._catalog_content_type(catalog)
         action = "flatEpisodes" if g.get_bool_setting("general.flatten.episodes") else "showSeasons"
         if g.get_bool_setting("smartplay.clickresume"):
             params["is_folder"] = False
@@ -725,8 +725,14 @@ class ListBuilder:
             merged = _merge_sync_item_rows(wrapped, page_item)
             updated = dict(row)
             blob = merged.get("simkl_object") if isinstance(merged.get("simkl_object"), dict) else {}
-            updated["info"] = merged.get("info") or blob.get("info") or info
+            merged_info = dict(merged.get("info") or blob.get("info") or info)
+            for ext_key in ("mal_id", "tmdb_id", "tvdb_id", "imdb_id"):
+                if merged.get(ext_key) and not merged_info.get(ext_key):
+                    merged_info[ext_key] = merged[ext_key]
+            updated["info"] = merged_info
             updated["art"] = merged.get("art") or blob.get("art") or art
+            if merged.get("mal_id"):
+                updated["mal_id"] = merged["mal_id"]
             merged_rows.append(updated)
         return merged_rows
 
@@ -782,9 +788,17 @@ class ListBuilder:
         sync_params.setdefault("skip_update", False)
         return self._overlay_page_cdn_rows(fetch_rows(media_list, **sync_params), media_list)
 
-    def show_discover_builder(self, media_list, **params):
-        """Discover TV browse — Seren-style simkl_sync path."""
-        catalog_hint = self._discover_catalog_hint("tv", params)
+    @staticmethod
+    def _catalog_content_type(catalog: str | None) -> str:
+        if catalog == "anime":
+            return g.CONTENT_ANIME
+        if catalog == "movie":
+            return g.CONTENT_MOVIE
+        return g.CONTENT_SHOW
+
+    def _show_discover_builder(self, media_list, *, default_catalog: str, **params):
+        """Discover TV/anime browse — Seren-style simkl_sync path."""
+        catalog_hint = self._discover_catalog_hint(default_catalog, params)
         rows = self._discover_builder_paint_rows(
             media_list,
             fetch_rows=self._sync_db().get_show_list,
@@ -792,11 +806,15 @@ class ListBuilder:
         )
         self._common_menu_builder(
             rows,
-            g.CONTENT_SHOW,
+            self._catalog_content_type(catalog_hint),
             self._discover_show_action(),
             catalog_hint=catalog_hint,
             **params,
         )
+
+    def show_discover_builder(self, media_list, **params):
+        """Discover TV browse — Seren-style simkl_sync path."""
+        self._show_discover_builder(media_list, default_catalog="tv", **params)
 
     def movie_discover_builder(self, media_list, **params):
         """Discover movie browse — Seren-style simkl_sync path."""
@@ -818,19 +836,7 @@ class ListBuilder:
 
     def anime_discover_builder(self, media_list, **params):
         """Anime browse — Seren-style simkl_sync path."""
-        catalog_hint = self._discover_catalog_hint("anime", params)
-        rows = self._discover_builder_paint_rows(
-            media_list,
-            fetch_rows=self._sync_db().get_show_list,
-            params=params,
-        )
-        self._common_menu_builder(
-            rows,
-            g.CONTENT_SHOW,
-            self._discover_show_action(),
-            catalog_hint=catalog_hint,
-            **params,
-        )
+        self._show_discover_builder(media_list, default_catalog="anime", **params)
 
     def actor_credits_builder(self, media_list, **params):
         """Build mixed filmography from Simkl-resolved sync dicts."""
@@ -1166,13 +1172,17 @@ class ListBuilder:
         if mediatype not in ("season", "episode") and (
             catalog == "anime" or info.get("mal_id") or ids.get("mal")
         ):
-            from resources.lib.simkl.field_map import pick_anime_display_title
+            from resources.lib.simkl.field_map import format_anime_display_name
+            from resources.lib.simkl.ids import sync_flat_ids_from_ids, sync_ids_from_flat
 
-            prefer_romaji = g.get_int_setting("general.anime.titlelanguage") == 1
-            localized = pick_anime_display_title(info, prefer_romaji=prefer_romaji)
+            if item.get("mal_id") and not info.get("mal_id"):
+                info["mal_id"] = item["mal_id"]
+            sync_ids_from_flat(info)
+            sync_flat_ids_from_ids(info)
+
+            localized = format_anime_display_name(info, fallback=name, apply_dub=True)
             if localized:
-                relation = info.get("relation_type")
-                name = f"{localized} ({relation})" if relation else localized
+                name = localized
 
         if not name and info.get("mediatype") == "season":
             if info.get("season") is None and item.get("season") is not None:

@@ -1546,47 +1546,8 @@ class GlobalVariables:
         return tuple({ext for ext in xbmc.getSupportedMedia("video").split("|") if ext not in {"", ".zip", ".rar", ".url"}})
 
     def _localize_anime_title(self, name, info):
-        """Apply anime title language and optional (Dub) prefix — updates info.title like title language does."""
-        display = name
-        try:
-            if info and info.get("mediatype") in ("tvshow", "movie"):
-                ids = info.get("ids") if isinstance(info.get("ids"), dict) else {}
-                is_anime = info.get("catalog") == "anime" or info.get("mal_id") or ids.get("mal")
-                if is_anime:
-                    from resources.lib.simkl.field_map import pick_anime_display_title
-
-                    prefer_romaji = self.get_int_setting("general.anime.titlelanguage") == 1
-                    preferred = pick_anime_display_title(info, prefer_romaji=prefer_romaji)
-                    if preferred:
-                        display = preferred
-                        relation = info.get("relation_type")
-                        if relation:
-                            display = f"{display} ({relation})"
-        except Exception:
-            pass
-
-        if not self.get_bool_setting("general.anime.showDubLabel", False):
-            return display
-        if not info or info.get("mediatype") not in ("tvshow", "movie"):
-            return display
-        if "(Dub)" in str(display):
-            return display
-
-        mal_id = info.get("mal_id")
-        if mal_id is None and isinstance(info.get("ids"), dict):
-            mal_id = info["ids"].get("mal")
-        if mal_id is None:
-            return display
-
-        try:
-            from resources.lib.anime.mal_dubs import has_dub
-
-            if has_dub(mal_id):
-                display = f"{self.color_string('(Dub)', 'blue')} {display}"
-        except Exception:
-            self.log_stacktrace()
-
-        return display
+        """List labels are finalized in list_builder; passthrough for add_directory_item."""
+        return name
 
     def add_directory_item(self, name, **params):
         menu_item = params.pop("menu_item", {})

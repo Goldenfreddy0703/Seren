@@ -157,6 +157,33 @@ def paginate_sync_items_for_refs(
     if page_items and thin_count == 0:
         return page_items
 
+    if page_items and thin_count > 0:
+        from resources.lib.simkl.enrich import _merge_discover_db_gaps
+
+        by_id: dict[int, dict] = {}
+        for item in page_items:
+            sid = item.get("simkl_id")
+            if sid is None:
+                continue
+            row = dict(item)
+            if _row_needs_discover_gapfill(row):
+                row = _merge_discover_db_gaps(row)
+            by_id[int(sid)] = row
+        merged_page: list[dict] = []
+        for ref in refs:
+            sid = ref.get("simkl_id")
+            if sid is None:
+                continue
+            row = by_id.get(int(sid))
+            if not row:
+                continue
+            row = dict(row)
+            if ref.get("catalog"):
+                row["catalog"] = ref["catalog"]
+            merged_page.append(row)
+        if len(merged_page) == len(refs):
+            return merged_page
+
     fresh_items = loader()
     if not fresh_items:
         return page_items
