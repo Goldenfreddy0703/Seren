@@ -194,10 +194,12 @@ def dispatch(params):
             # Clear out last resolved title for a show if we are doing a rescrape
             if overwrite_cache and item_information['info']['mediatype'] == g.MEDIA_EPISODE:
                 from resources.lib.simkl.ids import release_title_cache_key
+                from resources.lib.modules.last_played_source import clear_last_played_source
 
                 cache_key = release_title_cache_key(item_information["info"])
                 if cache_key:
                     g.clear_runtime_setting(cache_key)
+                clear_last_played_source()
 
             # Get Sources
             sources_helper = helpers.SourcesHelper()
@@ -209,18 +211,32 @@ def dispatch(params):
                 background.set_process_started()
                 background.set_text("")
 
-            # Sort sources
-            sources = sources_helper.sort_sources(ii, sources_list)
-            if sources is None:
-                return
+            from resources.lib.modules.last_played_source import is_smart_play_reorder_context
 
-            # Select and resolve source
+            smart_play_context = is_smart_play_reorder_context(
+                item_information,
+                smart_url_arg=smart_url_arg,
+            )
+
+            # Sort sources
             if item_information['info']['mediatype'] == g.MEDIA_EPISODE:
                 source_select_style = "Episodes"
             else:
                 source_select_style = "Movie"
+            manual_source_select = (
+                g.get_int_setting(f"general.playstyle{source_select_style}") == 1 or source_select
+            )
+            sources = sources_helper.sort_sources(
+                ii,
+                sources_list,
+                smart_play_context=smart_play_context,
+                source_select=manual_source_select,
+            )
+            if sources is None:
+                return
 
-            if g.get_int_setting(f"general.playstyle{source_select_style}") == 1 or source_select:
+            # Select and resolve source
+            if manual_source_select:
 
                 if background:
                     background.set_text(g.get_language_string(30178))
@@ -232,7 +248,11 @@ def dispatch(params):
                 stream_link = sourceSelect.source_select(uncached, sources, item_information)
             else:
                 stream_link = helpers.Resolverhelper().resolve_silent_or_visible(
-                    sources, ii, pack_select, overwrite_cache=overwrite_cache
+                    sources,
+                    ii,
+                    pack_select,
+                    overwrite_cache=overwrite_cache,
+                    smart_play_context=smart_play_context,
                 )
                 if stream_link is None:
                     g.close_busy_dialog()
@@ -289,8 +309,17 @@ def dispatch(params):
                 return
             uncached, sources_list, ii = sources_result
 
+            from resources.lib.modules.last_played_source import is_smart_play_reorder_context
+
+            smart_play_context = is_smart_play_reorder_context(item_information, action="preScrape")
+
             # Sort sources
-            sources = sources_helper.sort_sources(ii, sources_list)
+            sources = sources_helper.sort_sources(
+                ii,
+                sources_list,
+                smart_play_context=smart_play_context,
+                source_select=False,
+            )
             if sources is None:
                 return
 
@@ -299,9 +328,12 @@ def dispatch(params):
             else:
                 source_select_style = "Movie"
             if g.get_int_setting(f"general.playstyle{source_select_style}") == 0 and sources:
-                from resources.lib.modules import resolver
-
-                helpers.Resolverhelper().resolve_silent_or_visible(sources, ii, pack_select)
+                helpers.Resolverhelper().resolve_silent_or_visible(
+                    sources,
+                    ii,
+                    pack_select,
+                    smart_play_context=smart_play_context,
+                )
         finally:
             g.set_runtime_setting("tempSilent", False)
 

@@ -6,6 +6,7 @@ from resources.lib.routing.registry import register_action
 import xbmc
 import xbmcgui
 
+from resources.lib.modules.exceptions import NoPlayableSourcesException
 from resources.lib.modules.globals import g
 
 
@@ -15,6 +16,7 @@ def handle_forceResumeShow(ctx: DispatchContext) -> None:
     from resources.lib.common import tools
 
     smartPlay.SmartPlay(tools.get_item_information(ctx.action_args)).resume_show()
+
 
 @register_action("getSources")
 def handle_getSources(ctx: DispatchContext) -> None:
@@ -30,7 +32,6 @@ def handle_getSources(ctx: DispatchContext) -> None:
     g.set_runtime_setting("playback.pipeline_busy", True)
 
     try:
-        # Check to confirm user has a debrid provider authenticated and enabled
         if not g.premium_check() and ProviderCache().debrid_providers_enabed():
             xbmcgui.Dialog().ok(
                 g.ADDON_NAME,
@@ -41,7 +42,6 @@ def handle_getSources(ctx: DispatchContext) -> None:
             )
             return None
 
-        # workaround for widgets not generating a playlist on playback request
         play_list = smart_play.playlist_present_check(ctx.smart_url_arg)
 
         if play_list:
@@ -49,19 +49,24 @@ def handle_getSources(ctx: DispatchContext) -> None:
             xbmc.Player().play(g.PLAYLIST)
             return
 
-        resume_time = smart_play.handle_resume_prompt(resume, ctx.force_resume_off, ctx.force_resume_on, ctx.force_resume_check)
+        resume_time = smart_play.handle_resume_prompt(
+            ctx.resume,
+            ctx.force_resume_off,
+            ctx.force_resume_on,
+            ctx.force_resume_check,
+        )
         background = helpers.show_persistent_window_if_required(item_information)
-        # Clear out last resolved title for a show if we are doing a rescrape
-        if ctx.overwrite_cache and item_information['info']['ctx.mediatype'] == g.MEDIA_EPISODE:
+        if ctx.overwrite_cache and item_information['info']['mediatype'] == g.MEDIA_EPISODE:
             from resources.lib.simkl.ids import release_title_cache_key
+            from resources.lib.modules.last_played_source import clear_last_played_source
 
             cache_key = release_title_cache_key(item_information["info"])
             if cache_key:
                 g.clear_runtime_setting(cache_key)
+            clear_last_played_source()
 
-        # Get Sources
         sources_helper = helpers.SourcesHelper()
-        sources_result = sources_helper.get_sources(ctx.action_args, ctx.overwrite_cache=ctx.overwrite_cache)
+        sources_result = sources_helper.get_sources(ctx.action_args, overwrite_cache=ctx.overwrite_cache)
         if sources_result is None:
             return
         uncached, sources_list, ii = sources_result
@@ -69,19 +74,30 @@ def handle_getSources(ctx: DispatchContext) -> None:
             background.set_process_started()
             background.set_text("")
 
-        # Sort sources
-        sources = sources_helper.sort_sources(ii, sources_list)
+        from resources.lib.modules.last_played_source import is_smart_play_reorder_context
+
+        smart_play_context = is_smart_play_reorder_context(
+            item_information,
+            smart_url_arg=ctx.smart_url_arg,
+        )
+
+        if item_information['info']['mediatype'] == g.MEDIA_EPISODE:
+            source_select_style = "Episodes"
+        else:
+            source_select_style = "Movie"
+        manual_source_select = (
+            g.get_int_setting(f"general.playstyle{source_select_style}") == 1 or ctx.source_select
+        )
+        sources = sources_helper.sort_sources(
+            ii,
+            sources_list,
+            smart_play_context=smart_play_context,
+            source_select=manual_source_select,
+        )
         if sources is None:
             return
 
-        # Select and resolve source
-        if item_information['info']['ctx.mediatype'] == g.MEDIA_EPISODE:
-            ctx.source_select_style = "Episodes"
-        else:
-            ctx.source_select_style = "Movie"
-
-        if g.get_int_setting(f"general.playstyle{ctx.source_select_style}") == 1 or ctx.source_select:
-
+        if manual_source_select:
             if background:
                 background.set_text(g.get_language_string(30178))
             from resources.lib.modules import sourceSelect
@@ -89,10 +105,14 @@ def handle_getSources(ctx: DispatchContext) -> None:
             xbmc.sleep(750)
             if background:
                 background.set_text("")
-            stream_link = sourceSelect.ctx.source_select(uncached, sources, item_information)
+            stream_link = sourceSelect.source_select(uncached, sources, item_information)
         else:
             stream_link = helpers.Resolverhelper().resolve_silent_or_visible(
-                sources, ii, ctx.pack_select, ctx.overwrite_cache=ctx.overwrite_cache
+                sources,
+                ii,
+                ctx.pack_select,
+                overwrite_cache=ctx.overwrite_cache,
+                smart_play_context=smart_play_context,
             )
             if stream_link is None:
                 g.close_busy_dialog()
@@ -132,16 +152,16 @@ def handle_getSources(ctx: DispatchContext) -> None:
     finally:
         g.clear_runtime_setting("playback.pipeline_busy")
 
+
 @register_action("playFromRandomPoint")
 def handle_playFromRandomPoint(ctx: DispatchContext) -> None:
     from resources.lib.modules import smartPlay
 
     smartPlay.SmartPlay(ctx.action_args).play_from_random_point()
 
+
 @register_action("preScrape")
 def handle_preScrape(ctx: DispatchContext) -> None:
-
-    from resources.lib.database.skinManager import SkinManager
     from resources.lib.modules import helpers
 
     try:
@@ -149,30 +169,41 @@ def handle_preScrape(ctx: DispatchContext) -> None:
 
         item_information = tools.get_item_information(ctx.action_args)
 
-        # Get Sources
         sources_helper = helpers.SourcesHelper()
         sources_result = sources_helper.get_sources(ctx.action_args)
         if sources_result is None:
             return
         uncached, sources_list, ii = sources_result
 
-        # Sort sources
-        sources = sources_helper.sort_sources(ii, sources_list)
+        from resources.lib.modules.last_played_source import is_smart_play_reorder_context
+
+        smart_play_context = is_smart_play_reorder_context(item_information, action="preScrape")
+
+        sources = sources_helper.sort_sources(
+            ii,
+            sources_list,
+            smart_play_context=smart_play_context,
+            source_select=False,
+        )
         if sources is None:
             return
 
-        if item_information["info"]["ctx.mediatype"] == g.MEDIA_EPISODE:
-            ctx.source_select_style = "Episodes"
+        if item_information["info"]["mediatype"] == g.MEDIA_EPISODE:
+            source_select_style = "Episodes"
         else:
-            ctx.source_select_style = "Movie"
-        if g.get_int_setting(f"general.playstyle{ctx.source_select_style}") == 0 and sources:
-            from resources.lib.modules import resolver
-
-            helpers.Resolverhelper().resolve_silent_or_visible(sources, ii, ctx.pack_select)
+            source_select_style = "Movie"
+        if g.get_int_setting(f"general.playstyle{source_select_style}") == 0 and sources:
+            helpers.Resolverhelper().resolve_silent_or_visible(
+                sources,
+                ii,
+                ctx.pack_select,
+                smart_play_context=smart_play_context,
+            )
     finally:
         g.set_runtime_setting("tempSilent", False)
 
     g.log("Pre-scraping completed")
+
 
 @register_action("runPlayerDialogs")
 def handle_runPlayerDialogs(ctx: DispatchContext) -> None:
@@ -183,6 +214,7 @@ def handle_runPlayerDialogs(ctx: DispatchContext) -> None:
         player_dialogs.display_dialog()
     finally:
         del player_dialogs
+
 
 @register_action("showSkipSegment")
 def handle_showSkipSegment(ctx: DispatchContext) -> None:
@@ -198,6 +230,7 @@ def handle_showSkipSegment(ctx: DispatchContext) -> None:
         window.doModal()
     finally:
         del window
+
 
 @register_action("shufflePlay")
 def handle_shufflePlay(ctx: DispatchContext) -> None:

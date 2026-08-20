@@ -15,11 +15,12 @@ class SourceSorter:
 
     FIXED_SORT_POSITION_OBJECT = FixedSortPositionObject()
 
-    def __init__(self, item_information):
+    def __init__(self, item_information, *, skip_last_release_priority=False):
         """
         Handles sorting of sources according to users preference
         """
         self.item_information = item_information
+        self.skip_last_release_priority = skip_last_release_priority
         self.mediatype = self.item_information['info']['mediatype']
         ensure_migrated()
         self.catalog = resolve_catalog_from_item_information(item_information)
@@ -149,7 +150,11 @@ class SourceSorter:
             10: self._get_subtitle_sort_key,
         }
 
-        if self.mediatype == g.MEDIA_EPISODE and g.get_bool_setting("general.lastreleasenamepriority"):
+        if (
+            not self.skip_last_release_priority
+            and self.mediatype == g.MEDIA_EPISODE
+            and g.get_bool_setting("general.lastreleasenamepriority")
+        ):
             from resources.lib.simkl.ids import release_title_cache_key
 
             cache_key = release_title_cache_key(self.item_information["info"])
@@ -328,6 +333,21 @@ class SourceSorter:
             dvp = self.hdr_priorities.get("DV", -99)
 
         return max(hdrp, dvp)
+
+    def _load_last_release_name(self):
+        from resources.lib.simkl.ids import release_title_cache_key
+
+        cache_key = release_title_cache_key(self.item_information["info"])
+        return g.get_runtime_setting(cache_key) if cache_key else None
+
+    def apply_last_release_name_fallback(self, sources_list):
+        """SequenceMatcher boost when digit reorder did not find a template match."""
+        if self.mediatype != g.MEDIA_EPISODE or not g.get_bool_setting("general.lastreleasenamepriority"):
+            return sources_list
+        self.last_release_name = self._load_last_release_name()
+        if not self.last_release_name:
+            return sources_list
+        return sorted(sources_list, key=self._get_last_release_name_sort_key, reverse=True)
 
     def _get_last_release_name_sort_key(self, source):
         sm = SequenceMatcher(None, self.last_release_name, source['release_title'], autojunk=False)

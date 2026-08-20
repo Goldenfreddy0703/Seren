@@ -55,17 +55,19 @@ class Resolver:
         """
         stream_link = None
         release_title = None
+        resolved_source = None
 
         for source in sources:
             try:
                 stream_link, release_title = self.resolve_single_source(source, item_information, pack_select, silent)
                 if stream_link:
+                    resolved_source = source
                     break
             except Exception:
                 g.log_stacktrace()
                 continue
 
-        return stream_link, release_title
+        return stream_link, release_title, resolved_source
 
     def resolve_single_source(self, source, item_information, pack_select=False, silent=False):
         """

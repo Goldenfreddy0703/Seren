@@ -2213,6 +2213,13 @@
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
+				<setting id="general.last_played_source" type="string" help="">
+					<level>4</level>
+					<default/>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+				</setting>
 				<setting id="general.sortmethod.1" type="integer" label="30582" help="">
 					<level>4</level>
 					<default>2</default>
