@@ -186,32 +186,33 @@ class ActorMenus:
 
         persist_search_pagination(args)
 
-        items = fetch_filmography_page(int(person_id), g.PAGE, self.page_limit)
+        from resources.lib.meta.list_pipeline import get_list_store, make_list_id
+        from resources.lib.discover.renderer import discover_list_kwargs
+        from resources.lib.simkl.media_ref import render_mixed_sync_list
 
+        person_key = make_list_id("actor", person_id, args.get("catalog") or "mixed")
+        page = g.PAGE
+        store = get_list_store("actor")
+        items = store.load_page_items(
+            args.get("catalog") or "movie",
+            person_key,
+            page,
+            lambda: fetch_filmography_page(int(person_id), page, self.page_limit),
+        )
         if not items:
             notify_empty_search(30768)
             return
 
-        from resources.lib.database.session import get_sync_database
-        from resources.lib.discover.browse_catalog_seed import defer_browse_catalog_seed
-        from resources.lib.discover.renderer import discover_list_kwargs
-        from resources.lib.meta.list_paint import browse_list_kwargs
-        from resources.lib.simkl.media_ref import partition_by_catalog
-
-        db = get_sync_database()
-        movies, tv, anime = partition_by_catalog(items)
-        for cat, group in (("movie", movies), ("tv", tv), ("anime", anime)):
-            if group:
-                db.insert_browse_page(cat, group)
-                defer_browse_catalog_seed(cat, group)
-        actor_paint = browse_list_kwargs(**discover_list_kwargs())
-        actor_paint["enrichment_reason"] = "actor"
-        actor_paint["mixed_list"] = True
-        actor_paint["sync_path"] = True
-        actor_paint["skip_update"] = False
-        self.list_builder.actor_credits_builder(
+        render_mixed_sync_list(
             items,
-            **actor_paint,
+            **discover_list_kwargs(
+                seeded=True,
+                enrichment_reason="actor",
+                mixed_list=True,
+                has_next_page=len(items) >= self.page_limit,
+                next_action="actorCredits",
+                next_args=args,
+            ),
         )
 
 

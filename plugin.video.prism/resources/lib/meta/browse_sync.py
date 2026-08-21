@@ -10,7 +10,7 @@ def render_browse_sync_page(
     items: list[dict],
     list_builder,
     *,
-    defer_catalog_seed: bool = True,
+    defer_catalog_seed: bool = False,
     list_kwargs: dict | None = None,
     **kwargs,
 ) -> None:
@@ -19,23 +19,19 @@ def render_browse_sync_page(
         g.cancel_directory()
         return
 
-    from resources.lib.simkl.enrich import hydrate_sync_items_local
+    from resources.lib.meta.list_pipeline import seed_browse_page
 
-    items = hydrate_sync_items_local(items)
-
-    from resources.lib.database.session import get_sync_database
-    from resources.lib.discover.browse_catalog_seed import defer_browse_catalog_seed
-
-    db = get_sync_database()
-    db.insert_browse_page(catalog, items)
+    items = seed_browse_page(catalog, items)
     if defer_catalog_seed:
+        from resources.lib.discover.browse_catalog_seed import defer_browse_catalog_seed
+
         defer_browse_catalog_seed(catalog, items)
 
     merged_input = dict(list_kwargs or {})
     merged_input.update(kwargs)
     merged = browse_list_kwargs(**merged_input)
     merged.setdefault("sync_path", True)
-    merged.setdefault("skip_update", False)
+    merged.setdefault("skip_update", True)
     merged.setdefault("skip_mill", True)
     merged.pop("preloaded_paint_rows", None)
     merged.pop("preloaded_paint_complete", None)

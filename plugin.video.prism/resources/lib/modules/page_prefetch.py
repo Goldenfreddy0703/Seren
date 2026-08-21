@@ -359,6 +359,7 @@ def _prefetch_discover(page_params: dict[str, Any]) -> bool:
 
 
 def _prefetch_search(page_params: dict[str, Any]) -> bool:
+    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
     from resources.lib.simkl.media_ref import persist_search_results
     from resources.lib.simkl.search import search_page
     from resources.lib.simkl.search_menus import filter_search_results, normalize_search_query
@@ -378,7 +379,14 @@ def _prefetch_search(page_params: dict[str, Any]) -> bool:
         return False
     page = int(page_params.get("page") or 1)
     page_limit = g.get_int_setting("item.limit", 25)
-    items = search_page(url, media_type, page, page_limit, query)
+    list_id = make_list_id("search", catalog, query)
+    store = get_list_store("search")
+    items = store.load_page_items(
+        catalog,
+        list_id,
+        page,
+        lambda: search_page(url, media_type, page, page_limit, query),
+    )
     filtered = filter_search_results(items)
     if not filtered:
         return False
@@ -473,9 +481,13 @@ def _prefetch_genre_slug(page_params: dict[str, Any]) -> bool:
         return False
     page = int(page_params.get("page") or 1)
     page_limit = g.get_int_setting("item.limit", 25)
+    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
+
     result = browse.discover_by_genre_slug(catalog, slug, page, page_limit)
     if not result.items:
         return False
+    list_id = make_list_id("slug", catalog, slug)
+    get_list_store("genre").remember_items(catalog, list_id, result.items)
     refs = persist_genre_page(catalog, result.items, blocking_enrich=False, enrich_reason="prefetch_genre")
     if not refs:
         return False
@@ -522,6 +534,13 @@ def _prefetch_multi_genre(page_params: dict[str, Any]) -> bool:
 
     if not result.items:
         return False
+    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
+
+    if action == "animeGenresMultiGet":
+        list_id = make_list_id("tenrai", genre_ids, tenrai_page, tenrai_offset)
+    else:
+        list_id = make_list_id("tmdb", catalog, genre_ids, tmdb_page, tmdb_offset)
+    get_list_store("genre").remember_items(catalog, list_id, result.items)
     refs = persist_genre_page(catalog, result.items, blocking_enrich=False, enrich_reason="prefetch_genre")
     if not refs:
         return False
@@ -607,10 +626,13 @@ def _prefetch_library(page_params: dict[str, Any]) -> bool:
     catalog, status = _library_catalog_status(page_params)
     if not catalog or not status:
         return False
+    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
     from resources.lib.simkl.library_cache import load_library_list_refs
     from resources.lib.simkl.menu_helpers import paginate_refs_for_page
 
-    refs = load_library_list_refs(catalog, status)
+    list_id = make_list_id(status)
+    store = get_list_store("library")
+    refs = store.get_refs(catalog, list_id, lambda: load_library_list_refs(catalog, status))
     if not refs:
         return False
     page = int(page_params.get("page") or 1)
@@ -627,6 +649,7 @@ def _prefetch_library(page_params: dict[str, Any]) -> bool:
 
 
 def _prefetch_actor(page_params: dict[str, Any]) -> bool:
+    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
     from resources.lib.meta.paint_cache import page_cache_catalog
     from resources.lib.simkl.enrich import enrich_sync_items
     from resources.lib.simkl.media_ref import enrich_and_persist
@@ -639,7 +662,14 @@ def _prefetch_actor(page_params: dict[str, Any]) -> bool:
     catalog_hint = args.get("catalog") or "movie"
     page = int(page_params.get("page") or 1)
     page_limit = g.get_int_setting("item.limit", 25)
-    items = fetch_filmography_page(int(person_id), page, page_limit)
+    list_id = make_list_id("actor", person_id, catalog_hint)
+    store = get_list_store("actor")
+    items = store.load_page_items(
+        catalog_hint,
+        list_id,
+        page,
+        lambda: fetch_filmography_page(int(person_id), page, page_limit),
+    )
     if not items:
         return False
     items = enrich_sync_items(items, fast=True)
@@ -667,6 +697,7 @@ def _prefetch_actor(page_params: dict[str, Any]) -> bool:
 
 
 def _prefetch_year(page_params: dict[str, Any]) -> bool:
+    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
     from resources.lib.simkl import browse
     from resources.lib.simkl.media_ref import enrich_and_persist
 
@@ -680,7 +711,14 @@ def _prefetch_year(page_params: dict[str, Any]) -> bool:
         return False
     page = int(page_params.get("page") or 1)
     page_limit = g.get_int_setting("item.limit", 25)
-    items = browse.discover_by_year(catalog, year, page, page_limit)
+    list_id = make_list_id(year)
+    store = get_list_store("year")
+    items = store.load_page_items(
+        catalog,
+        list_id,
+        page,
+        lambda: browse.discover_by_year(catalog, year, page, page_limit),
+    )
     if not items:
         return False
     refs = enrich_and_persist(catalog, items, enrich=False)
@@ -742,6 +780,7 @@ def _prefetch_continue_watching(page_params: dict[str, Any]) -> None:
 def _prefetch_episode_library_page(page_params: dict[str, Any], *, loader) -> None:
     """Warm session paint cache for library episode menus (Next Up, Watched Episodes)."""
     catalog = page_params.get("catalog") or "tv"
+    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
     from resources.lib.database.session import get_sync_database
     from resources.lib.meta.list_paint import (
         attach_preloaded_episode_paint,
@@ -751,7 +790,28 @@ def _prefetch_episode_library_page(page_params: dict[str, Any], *, loader) -> No
     from resources.lib.modules.list_builder import ListBuilder
     from resources.lib.simkl.menu_helpers import list_filter_kwargs
 
-    episode_rows = loader(catalog, page_params) or []
+    page = int(page_params.get("page") or 1)
+    action = str(page_params.get("action") or "")
+    if action == "libraryNextUp":
+        list_id = make_list_id(
+            "next_up",
+            catalog,
+            g.get_int_setting("nextup.sort") == 1,
+            g.get_bool_setting("limit.nextup"),
+            g.get_int_setting("item.limit"),
+        )
+        episode_rows = get_list_store("library").load_cached_items(catalog, list_id, lambda: loader(catalog, page_params) or [])
+    elif action == "libraryWatchedEpisodes":
+        list_id = make_list_id("watched_episodes", catalog)
+        episode_rows = get_list_store("library").load_page_items(
+            catalog,
+            list_id,
+            page,
+            lambda: loader(catalog, page_params) or [],
+            schedule_upsert=False,
+        )
+    else:
+        episode_rows = loader(catalog, page_params) or []
     if not episode_rows:
         return
     upsert_episode_parent_shows(episode_rows, catalog)
@@ -803,10 +863,26 @@ def _prefetch_recently_watched_shows(page_params: dict[str, Any]) -> None:
     page = int(page_params.get("page") or 1)
     from resources.lib.database.session import get_sync_database
     from resources.lib.meta.list_paint import prepare_catalog_refs
+    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
     from resources.lib.meta.menu_paint_profile import MenuPaintProfile
-    from resources.lib.simkl.menu_helpers import paginate_refs_for_page
+    from resources.lib.simkl.menu_helpers import paginate_refs_for_page, paginate_simkl_lists
 
-    rows = get_sync_database().get_recently_watched_shows(page, catalog=catalog) or []
+    list_id = make_list_id("recently_watched", catalog)
+    store = get_list_store("library")
+    if paginate_simkl_lists():
+        rows = store.load_page_items(
+            catalog,
+            list_id,
+            page,
+            lambda: get_sync_database().get_recently_watched_shows(page, catalog=catalog) or [],
+            schedule_upsert=False,
+        )
+    else:
+        rows = store.load_cached_items(
+            catalog,
+            list_id,
+            lambda: get_sync_database().get_recently_watched_shows(1, force_all=True, catalog=catalog) or [],
+        )
     refs = prepare_catalog_refs(catalog, rows)
     page_refs = paginate_refs_for_page(refs, page) if refs else []
     if not page_refs:

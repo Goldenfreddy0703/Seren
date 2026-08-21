@@ -155,26 +155,15 @@ def _merge_fragments(existing: dict[str, Any] | None, incoming: dict[str, Any]) 
     return merged
 
 
-def _upsert_catalog_record(
-    db,
-    catalog: str,
-    simkl_id: int,
+def _merged_catalog_payload(
+    existing: dict[str, Any] | None,
     *,
     base_json: dict[str, Any] | None = None,
     discover_json: dict[str, Any] | None = None,
     library_json: dict[str, Any] | None = None,
-) -> None:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
     if base_json is None and discover_json is None and library_json is None:
-        return
-    existing = db.fetchone(
-        """
-        SELECT base_json, discover_json, library_json
-        FROM catalog_items
-        WHERE catalog=? AND simkl_id=?
-        """,
-        (catalog, int(simkl_id)),
-    )
-    now = int(time.time())
+        return None
     if existing:
         existing_base = _decode(existing.get("base_json")) or {}
         if base_json is not None:
@@ -190,7 +179,52 @@ def _upsert_catalog_record(
         final_discover = discover_json or {}
         final_library = library_json or {}
     if not final_base:
+        return None
+    return final_base, final_discover, final_library
+
+
+def _fetch_catalog_records_batch(db, catalog: str, simkl_ids: list[int]) -> dict[int, dict[str, Any]]:
+    if not simkl_ids:
+        return {}
+    placeholders = ",".join("?" * len(simkl_ids))
+    records = db.fetchall(
+        f"""
+        SELECT simkl_id, base_json, discover_json, library_json
+        FROM catalog_items
+        WHERE catalog=? AND simkl_id IN ({placeholders})
+        """,
+        (catalog, *simkl_ids),
+    )
+    return {int(record["simkl_id"]): record for record in records or []}
+
+
+def _upsert_catalog_record(
+    db,
+    catalog: str,
+    simkl_id: int,
+    *,
+    base_json: dict[str, Any] | None = None,
+    discover_json: dict[str, Any] | None = None,
+    library_json: dict[str, Any] | None = None,
+) -> None:
+    existing = db.fetchone(
+        """
+        SELECT base_json, discover_json, library_json
+        FROM catalog_items
+        WHERE catalog=? AND simkl_id=?
+        """,
+        (catalog, int(simkl_id)),
+    )
+    merged = _merged_catalog_payload(
+        existing,
+        base_json=base_json,
+        discover_json=discover_json,
+        library_json=library_json,
+    )
+    if merged is None:
         return
+    final_base, final_discover, final_library = merged
+    now = int(time.time())
     db.execute_sql(
         """
         INSERT INTO catalog_items (catalog, simkl_id, base_json, discover_json, library_json, updated_at)
@@ -217,15 +251,22 @@ def _upsert_catalog_record(
     }
 
 
-def upsert_sync_items(sync_items: list[dict[str, Any]], *, catalog_hint: str = "") -> int:
-    """Upsert normalized SyncRows from discover loaders or Simkl sync."""
+def upsert_sync_items_batched(
+    sync_items: list[dict[str, Any]],
+    *,
+    catalog_hint: str = "",
+    chunk_size: int = 50,
+) -> int:
+    """Upsert normalized SyncRows in catalog-sized batches with prefetch."""
     from resources.lib.database.session import get_sync_database
 
     if not sync_items:
         return 0
     db = get_sync_database()
     ensure_catalog_tables(db)
-    written = 0
+    now = int(time.time())
+
+    grouped: dict[str, list[tuple[int, dict[str, Any], dict[str, Any]]]] = {}
     for item in sync_items:
         if not isinstance(item, dict) or item.get("simkl_id") is None:
             continue
@@ -234,15 +275,57 @@ def upsert_sync_items(sync_items: list[dict[str, Any]], *, catalog_hint: str = "
         if not slim:
             continue
         library_json = _library_fragment_from_sync_row(slim)
-        _upsert_catalog_record(
-            db,
-            catalog,
-            int(slim["simkl_id"]),
-            base_json=slim,
-            library_json=library_json,
-        )
-        written += 1
+        grouped.setdefault(catalog, []).append((int(slim["simkl_id"]), slim, library_json))
+
+    written = 0
+    upsert_sql = """
+        INSERT INTO catalog_items (catalog, simkl_id, base_json, discover_json, library_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(catalog, simkl_id) DO UPDATE SET
+            base_json=excluded.base_json,
+            discover_json=excluded.discover_json,
+            library_json=excluded.library_json,
+            updated_at=excluded.updated_at
+    """
+    for catalog, entries in grouped.items():
+        for start in range(0, len(entries), chunk_size):
+            chunk = entries[start : start + chunk_size]
+            simkl_ids = [entry[0] for entry in chunk]
+            existing_map = _fetch_catalog_records_batch(db, catalog, simkl_ids)
+            params: list[tuple] = []
+            for simkl_id, slim, library_json in chunk:
+                merged = _merged_catalog_payload(
+                    existing_map.get(simkl_id),
+                    base_json=slim,
+                    library_json=library_json,
+                )
+                if merged is None:
+                    continue
+                final_base, final_discover, final_library = merged
+                params.append(
+                    (
+                        catalog,
+                        simkl_id,
+                        _encode(final_base),
+                        _encode(final_discover) if final_discover else None,
+                        _encode(final_library) if final_library else None,
+                        now,
+                    )
+                )
+                _RAM_ITEMS[(catalog, simkl_id)] = {
+                    "base_json": final_base,
+                    "discover_json": final_discover or None,
+                    "library_json": final_library or None,
+                }
+            if params:
+                db.execute_sql(upsert_sql, params)
+                written += len(params)
     return written
+
+
+def upsert_sync_items(sync_items: list[dict[str, Any]], *, catalog_hint: str = "") -> int:
+    """Upsert normalized SyncRows from discover loaders or Simkl sync."""
+    return upsert_sync_items_batched(sync_items, catalog_hint=catalog_hint)
 
 
 def upsert_cdn_rows(catalog: str, rows: list[dict[str, Any]]) -> int:

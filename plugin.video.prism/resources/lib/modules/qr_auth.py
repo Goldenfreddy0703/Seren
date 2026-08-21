@@ -59,6 +59,32 @@ def generate_qr_png(url: str) -> str:
     return path.replace("\\", "/")
 
 
+AUTH_TIMEOUT_MAX = 300
+
+
+def capped_auth_timeout(seconds: int, maximum: int = AUTH_TIMEOUT_MAX) -> int:
+    """Limit device-code auth wait time so expired sessions fail faster."""
+    try:
+        value = int(seconds)
+    except (TypeError, ValueError):
+        value = maximum
+    if value <= 0:
+        value = maximum
+    return min(value, maximum)
+
+
+def show_auth_failed(provider: str) -> None:
+    import xbmcgui
+
+    xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30065).format(provider))
+
+
+def show_auth_timeout(provider: str) -> None:
+    import xbmcgui
+
+    xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(31047).format(provider))
+
+
 def build_auth_message(verification_url: str, user_code: str | None = None) -> str:
     parts = [g.get_language_string(30018).format(g.color_string(verification_url))]
     if user_code:

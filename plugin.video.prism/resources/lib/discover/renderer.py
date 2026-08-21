@@ -231,21 +231,33 @@ class DiscoverRenderer:
         page: int,
     ) -> tuple[list[dict], bool, list[dict]]:
         """Return (page_refs, has_next, page_sync_items for paint)."""
+        import time
+
         from resources.lib.discover.list_cache import (
             load_discover_list_refs,
             paginate_sync_items_for_refs,
         )
 
+        collect_started = time.time()
         loader = self._list_loader(discover_list, catalog)
+        refs_started = time.time()
         all_refs = load_discover_list_refs(catalog, discover_list.list_id, loader, materialize=False)
+        refs_ms = int((time.time() - refs_started) * 1000)
         page_refs = paginate_refs_for_page(all_refs, page, page_limit=self.page_size)
+        page_started = time.time()
         page_sync = paginate_sync_items_for_refs(
             catalog,
             discover_list.list_id,
             page_refs,
             loader,
         )
+        page_ms = int((time.time() - page_started) * 1000)
         has_next = page * self.page_size < len(all_refs)
+        g.log(
+            f"Discover collect page: list={discover_list.list_id} refs_ms={refs_ms} "
+            f"page_ms={page_ms} total_ms={int((time.time() - collect_started) * 1000)}",
+            "debug",
+        )
         return page_refs, has_next, page_sync
 
     def prefetch_page(self, catalog: Catalog, list_id: str, page: int) -> bool:

@@ -62,15 +62,32 @@ class Premiumize:
         :return: None
         :rtype: None
         """
-        from resources.lib.modules.qr_auth import auth_progress_percent, open_auth_dialog
+        from resources.lib.modules.qr_auth import (
+            auth_progress_percent,
+            capped_auth_timeout,
+            open_auth_dialog,
+            show_auth_failed,
+            show_auth_timeout,
+        )
 
-        data = {"client_id": self.client_id, "response_type": "device_code"}
-        token = self.session.post("https://www.premiumize.me/token", data=data).json()
-        expiry = int(token["expires_in"])
-        token_ttl = int(token["expires_in"])
+        try:
+            data = {"client_id": self.client_id, "response_type": "device_code"}
+            token = self.session.post("https://www.premiumize.me/token", data=data).json()
+        except Exception as exc:
+            g.log(f"Premiumize auth start error: {exc}", "error")
+            show_auth_failed("Premiumize")
+            return
+
+        if not isinstance(token, dict) or not token.get("device_code"):
+            show_auth_failed("Premiumize")
+            return
+
+        expiry = capped_auth_timeout(token["expires_in"])
+        token_ttl = expiry
         interval = int(token["interval"])
         poll_again = True
         success = False
+        cancelled = False
         progress = open_auth_dialog(
             f"{g.ADDON_NAME}: {g.get_language_string(30349)}",
             token["verification_uri"],
@@ -83,11 +100,14 @@ class Premiumize:
                     poll_again, success = self._poll_token(token["device_code"])
                 progress.update(auth_progress_percent(token_ttl, expiry))
                 token_ttl -= 1
+            cancelled = progress.iscanceled()
         finally:
             progress.close()
 
         if success:
-            xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30020))
+            xbmcgui.Dialog().ok(g.ADDON_NAME, f"Premiumize {g.get_language_string(30020)}")
+        elif not cancelled:
+            show_auth_timeout("Premiumize")
 
     def _poll_token(self, device_code):
         data = {

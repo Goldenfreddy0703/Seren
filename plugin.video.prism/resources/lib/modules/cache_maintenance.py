@@ -307,9 +307,9 @@ def invalidate_all_menu_caches(
             g.log_stacktrace()
 
     try:
-        from resources.lib.discover.list_cache import clear_discover_ram_cache
+        from resources.lib.meta.list_pipeline import clear_ram_cache
 
-        clear_discover_ram_cache()
+        clear_ram_cache()
     except Exception:
         g.log_stacktrace()
 

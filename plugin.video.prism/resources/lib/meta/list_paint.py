@@ -535,6 +535,10 @@ def attach_preloaded_episode_paint(
         return merged
 
     load_params = dict(filter_params or {})
+    need_sync = db._mixed_episodes_missing_rows(episode_rows) or db._mixed_episodes_need_sync(episode_rows)
+    if need_sync:
+        load_params["skip_update"] = False
+        load_params["skip_mill"] = True
     rows = db.get_mixed_episode_list(episode_rows, **load_params)
     enrichment_refs = None
     enrichment_media_type = None
@@ -794,31 +798,48 @@ def render_catalog_episodes(
     paint_profile = str(
         list_kwargs.get("paint_profile") or MenuPaintProfile.LIBRARY_EPISODES.value
     )
+    visible_rows = episode_rows
+    if not list_kwargs.get("no_paging"):
+        from resources.lib.simkl.menu_helpers import paginate_refs_for_page
+
+        visible_rows = paginate_refs_for_page(episode_rows, g.PAGE)
+
     cached_rows = peek_episode_page_cache(
         catalog,
-        episode_rows,
+        visible_rows,
         paint_profile=paint_profile,
     )
 
     db = get_sync_database()
     filter_params = list_builder._apply_list_filters(dict(list_kwargs))
     if cached_rows is not None:
-        list_kwargs["preloaded_episode_rows"] = merge_episode_playback_overlay(cached_rows, episode_rows)
+        list_kwargs["preloaded_episode_rows"] = merge_episode_playback_overlay(cached_rows, visible_rows)
     else:
-        upsert_episode_parent_shows(episode_rows, catalog)
+        upsert_episode_parent_shows(visible_rows, catalog)
         if library_paint:
-            prefetch_episode_parent_simkl_detail(episode_rows, catalog)
+            prefetch_episode_parent_simkl_detail(visible_rows, catalog)
         list_kwargs = attach_preloaded_episode_paint(
             catalog,
-            episode_rows,
+            visible_rows,
             list_kwargs,
             db,
             filter_params=filter_params,
         )
         preloaded = list_kwargs.get("preloaded_episode_rows")
         if preloaded is not None:
-            list_kwargs["preloaded_episode_rows"] = merge_episode_playback_overlay(preloaded, episode_rows)
-    list_builder.mixed_episode_builder(episode_rows, **list_kwargs)
+            list_kwargs["preloaded_episode_rows"] = merge_episode_playback_overlay(preloaded, visible_rows)
+
+    from resources.lib.meta.list_pipeline import resolve_list_flags
+
+    list_kwargs.update(
+        resolve_list_flags(
+            list_kwargs,
+            seeded=True,
+            preloaded=bool(list_kwargs.get("preloaded_episode_rows")),
+        )
+    )
+    render_rows = episode_rows if list_kwargs.get("no_paging") else visible_rows
+    list_builder.mixed_episode_builder(render_rows, **list_kwargs)
 
 
 def paint_drilldown_rows(
@@ -1231,9 +1252,19 @@ def overlay_mixed_episode_parent_context(episode_rows: list[dict]) -> list[dict]
     return enriched
 
 
-def _fill_missing_display_fields(target_info: dict[str, Any], show_info: dict[str, Any]) -> None:
+def _fill_missing_display_fields(
+    target_info: dict[str, Any],
+    show_info: dict[str, Any],
+    *,
+    episode_safe: bool = False,
+) -> None:
     """Copy show-level display fields when the child row is still sparse."""
-    for key in ("plot", "overview", "genre", "genres", "studio", "status", "mpaa", "rating", "runtime"):
+    keys: tuple[str, ...]
+    if episode_safe:
+        keys = ("genre", "genres", "studio", "status", "mpaa", "rating", "runtime")
+    else:
+        keys = ("plot", "overview", "genre", "genres", "studio", "status", "mpaa", "rating", "runtime")
+    for key in keys:
         if not target_info.get(key) and show_info.get(key):
             target_info[key] = show_info[key]
     for key in ("title_en", "title_romaji", "originaltitle"):
@@ -1317,12 +1348,9 @@ def _overlay_episode_row_fast(
             info["tvdb_show_id"] = show_info.get("tvdb_id")
         if not info.get("year") and show_info.get("year"):
             info["year"] = show_info.get("year")
-        _fill_missing_display_fields(info, show_info)
+        _fill_missing_display_fields(info, show_info, episode_safe=True)
     if season_info and not info.get("simkl_season_id"):
         info["simkl_season_id"] = season_info.get("simkl_id")
-    if parent_thumb and not art.get("thumb") and not info.get("thumb"):
-        art["thumb"] = parent_thumb
-        info["thumb"] = parent_thumb
     item["info"] = info
     item["art"] = art
     item["_parent_ctx"] = stamp
@@ -1396,7 +1424,7 @@ def overlay_parent_context_on_rows(
         MetadataHandler._add_season_show_art(merged, season_art, show_art)
         MetadataHandler._add_season_show_cast(merged, season_cast, show_cast)
         if show_info:
-            _fill_missing_display_fields(merged["info"], show_info)
+            _fill_missing_display_fields(merged["info"], show_info, episode_safe=True)
             if (merged["info"].get("mediatype") or "").lower() == "episode":
                 catalog = merged["info"].get("catalog") or show_info.get("catalog")
                 if catalog == "anime":
@@ -1405,7 +1433,8 @@ def overlay_parent_context_on_rows(
                     localized = localized_anime_show_title(merged["info"], source=show_info)
                     if localized:
                         merged["info"]["tvshowtitle"] = localized
-        _apply_parent_show_episode_thumb(merged)
+        if (merged["info"].get("mediatype") or "").lower() != "episode":
+            _apply_parent_show_episode_thumb(merged)
 
         item["info"] = merged["info"]
         item["art"] = merged["art"]

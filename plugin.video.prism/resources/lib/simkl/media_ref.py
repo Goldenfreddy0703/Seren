@@ -401,9 +401,9 @@ def render_mixed_sync_list(
     **list_kwargs,
 ) -> None:
     """Render a mixed movie + show/anime Kodi directory via simkl_sync (Seren-mode browse)."""
-    from resources.lib.database.session import get_sync_database
-    from resources.lib.discover.browse_catalog_seed import defer_browse_catalog_seed
-    from resources.lib.meta.list_paint import browse_list_kwargs
+    from resources.lib.discover.sync_bridge import simkl_refs
+    from resources.lib.meta.list_paint import attach_preloaded_catalog_paint, browse_list_kwargs
+    from resources.lib.meta.list_pipeline import resolve_list_flags, seed_browse_page
     from resources.lib.meta.menu_paint_profile import current_action_profile_kwargs
     from resources.lib.modules.globals import g
     from resources.lib.modules.list_builder import ListBuilder
@@ -412,29 +412,47 @@ def render_mixed_sync_list(
         g.cancel_directory()
         return
 
-    db = get_sync_database()
     movies, tv, anime = partition_by_catalog(sync_items)
     for cat, group in (("movie", movies), ("tv", tv), ("anime", anime)):
         if group:
-            db.insert_browse_page(cat, group)
-            defer_browse_catalog_seed(cat, group)
+            seed_browse_page(cat, group)
 
     builder = ListBuilder()
-    paint_overrides = current_action_profile_kwargs()
+    paint_overrides = current_action_profile_kwargs(seeded=True)
     paint_overrides.setdefault("no_paging", True)
     paint_overrides.update(list_kwargs or {})
-    kwargs = browse_list_kwargs(**paint_overrides)
-    kwargs.setdefault("sync_path", True)
-    kwargs.setdefault("skip_update", False)
+    paint_overrides.update(resolve_list_flags(paint_overrides, seeded=True))
 
+    refs = simkl_refs(sync_items)
+    cache_catalog = catalog_hint or (movies and "movie") or (anime and "anime") or "tv"
     if movies and (tv or anime):
+        merged = attach_preloaded_catalog_paint(
+            cache_catalog,
+            refs,
+            browse_list_kwargs(**paint_overrides),
+            prefer_catalog_payload=True,
+            payload_rows=sync_items,
+        )
+        merged.update(resolve_list_flags(merged, seeded=True, preloaded_paint_complete=bool(merged.get("preloaded_paint_complete"))))
         builder._mixed_media_from_sync_dicts(
             sync_items,
             catalog_hint=catalog_hint,
             label2_for_item=label2_for_item,
-            **kwargs,
+            **merged,
         )
         return
+
+    merged = attach_preloaded_catalog_paint(
+        cache_catalog,
+        refs,
+        browse_list_kwargs(**paint_overrides),
+        prefer_catalog_payload=True,
+        payload_rows=sync_items,
+    )
+    merged.update(resolve_list_flags(merged, seeded=True, preloaded_paint_complete=bool(merged.get("preloaded_paint_complete"))))
+    kwargs = browse_list_kwargs(**merged)
+    kwargs.setdefault("sync_path", True)
+
     if movies and not tv and not anime:
         builder.movie_discover_builder(movies, **kwargs)
         return

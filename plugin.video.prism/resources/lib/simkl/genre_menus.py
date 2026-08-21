@@ -9,6 +9,7 @@ from resources.lib.discover.renderer import discover_list_kwargs
 from resources.lib.modules.globals import g
 from resources.lib.simkl import browse
 from resources.lib.simkl.search_menus import notify_empty_search, persist_search_pagination
+from resources.lib.meta.list_pipeline import make_list_id
 
 GENRE_GET_ACTIONS = {
     "movie": "movieGenresGet",
@@ -30,27 +31,40 @@ def _render_genre_browse_page(
     *,
     next_action: str,
     next_args,
+    list_id: str | None = None,
 ) -> None:
     """Paint genre browse via catalog payload + CDN hydrate + Simkl detail gap-fill."""
     from resources.lib.discover.renderer import discover_list_kwargs
     from resources.lib.discover.sync_bridge import simkl_refs
-    from resources.lib.meta.list_paint import render_catalog_discover_refs
+    from resources.lib.meta.list_pipeline import get_list_store, make_list_id, render_list_page, seed_browse_page
+    from resources.lib.modules.globals import g
 
-    list_kwargs = discover_list_kwargs(enrichment_reason="genre")
-    list_kwargs["genre_paint"] = True
-    list_kwargs["prefer_catalog_payload"] = True
+    resolved_list_id = list_id or make_list_id(next_action, next_args, g.PAGE)
+    store = get_list_store("genre")
+    store.remember_items(catalog, resolved_list_id, page.items)
+
+    seed_browse_page(catalog, page.items)
+
+    list_kwargs = discover_list_kwargs(
+        enrichment_reason="genre",
+        seeded=True,
+        genre_paint=True,
+        prefer_catalog_payload=True,
+    )
     if page.has_next_page:
         list_kwargs["has_next_page"] = True
         list_kwargs["next_action"] = next_action
         list_kwargs["next_args"] = next_args
 
-    render_catalog_discover_refs(
+    render_list_page(
+        "paint_first",
         catalog,
-        simkl_refs(page.items),
+        page.items,
         list_builder,
         list_kwargs=list_kwargs,
+        refs=simkl_refs(page.items),
         payload_rows=page.items,
-        prefer_catalog_payload=True,
+        seeded=True,
     )
 
 
@@ -208,6 +222,7 @@ def render_multi_genre_list(catalog: str, action_args, page_limit: int, list_bui
         list_builder,
         next_action=get_action,
         next_args=next_args,
+        list_id=make_list_id("tmdb", catalog, genre_ids, tmdb_page, tmdb_offset),
     )
 
 
@@ -247,6 +262,7 @@ def render_anime_multi_genre_list(action_args, page_limit: int, list_builder) ->
         list_builder,
         next_action=get_action,
         next_args=next_args,
+        list_id=make_list_id("tenrai", genre_ids, tenrai_page, tenrai_offset),
     )
 
 
@@ -267,4 +283,5 @@ def render_genre_list(catalog: str, args, page_limit: int, list_builder) -> None
         list_builder,
         next_action=GENRE_GET_ACTIONS[catalog],
         next_args=slug,
+        list_id=make_list_id("slug", catalog, slug),
     )

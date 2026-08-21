@@ -60,17 +60,25 @@ class RealDebrid:
                 self.client_id = response["client_id"]
                 return True
             except Exception:
-                xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30065))
+                from resources.lib.modules.qr_auth import show_auth_failed
+
+                show_auth_failed("Real-Debrid")
                 raise
         return False
 
     def auth(self):
-        from resources.lib.modules.qr_auth import auth_progress_percent, open_auth_dialog
+        from resources.lib.modules.qr_auth import (
+            auth_progress_percent,
+            capped_auth_timeout,
+            open_auth_dialog,
+            show_auth_timeout,
+        )
 
         url = f"client_id={self.client_id}&new_credentials=yes"
         url = self.oauth_url + self.device_code_url.format(url)
         response = self.session.get(url).json()
         success = False
+        cancelled = False
         verification_url = "https://real-debrid.com/device"
         progress = open_auth_dialog(
             f"{g.ADDON_NAME}: {g.get_language_string(30017)}",
@@ -78,8 +86,8 @@ class RealDebrid:
             user_code=response["user_code"],
         )
         try:
-            self.oauth_timeout = int(response["expires_in"])
-            token_ttl = int(response["expires_in"])
+            self.oauth_timeout = capped_auth_timeout(response["expires_in"])
+            token_ttl = self.oauth_timeout
             self.oauth_time_step = int(response["interval"])
             self.device_code = response["device_code"]
             while not success and token_ttl > 0 and not progress.iscanceled():
@@ -88,6 +96,7 @@ class RealDebrid:
                     success = self._auth_loop()
                 progress.update(auth_progress_percent(token_ttl, self.oauth_timeout))
                 token_ttl -= 1
+            cancelled = progress.iscanceled()
         finally:
             progress.close()
 
@@ -97,6 +106,8 @@ class RealDebrid:
             user_information = self.get_url("user")
             if user_information["type"] != "premium":
                 xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30194))
+        elif not cancelled:
+            show_auth_timeout("Real-Debrid")
 
     def token_request(self):
         if not self.client_secret:

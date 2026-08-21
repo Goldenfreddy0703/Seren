@@ -144,6 +144,7 @@ class Menus:
                 MenuPaintProfile.AIRING,
                 hide_unaired=False,
                 no_paging=True,
+                seeded=True,
             ),
         )
 
@@ -162,6 +163,7 @@ class Menus:
                 hide_unaired=False,
                 prepend_date=True,
                 no_paging=True,
+                seeded=True,
             ),
         )
 
@@ -299,20 +301,37 @@ class Menus:
                 g.add_directory_item(str(year), action="showYears", action_args=year)
             g.close_directory(g.CONTENT_MENU)
         else:
-            items = browse.discover_by_year("tv", int(year), g.PAGE, self.page_limit)
             from resources.lib.discover.renderer import discover_list_kwargs
-            from resources.lib.meta.browse_sync import render_browse_sync_page
+            from resources.lib.meta.list_pipeline import get_list_store, make_list_id, render_list_page, seed_browse_page
+            from resources.lib.modules.globals import g
 
+            list_id = make_list_id(year)
+            page = g.PAGE
+            store = get_list_store("year")
+
+            items = store.load_page_items(
+                "tv",
+                list_id,
+                page,
+                lambda: browse.discover_by_year("tv", int(year), page, self.page_limit),
+            )
             if not items:
                 g.cancel_directory()
                 return
-            render_browse_sync_page(
+
+            seed_browse_page("tv", items)
+            render_list_page(
+                "paint_first",
                 "tv",
                 items,
                 self.list_builder,
-                list_kwargs=discover_list_kwargs(),
-                next_action="showYears",
-                next_args=int(year),
-                has_next_page=len(items) >= self.page_limit,
+                list_kwargs=discover_list_kwargs(
+                    seeded=True,
+                    next_action="showYears",
+                    next_args=int(year),
+                    has_next_page=len(items) >= self.page_limit,
+                ),
+                payload_rows=items,
+                seeded=True,
             )
 

@@ -499,7 +499,7 @@ class ListBuilder:
                 hide_watched=hide_watched,
                 paint_profile=paint_profile,
                 skip_mill=skip_mill,
-                skip_update=False,
+                skip_update=skip_update,
                 **params,
             )
             enrichment_batches = self._sync_db().consume_list_enrichment_batches()
@@ -743,7 +743,8 @@ class ListBuilder:
         sync_params = dict(params)
         sync_params["sync_path"] = True
         sync_params.setdefault("skip_mill", True)
-        sync_params.setdefault("skip_update", False)
+        if "skip_update" not in sync_params:
+            sync_params.setdefault("skip_update", False)
         sync_params.pop("preloaded_paint_rows", None)
         sync_params.pop("preloaded_paint_complete", None)
         sync_params.pop("paint_only", None)

@@ -101,22 +101,29 @@ class OffCloud:
 
     def auth(self):
         """Authenticate with Offcloud using OAuth device-code flow."""
-        from resources.lib.modules.qr_auth import auth_progress_percent, open_auth_dialog
+        from resources.lib.modules.qr_auth import (
+            auth_progress_percent,
+            capped_auth_timeout,
+            open_auth_dialog,
+            show_auth_failed,
+            show_auth_timeout,
+        )
 
         resp = self._request_device_code()
         if not resp:
-            xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30065))
+            show_auth_failed("Offcloud")
             return
 
         device_code = resp.get("device_code", "")
         user_code = resp.get("user_code", "")
         verification_url = resp.get("verification_uri") or "https://offcloud.com/activate"
         interval = int(resp.get("interval", 5)) or 5
-        oauth_timeout = int(resp.get("expires_in", 600)) or 600
+        oauth_timeout = capped_auth_timeout(resp.get("expires_in", 600))
         token_ttl = oauth_timeout
         poll_counter = 0
 
         success = False
+        cancelled = False
         progress = open_auth_dialog(
             f"{g.ADDON_NAME}: Offcloud Auth",
             verification_url,
@@ -131,10 +138,13 @@ class OffCloud:
                     poll_counter = 0
                     success = self._auth_loop(device_code)
                 progress.update(auth_progress_percent(token_ttl, oauth_timeout))
+            cancelled = progress.iscanceled()
         finally:
             progress.close()
 
         if not success:
+            if not cancelled:
+                show_auth_timeout("Offcloud")
             return
 
         g.set_setting(OC_TOKEN_KEY, self.token)

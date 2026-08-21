@@ -298,3 +298,94 @@ def count_special_episodes(show_id: int, catalog: str = "tv", slug: str | None =
     """Return how many Simkl episodes are tagged as specials for a show."""
     raw_episodes = fetch_raw_show_episodes(show_id, catalog, slug=slug)
     return sum(1 for raw in raw_episodes if raw.get("type") == "special")
+
+
+def refresh_listed_episodes_from_simkl(db, media_items) -> int:
+    """Fetch Simkl episode plot/still for visible menu rows without milling the whole show."""
+    from resources.lib.simkl.ids import slug_from_info, show_id_from_item
+
+    media_items = db._resolve_episode_list_ids(media_items)
+    target_coords: set[tuple[int, int, int]] = set()
+    target_ids: set[int] = set()
+    shows_needed: set[int] = set()
+    for item in media_items or []:
+        if not isinstance(item, dict):
+            continue
+        coords = db._episode_coords_from_list_item(item)
+        if coords:
+            target_coords.add(coords)
+            shows_needed.add(int(coords[0]))
+        simkl_id = item.get("simkl_id")
+        show_id = item.get("simkl_show_id") or show_id_from_item(item)
+        if simkl_id is not None:
+            target_ids.add(int(simkl_id))
+        if show_id is not None:
+            shows_needed.add(int(show_id))
+
+    if not target_coords and not target_ids:
+        g.log("Simkl listed-episode refresh: no episode targets", "debug")
+        return 0
+
+    show_meta: dict[int, tuple[str, str | None]] = {}
+    for show_id in shows_needed:
+        catalog = db.show_catalog(show_id) or "tv"
+        row = db.fetchone("SELECT info FROM shows WHERE simkl_id=?", (show_id,))
+        slug = slug_from_info((row or {}).get("info") or {}) if row else None
+        show_meta[show_id] = (catalog, slug)
+
+    refreshed = 0
+
+    def _raw_matches(show_id: int, catalog: str, raw: dict[str, Any]) -> bool:
+        ep_id = _episode_simkl_id(raw)
+        if ep_id is not None and ep_id in target_ids:
+            return True
+        season_num = _season_num(raw, catalog)
+        ep_num = _episode_num(raw)
+        if catalog == "anime":
+            from resources.lib.simkl.field_map import anime_menu_episode_number
+
+            ep_num = anime_menu_episode_number(raw, season_num, ep_num)
+        if ep_num is None:
+            return False
+        return (int(show_id), int(season_num), int(ep_num)) in target_coords
+
+    for show_id in sorted(shows_needed):
+        catalog, slug = show_meta[show_id]
+        raw_episodes = fetch_raw_show_episodes(show_id, catalog, slug=slug, api=db.simkl_api)
+        built: list[dict[str, Any]] = []
+        for raw in raw_episodes or []:
+            if not isinstance(raw, dict):
+                continue
+            if not _raw_matches(show_id, catalog, raw):
+                continue
+            season_num = _season_num(raw, catalog)
+            episode = _build_episode_dict(
+                show_id,
+                season_simkl_id(show_id, season_num),
+                season_num,
+                raw,
+                slug=slug,
+                catalog=catalog,
+            )
+            if episode:
+                built.append(episode)
+        if not built:
+            g.log(
+                f"Simkl listed-episode refresh: 0 matched for show {show_id} ({catalog})",
+                "debug",
+            )
+            continue
+        db.insert_simkl_episodes(built)
+        db._format_episodes(built, preloaded=True)
+        refreshed += len(built)
+        g.log(
+            f"Simkl listed-episode refresh: {len(built)} episode(s) for show {show_id} ({catalog})",
+            "debug",
+        )
+        try:
+            from resources.lib.meta.paint_cache import clear_session_page_paint_for_show
+
+            clear_session_page_paint_for_show(show_id)
+        except Exception:
+            pass
+    return refreshed

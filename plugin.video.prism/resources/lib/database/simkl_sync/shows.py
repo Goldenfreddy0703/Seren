@@ -945,6 +945,21 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             return True
         return not (info.get("title") or info.get("name"))
 
+    @staticmethod
+    def _episode_row_needs_rich_meta(row: dict | None) -> bool:
+        """True when episode row lacks Simkl episode plot and still (not show-level fallbacks)."""
+        if not row or not isinstance(row, dict):
+            return True
+        from resources.lib.database.sync_meta_cache import row_has_plot_meta
+
+        info = row.get("info") if isinstance(row.get("info"), dict) else {}
+        if not row_has_plot_meta({"info": info}):
+            return True
+        from resources.lib.simkl.images import episode_thumb_url
+
+        img = info.get("simkl_img") or info.get("img")
+        return not bool(episode_thumb_url(img))
+
     def _fetch_episode_scope_rows(
         self,
         simkl_show_id,
@@ -1574,7 +1589,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             if simkl_id is not None:
                 row = self.fetchone(
                     """
-                    SELECT e.info, em.id AS meta_id
+                    SELECT e.info, e.art, em.id AS meta_id
                     FROM episodes AS e
                     LEFT JOIN episodes_meta AS em ON em.id = e.simkl_id AND em.type = 'simkl'
                     WHERE e.simkl_id = ?
@@ -1585,7 +1600,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 show_id, season, ep_num = coords
                 row = self.fetchone(
                     """
-                    SELECT e.info, em.id AS meta_id
+                    SELECT e.info, e.art, em.id AS meta_id
                     FROM episodes AS e
                     LEFT JOIN episodes_meta AS em ON em.id = e.simkl_id AND em.type = 'simkl'
                     WHERE e.simkl_show_id = ?
@@ -1600,6 +1615,8 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 return True
             if self._episode_row_needs_format(row):
                 return True
+            if self._episode_row_needs_rich_meta(row):
+                return True
         return False
 
     @guard_against_none(list)
@@ -1613,17 +1630,18 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         """
         g.log("Fetching mixed episode list from sync database", "debug")
         skip_update = params.pop("skip_update", False)
-        params.pop("skip_mill", False)
+        skip_mill = params.pop("skip_mill", False)
         media_items = self._resolve_episode_list_ids(media_items)
         missing_rows = self._mixed_episodes_missing_rows(media_items)
-        if missing_rows and not skip_update:
+        need_sync = missing_rows or self._mixed_episodes_need_sync(media_items)
+        if need_sync and not skip_update:
             g.log(
                 "Mixed episode list: syncing listed episodes before paint",
                 "debug",
             )
-            self._try_update_mixed_episodes(media_items)
+            self._try_update_mixed_episodes(media_items, skip_mill=skip_mill)
             media_items = self._resolve_episode_list_ids(media_items)
-        elif missing_rows:
+        elif need_sync:
             show_ids = sorted(
                 {int(item["simkl_show_id"]) for item in media_items if item.get("simkl_show_id") is not None}
             )
@@ -2058,6 +2076,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         if db_list_to_update is None:
             db_list_to_update = []
 
+        self._apply_request_force_update(db_list_to_update, list_to_update)
         return self._update_objects(db_list_to_update, "episodes")
 
     @guard_against_none_or_empty()
@@ -2324,7 +2343,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         self._format_episodes(episodes_to_update)
 
     @guard_against_none()
-    def _try_update_mixed_episodes(self, media_items):
+    def _try_update_mixed_episodes(self, media_items, *, skip_mill=False):
         media_items = self._resolve_episode_list_ids(media_items)
         show_ids = sorted({int(i["simkl_show_id"]) for i in media_items if i.get("simkl_show_id")})
         if not show_ids:
@@ -2352,7 +2371,13 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         if not shows:
             shows = [{"simkl_id": show_id} for show_id in show_ids]
 
-        self._update_mill_format_shows(shows, True)
+        if not skip_mill:
+            self._update_mill_format_shows(shows, True)
+        else:
+            from resources.lib.database.simkl_sync.milling import refresh_listed_episodes_from_simkl
+
+            refresh_listed_episodes_from_simkl(self, media_items)
+            return
         media_items = self._resolve_episode_list_ids(media_items)
 
         episode_ids = [str(i.get("simkl_id")) for i in media_items if i.get("simkl_id") is not None]
@@ -2391,6 +2416,17 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             WHERE e.simkl_id IN ({episode_predicate})
             """
         )
+
+        for episode in episodes_to_update or []:
+            episode_id = episode.get("simkl_id")
+            if episode_id is None:
+                continue
+            row = self.fetchone(
+                "SELECT info, art FROM episodes WHERE simkl_id = ?",
+                (int(episode_id),),
+            )
+            if self._episode_row_needs_rich_meta(row):
+                episode["needs_update"] = True
 
         self._update_seasons(seasons_to_update)
         self._update_episodes(episodes_to_update)
@@ -2727,6 +2763,38 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             self._watched_episodes_page_cache = {}
         self._watched_episodes_page_cache[cache_key] = (time.time() + 300.0, result)
         return result
+
+    def refresh_watched_episodes_if_empty(self, catalog: str, *, limit: int = 12) -> int:
+        """Reconcile Simkl per-episode watch flags when the watched-episodes menu is empty."""
+        if not catalog:
+            return 0
+        from resources.lib.simkl.all_items_sync import refresh_show_episode_watch_state
+
+        rows = self.fetchall(
+            """
+            SELECT simkl_id
+            FROM shows
+            WHERE COALESCE(watched_episodes, 0) > 0
+               OR simkl_status IN ('watching', 'completed')
+            ORDER BY last_watched_at DESC
+            LIMIT ?
+            """,
+            (limit * 4,),
+        )
+        refreshed = 0
+        for row in rows or []:
+            show_id = row.get("simkl_id")
+            if show_id is None:
+                continue
+            if (self.show_catalog(int(show_id)) or "tv") != catalog:
+                continue
+            if refresh_show_episode_watch_state(self, int(show_id)):
+                refreshed += 1
+            if refreshed >= limit:
+                break
+        if refreshed and hasattr(self, "_watched_episodes_page_cache"):
+            self._watched_episodes_page_cache.clear()
+        return refreshed
 
     @guard_against_none()
     def get_season_action_args(self, simkl_show_id, season):

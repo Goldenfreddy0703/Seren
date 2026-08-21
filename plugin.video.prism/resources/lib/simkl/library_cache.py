@@ -89,6 +89,7 @@ def invalidate_library_cache(catalog: str | None = None) -> None:
     from resources.lib.database.session import get_sync_database
 
     from resources.lib.meta.paint_cache import clear_library_session_page_paint
+    from resources.lib.meta.list_pipeline import clear_ram_cache
 
 
 
@@ -105,6 +106,7 @@ def invalidate_library_cache(catalog: str | None = None) -> None:
         db.execute_sql("DELETE FROM library_status_cache")
 
     clear_library_session_page_paint()
+    clear_ram_cache("library")
 
 
 

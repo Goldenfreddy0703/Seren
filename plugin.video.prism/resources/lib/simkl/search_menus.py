@@ -94,12 +94,20 @@ _SEARCH_API = {
 def render_search_results_list(catalog: str, query: str, page_limit: int, list_builder) -> None:
     """Render a paginated Simkl title search with hybrid page-1 enrich + prefetch for next page."""
     from resources.lib.meta.list_paint import render_catalog_discover_refs
+    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
     from resources.lib.meta.menu_paint_profile import MenuPaintProfile, profile_list_kwargs
     from resources.lib.simkl.media_ref import persist_search_results
     from resources.lib.simkl.search import search_page
 
     url, media_type = _SEARCH_API[catalog]
-    media_list = search_page(url, media_type, g.PAGE, page_limit, query)
+    list_id = make_list_id("search", catalog, query)
+    page = g.PAGE
+    store = get_list_store("search")
+
+    def loader():
+        return search_page(url, media_type, page, page_limit, query)
+
+    media_list = store.load_page_items(catalog, list_id, page, loader)
     filtered = filter_search_results(media_list)
     if not filtered:
         notify_empty_search(30766)

@@ -210,9 +210,9 @@ def _refresh_playback_bookmarks_if_empty(db, catalog: str) -> None:
     sync_episode_playbacks(db)
 
 
-def list_continue_watching(catalog: str, page: int | None = None) -> list[dict]:
+def list_continue_watching(catalog: str, page: int | None = None, *, resync_if_empty: bool = False) -> list[dict]:
     """Return bookmark rows for a catalog (already excludes hidden items)."""
-    from resources.lib.database.simkl_sync.bookmark import SimklSyncDatabase as BookmarkDatabase
+    from resources.lib.database.session import get_sync_database
     from resources.lib.database.simkl_sync.hidden import SimklSyncDatabase as HiddenDatabase
 
     page = page or g.PAGE
@@ -220,9 +220,12 @@ def list_continue_watching(catalog: str, page: int | None = None) -> list[dict]:
     page_start, page_end = _page_slice(page, page_limit)
     hidden_mediatype = "movies" if catalog == CATALOG_MOVIE else "tvshow"
     hidden = HiddenDatabase().get_hidden_simkl_ids("progress_watched", hidden_mediatype)
-    db = BookmarkDatabase()
+    db = get_sync_database()
     _refresh_playback_bookmarks_if_empty(db, catalog)
     items = db.get_continue_watching(catalog, hidden)
+    if resync_if_empty and not items and catalog != CATALOG_MOVIE:
+        sync_episode_playbacks(db)
+        items = db.get_continue_watching(catalog, hidden)
     return items[page_start:page_end]
 
 
@@ -235,7 +238,14 @@ def render_continue_watching_menu(catalog: str) -> None:
     from resources.lib.modules.list_builder import ListBuilder
     from resources.lib.simkl.episode_catalog_sync import schedule_lazy_episode_warm
 
-    items = list_continue_watching(catalog)
+    page = g.PAGE
+
+    items = list_continue_watching(catalog, page=page, resync_if_empty=True)
+    for item in items:
+        if isinstance(item, dict):
+            item.setdefault("catalog", catalog)
+            item["force_resume_indicator"] = True
+
     if catalog != CATALOG_MOVIE and not items:
         db = get_sync_database()
         bookmark_rows = db.fetchall(
@@ -250,15 +260,11 @@ def render_continue_watching_menu(catalog: str) -> None:
         if show_ids:
             schedule_lazy_episode_warm(db, show_ids)
 
-    for item in items:
-        if isinstance(item, dict):
-            item.setdefault("catalog", catalog)
-            item["force_resume_indicator"] = True
     builder = ListBuilder()
     profile = MenuPaintProfile.LIBRARY_EPISODES if catalog != CATALOG_MOVIE else MenuPaintProfile.LIBRARY
-    paint_kwargs = profile_list_kwargs(profile)
 
     if catalog == CATALOG_MOVIE:
+        paint_kwargs = profile_list_kwargs(profile, seeded=True)
         render_catalog_rows(
             catalog,
             items,
@@ -268,7 +274,30 @@ def render_continue_watching_menu(catalog: str) -> None:
         )
         return
 
-    render_catalog_episodes(catalog, items, builder, **paint_kwargs)
+    # Match Next Up: warm bookmark parent shows, then paint-first episode list (no paging).
+    db = get_sync_database()
+    show_ids = {
+        int(item["simkl_show_id"])
+        for item in items
+        if isinstance(item, dict) and item.get("simkl_show_id") is not None
+    }
+    if show_ids:
+        schedule_lazy_episode_warm(db, show_ids)
+        from resources.lib.database.simkl_sync.milling import refresh_listed_episodes_from_simkl
+
+        refresh_listed_episodes_from_simkl(db, items)
+
+    render_catalog_episodes(
+        catalog,
+        items,
+        builder,
+        **profile_list_kwargs(
+            MenuPaintProfile.LIBRARY_EPISODES,
+            no_paging=True,
+            seeded=True,
+            overlay_parent_shows=True,
+        ),
+    )
 
 
 def prefetch_continue_watching(catalog: str, page_params: dict[str, Any]) -> None:

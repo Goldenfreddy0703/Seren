@@ -127,11 +127,17 @@ class TorBox:
         the user opens https://torbox.app/oauth/device, enters the displayed code,
         and Prism polls until TorBox issues a token. No API key entry required.
         """
-        from resources.lib.modules.qr_auth import auth_progress_percent, open_auth_dialog
+        from resources.lib.modules.qr_auth import (
+            auth_progress_percent,
+            capped_auth_timeout,
+            open_auth_dialog,
+            show_auth_failed,
+            show_auth_timeout,
+        )
 
         resp = self._request_device_code()
         if not resp:
-            xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30065))
+            show_auth_failed("TorBox")
             return
 
         device_code = resp.get("device_code", "")
@@ -142,10 +148,11 @@ class TorBox:
             or "https://torbox.app/oauth/device"
         )
         interval = int(resp.get("interval", 5)) or 5
-        oauth_timeout = self._device_code_ttl(resp.get("expires_at"))
+        oauth_timeout = capped_auth_timeout(self._device_code_ttl(resp.get("expires_at")))
         token_ttl = oauth_timeout
 
         success = False
+        cancelled = False
         progress = open_auth_dialog(
             f"{g.ADDON_NAME}: TorBox Auth",
             verification_url,
@@ -158,10 +165,13 @@ class TorBox:
                     success = self._auth_loop(device_code)
                 progress.update(auth_progress_percent(token_ttl, oauth_timeout))
                 token_ttl -= 1
+            cancelled = progress.iscanceled()
         finally:
             progress.close()
 
         if not success:
+            if not cancelled:
+                show_auth_timeout("TorBox")
             return
 
         g.set_setting(TB_TOKEN_KEY, self.token)

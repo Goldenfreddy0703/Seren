@@ -100,12 +100,19 @@ class AllDebrid:
         return response["data"] if "data" in response else response
 
     def auth(self):
-        from resources.lib.modules.qr_auth import auth_progress_percent, open_auth_dialog
+        from resources.lib.modules.qr_auth import (
+            auth_progress_percent,
+            capped_auth_timeout,
+            open_auth_dialog,
+            show_auth_timeout,
+        )
 
         resp = self.get_json("pin/get", reauth=True)
-        expiry = pin_ttl = int(resp["expires_in"])
+        pin_ttl = capped_auth_timeout(resp["expires_in"])
+        expiry = pin_ttl
         auth_complete = False
         auth_check = None
+        cancelled = False
         progress = open_auth_dialog(
             f"{g.ADDON_NAME}: {g.get_language_string(30334)}",
             resp["base_url"],
@@ -120,21 +127,22 @@ class AllDebrid:
                 if auth_check["activated"]:
                     auth_complete = True
                     break
-                expiry = int(auth_check["expires_in"])
                 progress.update(auth_progress_percent(expiry, pin_ttl))
                 xbmc.sleep(1 * 1000)
+                expiry -= 1
 
             if auth_complete and not progress.iscanceled() and auth_check is not None:
                 g.set_setting(AD_AUTH_KEY, auth_check["apikey"])
                 self.apikey = auth_check["apikey"]
                 self.store_user_info()
+            cancelled = progress.iscanceled()
         finally:
             progress.close()
 
         if auth_complete:
             xbmcgui.Dialog().ok(g.ADDON_NAME, f"AllDebrid {g.get_language_string(30020)}")
-        else:
-            return
+        elif not cancelled:
+            show_auth_timeout("AllDebrid")
 
     def get_user_info(self):
         return self._extract_data(self.get_json("user")).get("user", {})

@@ -873,14 +873,18 @@ class SimklSyncDatabase(Database):
                      LEFT JOIN shows_meta AS sm
                                ON ep.simkl_show_id = sm.id AND sm.type = 'simkl'
             WHERE bm.type = 'episode'
-              AND bm.catalog = ?
             ORDER BY Datetime(bm.paused_at) DESC
-            """,
-            (catalog,),
+            """
         )
-        return self.wrap_in_simkl_object(
-            [row for row in rows if row.get("simkl_show_id") not in hidden_show_ids]
-        )
+        filtered: list[dict] = []
+        for row in rows:
+            show_id = row.get("simkl_show_id")
+            if show_id is None or int(show_id) in hidden_show_ids:
+                continue
+            if self._infer_show_catalog(int(show_id)) != catalog:
+                continue
+            filtered.append(row)
+        return self.wrap_in_simkl_object(filtered)
 
     @staticmethod
     def _library_status_from_item(item) -> str | None:
@@ -1481,11 +1485,11 @@ class SimklSyncDatabase(Database):
         from resources.lib.simkl.media_ref import partition_by_catalog
 
         movies, tv, anime = partition_by_catalog(items)
-        from resources.lib.discover.catalog_store import upsert_sync_items
+        from resources.lib.discover.catalog_store import upsert_sync_items_batched
 
         page_items = [dict(item, catalog=item.get("catalog") or catalog) for item in items if isinstance(item, dict)]
         if page_items:
-            upsert_sync_items(page_items, catalog_hint=catalog)
+            upsert_sync_items_batched(page_items, catalog_hint=catalog)
         if movies:
             self._merge_browse_page_rows_into_db(catalog, movies, media_type="movie")
         for group, cat in ((tv, "tv"), (anime, "anime")):

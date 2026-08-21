@@ -138,10 +138,13 @@ def profile_list_kwargs(
 
     if profile == MenuPaintProfile.BROWSE:
         base.update(_browse_hide_filters())
-        base["skip_update"] = False
         base["sync_path"] = True
         base["paint_only"] = False
         base.setdefault("enrichment_reason", "browse")
+        if overrides.get("seeded") or overrides.get("preloaded_paint_rows") or overrides.get("preloaded_paint_complete"):
+            base["skip_update"] = True
+        else:
+            base["skip_update"] = False
     elif profile == MenuPaintProfile.SEARCH:
         base.update(_library_hide_filters())
         base["simkl_detail_paint"] = True
@@ -163,18 +166,24 @@ def profile_list_kwargs(
         base.setdefault("enrichment_reason", "drilldown")
     elif profile == MenuPaintProfile.RELATED:
         base.update(_browse_hide_filters())
-        base["skip_update"] = False
         base["sync_path"] = True
         base["paint_only"] = False
         base.setdefault("no_paging", True)
         base.setdefault("enrichment_reason", "related")
+        if overrides.get("seeded") or overrides.get("preloaded_paint_rows") or overrides.get("preloaded_paint_complete"):
+            base["skip_update"] = True
+        else:
+            base["skip_update"] = False
     elif profile == MenuPaintProfile.AIRING:
         base.update(_library_hide_filters())
-        base["skip_update"] = False
         base["sync_path"] = True
         base["paint_only"] = False
         base["mixed_list"] = True
         base.setdefault("enrichment_reason", "airing")
+        if overrides.get("seeded") or overrides.get("preloaded_paint_rows") or overrides.get("preloaded_paint_complete"):
+            base["skip_update"] = True
+        else:
+            base["skip_update"] = False
 
     if enrichment_reason:
         base["enrichment_reason"] = enrichment_reason

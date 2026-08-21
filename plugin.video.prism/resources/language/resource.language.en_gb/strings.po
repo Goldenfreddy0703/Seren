@@ -373,9 +373,12 @@ msgid "Starting Scraping"
 msgstr "Starting Scraping"
 
 #: /resources/lib/debrid/real_debrid.py:61
+#: /resources/lib/debrid/torbox.py:134
+#: /resources/lib/debrid/offcloud.py:108
+#: /resources/lib/modules/qr_auth.py:78
 msgctxt "#30065"
-msgid "Authentication with Real-Debrid has failed, please try again"
-msgstr "Authentication with Real-Debrid has failed, please try again"
+msgid "Authentication with {} has failed, please try again"
+msgstr "Authentication with {} has failed, please try again"
 
 #: /resources/lib/modules/providers/install_manager.py:152
 msgctxt "#30066"
@@ -5464,3 +5467,13 @@ msgstr "All library menus"
 msgctxt "#31046"
 msgid "Applies to every library menu"
 msgstr "Applies to every library menu"
+
+#: /resources/lib/modules/qr_auth.py:84
+#: /resources/lib/debrid/real_debrid.py:94
+#: /resources/lib/debrid/torbox.py:164
+#: /resources/lib/debrid/offcloud.py:137
+#: /resources/lib/debrid/all_debrid.py:136
+#: /resources/lib/debrid/premiumize.py:89
+msgctxt "#31047"
+msgid "Authentication with {} timed out, please try again"
+msgstr "Authentication with {} timed out, please try again"
