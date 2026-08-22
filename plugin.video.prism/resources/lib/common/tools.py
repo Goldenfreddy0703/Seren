@@ -571,6 +571,42 @@ def run_threaded(target_func, *args, **kwargs):
     return thread
 
 
+def wait_container_ready(
+    step_ms: int,
+    timeout_ms: int,
+    *path_markers: str,
+    require_item_count: bool = False,
+) -> bool:
+    """Wait until the active Kodi folder matches *path_markers* and is ready to scroll."""
+    import xbmc
+    import xbmcgui
+
+    step_ms = max(1, step_ms)
+    max_loop = max(1, int(timeout_ms / step_ms))
+    markers = [marker for marker in path_markers if marker]
+    if not markers:
+        markers = ["plugin://"]
+
+    for _ in range(max_loop):
+        xbmc.sleep(step_ms)
+        if xbmcgui.getCurrentWindowId() != 10025:
+            continue
+        kodi_path = xbmc.getInfoLabel("Container.FolderPath") or ""
+        if not any(marker in kodi_path for marker in markers):
+            continue
+        if xbmc.getCondVisibility("Container.IsUpdating"):
+            continue
+        if require_item_count:
+            try:
+                item_count = int(xbmc.getInfoLabel("Container.NumItems"))
+            except (TypeError, ValueError):
+                continue
+            if item_count <= 0:
+                continue
+        return True
+    return False
+
+
 def get_clean_number(value):
     """
     De-strings stringed int/float and returns respective type

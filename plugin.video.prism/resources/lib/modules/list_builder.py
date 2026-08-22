@@ -56,6 +56,54 @@ class ListBuilder:
             return bool(item.get("play_count") or info.get("playcount"))
         return False
 
+    @staticmethod
+    def _first_unwatched_episode_index(media_list) -> int | None:
+        """0-based list index of the next episode to watch (unwatched or in-progress)."""
+        for idx, row in enumerate(media_list or []):
+            if not isinstance(row, dict):
+                continue
+            info = row.get("info") if isinstance(row.get("info"), dict) else {}
+            play_count = row.get("play_count")
+            if play_count is None:
+                play_count = info.get("playcount")
+            try:
+                if play_count is not None and int(play_count) > 0:
+                    continue
+            except (TypeError, ValueError):
+                pass
+            return idx
+        return None
+
+    @staticmethod
+    def _season_fully_watched(row: dict) -> bool:
+        info = row.get("info") if isinstance(row.get("info"), dict) else {}
+        episode_count = row.get("episode_count") or info.get("episode_count")
+        watched_episodes = row.get("watched_episodes") or info.get("watched_episodes_count")
+        try:
+            episode_count = int(episode_count) if episode_count is not None else 0
+            watched_episodes = int(watched_episodes) if watched_episodes is not None else 0
+        except (TypeError, ValueError):
+            episode_count = 0
+            watched_episodes = 0
+        if episode_count > 0 and watched_episodes >= episode_count:
+            return True
+        play_count = row.get("play_count")
+        if play_count is None:
+            play_count = info.get("playcount")
+        try:
+            # Partial seasons may carry playcount=watched count (e.g. 19); only 1 means complete.
+            return play_count is not None and int(play_count) == 1
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def _first_incomplete_season_index(cls, media_list) -> int | None:
+        """0-based index of the first season that is not fully watched."""
+        for idx, row in enumerate(media_list or []):
+            if isinstance(row, dict) and not cls._season_fully_watched(row):
+                return idx
+        return None
+
     def season_list_builder(self, show_id, media_list=None, **params):
         """
         Builds a menu list of a shows seasons
@@ -98,6 +146,7 @@ class ListBuilder:
                     info = {}
                     row["info"] = info
                 info.setdefault("simkl_status", show_status)
+        g.smart_scroll_index = self._first_incomplete_season_index(rows)
         return self._common_menu_builder(
             rows,
             g.CONTENT_SEASON,
@@ -161,6 +210,7 @@ class ListBuilder:
         else:
             rows = media_list
 
+        g.smart_scroll_index = self._first_unwatched_episode_index(rows)
         return self._common_menu_builder(
             rows,
             g.CONTENT_EPISODE,
@@ -199,6 +249,7 @@ class ListBuilder:
                     catalog,
                     paint_profile=paint_profile,
                 )
+        g.smart_scroll_index = self._first_unwatched_episode_index(rows)
         return self._common_menu_builder(
             rows,
             g.CONTENT_EPISODE,
@@ -1010,6 +1061,7 @@ class ListBuilder:
                         menu_item=g.create_icon_dict("next", base_path=g.ICONS_PATH),
                         **page_params,
                     )
+                g.smart_scroll_trailing_extra = 1 if page_params else 0
                 use_cache = menu_cache if menu_cache is not None else g.kodi_menu_caching_enabled()
                 g.close_directory(content_type, sort=sort, cache=use_cache)
                 self._schedule_background_enrichment(

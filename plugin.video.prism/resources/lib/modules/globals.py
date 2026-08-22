@@ -567,6 +567,8 @@ class GlobalVariables:
         self.REQUEST_PARAMS = None
         self.FROM_WIDGET = False
         self.PAGE = 1
+        self.smart_scroll_index = None
+        self.smart_scroll_trailing_extra = 0
 
     def __del__(self):
         self.deinit()
@@ -1836,6 +1838,8 @@ class GlobalVariables:
         return True
 
     def close_directory(self, content_type, sort=False, cache=None):
+        if content_type == self.CONTENT_EPISODE and not sort:
+            sort = "episode"
         if sort == "title":
             xbmcplugin.addSortMethod(self.PLUGIN_HANDLE, xbmcplugin.SORT_METHOD_LABEL_IGNORE_THE)
         if sort == "episode":
@@ -1852,20 +1856,88 @@ class GlobalVariables:
         else:
             menu_caching = True
         xbmcplugin.endOfDirectory(self.PLUGIN_HANDLE, cacheToDisc=menu_caching)
-        self.set_view_type(content_type)
-        if content_type == self.CONTENT_EPISODE and self.get_bool_setting("general.smart.scroll.enable", True):
-            tools.run_threaded(self._episode_smart_scroll)
+        smart_scroll = (
+            content_type in (self.CONTENT_EPISODE, self.CONTENT_SEASON)
+            and self.get_bool_setting("general.smart.scroll.enable", True)
+        )
+        if smart_scroll:
+            self._apply_view_type_for_smart_scroll(content_type)
+            self._smart_scroll(content_type)
+        else:
+            self.set_view_type(content_type)
 
-    def _episode_smart_scroll(self) -> None:
-        """Scroll episode lists to the next unwatched item (Otaku-style)."""
+    def _smart_scroll_wait_markers(self, content_type: str) -> tuple[str, ...]:
+        """FolderPath substrings that identify the list we just built."""
+        params = self.REQUEST_PARAMS or {}
+        action = params.get("action") or ""
+        markers: list[str] = []
+        if action:
+            markers.append(f"action={action}")
+        if content_type == self.CONTENT_EPISODE:
+            fallbacks = (
+                "seasonEpisodes",
+                "flatEpisodes",
+                "libraryOnDeck",
+                "libraryNextUp",
+                "libraryWatchedEpisodes",
+                "airedEpisodes",
+            )
+        else:
+            fallbacks = ("showSeasons",)
+        for fallback in fallbacks:
+            token = f"action={fallback}"
+            if token not in markers:
+                markers.append(token)
+        return tuple(markers)
+
+    def _apply_view_type_for_smart_scroll(self, content_type) -> None:
+        """Apply list view mode on the main thread before smart scroll (Otaku-style)."""
+        import xbmc
+
+        if not self.get_bool_setting("general.setViews") or not self.is_addon_visible():
+            return
+        view_type = self.get_view_type(content_type)
+        if view_type <= 0:
+            return
+        xbmc.sleep(100)
+        xbmc.executebuiltin(f"Container.SetViewMode({view_type})")
+        xbmc.sleep(150)
+
+    @staticmethod
+    def _smart_scroll_kodi_focus_index(
+        base_index: int,
+        *,
+        all_items: int,
+        total_items: int,
+        trailing_extra: int = 0,
+        content_type: str | None = None,
+    ) -> int:
+        """Map a 0-based row index to Kodi's container index.
+
+        Kodi often prepends a parent (``..``) row, so ``NumAllItems`` exceeds
+        ``NumItems`` by one. Episode rows also need an extra offset vs seasons.
+        """
+        try:
+            trailing_extra = max(0, int(trailing_extra or 0))
+        except (TypeError, ValueError):
+            trailing_extra = 0
+        leading_extra = max(0, all_items - total_items - trailing_extra)
+        if not leading_extra:
+            return base_index
+        episode_bonus = 1 if content_type == GlobalVariables.CONTENT_EPISODE else 0
+        return base_index + leading_extra + episode_bonus
+
+    def _smart_scroll(self, content_type: str) -> None:
+        """Scroll episode/season lists to the next unwatched item (Otaku-style)."""
         import xbmc
         import xbmcgui
 
         if not self.is_addon_visible():
             return
-        if self.get_bool_setting("general.setViews"):
-            xbmc.sleep(150)
-        for _ in range(56):
+        wait_markers = self._smart_scroll_wait_markers(content_type)
+        if not tools.wait_container_ready(50, 4500, *wait_markers, require_item_count=True):
+            return
+        for _attempt in range(16):
             if self.abort_requested():
                 return
             window_id = xbmcgui.getCurrentWindowId()
@@ -1878,8 +1950,7 @@ class GlobalVariables:
                 xbmc.sleep(80)
                 continue
             try:
-                num_watched = int(xbmc.getInfoLabel("Container.TotalWatched"))
-                total_ep = int(xbmc.getInfoLabel("Container.NumItems"))
+                total_items = int(xbmc.getInfoLabel("Container.NumItems"))
                 all_items = int(xbmc.getInfoLabel("Container.NumAllItems"))
             except (TypeError, ValueError):
                 xbmc.sleep(80)
@@ -1887,13 +1958,26 @@ class GlobalVariables:
             if all_items <= 0:
                 xbmc.sleep(80)
                 continue
-            offset = 1 if all_items > total_ep else 0
-            target_index = num_watched + offset
-            if not (0 < target_index < all_items):
+            if self.smart_scroll_index is None:
+                self.smart_scroll_trailing_extra = 0
+                return
+            base_index = self.smart_scroll_index
+            target_index = self._smart_scroll_kodi_focus_index(
+                base_index,
+                all_items=all_items,
+                total_items=total_items,
+                trailing_extra=self.smart_scroll_trailing_extra,
+                content_type=content_type,
+            )
+            if not (0 <= target_index < all_items):
+                self.smart_scroll_index = None
+                self.smart_scroll_trailing_extra = 0
                 return
             xbmc.executebuiltin("Action(firstpage)")
             xbmc.sleep(50)
             xbmc.executebuiltin(f"Control.SetFocus({active_id}, {target_index})")
+            self.smart_scroll_index = None
+            self.smart_scroll_trailing_extra = 0
             return
 
     def set_view_type(self, content_type):
