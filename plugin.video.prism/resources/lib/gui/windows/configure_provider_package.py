@@ -2,11 +2,14 @@ import xbmcgui
 
 from resources.lib.database.providerCache import ProviderCache
 from resources.lib.gui.windows.base_window import BaseWindow
+from resources.lib.modules import catalog_profiles
 from resources.lib.modules.globals import g
 from resources.lib.modules.providers.settings import SettingsManager
 
 
 class PackageConfiguration(BaseWindow):
+    CATALOG_CONTROLS = {6101: "movie", 6102: "tv", 6103: "anime"}
+
     def __init__(self, xml_file, xml_location, package_name):
         super().__init__(xml_file, xml_location)
         self.providers = self.provider_class.known_providers
@@ -19,10 +22,14 @@ class PackageConfiguration(BaseWindow):
         self.provider_list = None
         self.settings_list = None
 
+        catalog_profiles.ensure_migrated()
+        self.catalog = catalog_profiles.normalize_catalog(catalog_profiles.get_last_catalog())
+
     def onInit(self):
         self.settings_list = self.getControlList(1000)
         self.provider_list = self.getControlList(2000)
 
+        self._update_catalog_properties()
         self.update_settings()
         self.fill_providers()
         self.setProperty("package.name", self.package_name)
@@ -35,6 +42,24 @@ class PackageConfiguration(BaseWindow):
         self.provider_class.poll_database()
         self.providers = self.provider_class.known_providers
         self.update_settings()
+
+    @staticmethod
+    def _catalog_status_label(provider_row, catalog):
+        return ProviderCache.provider_status_for_catalog(provider_row, catalog).title()
+
+    def _update_catalog_properties(self):
+        self.setProperty("profile.catalog", self.catalog)
+        for catalog in catalog_profiles.CATALOGS:
+            self.setProperty(f"profile.catalog.{catalog}.active", str(catalog == self.catalog))
+
+    def _switch_catalog(self, new_catalog):
+        new_catalog = catalog_profiles.normalize_catalog(new_catalog)
+        if new_catalog == self.catalog:
+            return
+        self.catalog = new_catalog
+        catalog_profiles.set_last_catalog(self.catalog)
+        self._update_catalog_properties()
+        self.fill_providers()
 
     @staticmethod
     def _set_setting_item_properties(menu_item, setting):
@@ -90,7 +115,10 @@ class PackageConfiguration(BaseWindow):
                     )
 
                 for info in i:
+                    if info == "status":
+                        continue
                     item.setProperty(info, i[info])
+                item.setProperty("status", self._catalog_status_label(i, self.catalog))
 
                 self.provider_list.addItem(item)
 
@@ -102,7 +130,9 @@ class PackageConfiguration(BaseWindow):
     def flip_provider_status(self):
         provider_item = self.provider_list.getSelectedItem()
         new_status = self.provider_class.flip_provider_status(
-            provider_item.getProperty("package"), provider_item.getLabel()
+            provider_item.getProperty("package"),
+            provider_item.getLabel(),
+            catalog=self.catalog,
         )
 
         provider_item.setProperty("status", new_status)
@@ -116,7 +146,12 @@ class PackageConfiguration(BaseWindow):
             providers = [i for i in providers if i["provider_type"] == provider_type]
 
         for i in providers:
-            self.provider_class.flip_provider_status(i["package"], i["provider_name"], status)
+            self.provider_class.flip_provider_status(
+                i["package"],
+                i["provider_name"],
+                status,
+                catalog=self.catalog,
+            )
 
         self.providers = self.providerCache.get_providers()
         self.fill_providers()
@@ -133,6 +168,8 @@ class PackageConfiguration(BaseWindow):
                 self.flip_provider_status()
             elif control_id == 2999:
                 self.close()
+            elif control_id in self.CATALOG_CONTROLS:
+                self._switch_catalog(self.CATALOG_CONTROLS[control_id])
             elif control_id in {3001, 3002, 3003, 3004, 3005, 3006}:
                 options = {
                     3001: ("enabled", "hosters"),

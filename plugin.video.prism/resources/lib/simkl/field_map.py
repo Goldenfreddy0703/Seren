@@ -764,6 +764,16 @@ def enrich_episode_from_simkl_api(info: dict[str, Any], episode: dict[str, Any])
     if tvdb_episode is not None:
         info["tvdb_episode"] = tvdb_episode
 
+    # Simkl-native cour numbers — preserved before menu season/episode overwrites in milling.
+    native_episode = ep_num
+    native_season = episode.get("season")
+    if native_episode is not None:
+        info["anime_episode"] = int(native_episode)
+    if native_season is not None:
+        info["anime_season"] = int(native_season)
+    elif native_episode is not None and episode.get("type") != "special":
+        info.setdefault("anime_season", 1)
+
     ep_ids = episode.get("ids") or {}
     _apply_external_ids(info, ep_ids)
 
@@ -820,6 +830,18 @@ def inherit_show_fields(episode_info: dict[str, Any], show_info: dict[str, Any])
     mal_show = show_ids.get("mal") or show_info.get("mal_id")
     if mal_show is not None:
         episode_info.setdefault("mal_show_id", mal_show)
+        episode_info.setdefault("mal_id", mal_show)
+    for id_key, flat_keys in (
+        ("anidb", ("anidb_id",)),
+        ("anilist", ("anilist_id",)),
+        ("kitsu", ("kitsu_id",)),
+        ("tvdb", ("tvdb_id",)),
+    ):
+        value = show_ids.get(id_key) or show_info.get(flat_keys[0])
+        if value is not None:
+            episode_info.setdefault(flat_keys[0], value)
+    if show_info.get("status") and not episode_info.get("status"):
+        episode_info["status"] = show_info["status"]
     if show_info.get("catalog") and not episode_info.get("catalog"):
         episode_info["catalog"] = show_info["catalog"]
 
@@ -837,11 +859,14 @@ def attach_show_scraper_context(item: dict[str, Any], show_info: dict[str, Any] 
         item.setdefault("episode_count", show_info["episode_count"])
     if show_info.get("is_airing") is not None:
         item.setdefault("is_airing", show_info["is_airing"])
+    item["_parent_show_info"] = show_info
     item["showInfo"] = {
         "ids": {
             "imdb": show_info.get("imdb_id"),
             "tvdb": show_info.get("tvdb_id"),
             "tmdb": show_info.get("tmdb_id"),
+            "mal": show_info.get("mal_id") or (show_info.get("ids") or {}).get("mal"),
+            "anidb": show_info.get("anidb_id") or (show_info.get("ids") or {}).get("anidb"),
         }
     }
 

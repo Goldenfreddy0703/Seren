@@ -467,6 +467,23 @@ class Sources:
                 finally:
                     del window
 
+    def _scrape_catalog(self):
+        from resources.lib.modules import catalog_profiles
+
+        info = (self.item_information or {}).get("info") or {}
+        catalog = info.get("catalog")
+        if catalog:
+            return catalog_profiles.normalize_catalog(catalog)
+        if self.media_type == "movie":
+            return "movie"
+        if self.media_type == "episode":
+            from resources.lib.simkl.anime_scraper_context import is_anime_item
+
+            if is_anime_item(info, self.item_information):
+                return "anime"
+            return "tv"
+        return "tv"
+
     def _init_providers(self):
         sys.path.append(g.ADDON_USERDATA_PATH)
         try:
@@ -480,7 +497,9 @@ class Sources:
             g.log('No providers installed', 'warning')
             return
 
-        providers_dict = providers.get_relevant(self.language)
+        scrape_catalog = self._scrape_catalog()
+        g.log(f"Provider scrape catalog: {scrape_catalog}", "debug")
+        providers_dict = providers.get_relevant(self.language, catalog=scrape_catalog)
 
         torrent_providers = providers_dict['torrent']
         hoster_providers = providers_dict['hosters']
@@ -946,9 +965,14 @@ class Sources:
 
     @staticmethod
     def _build_simple_show_info(info):
+        from resources.lib.simkl.anime_scraper_context import (
+            build_anime_simple_info_fields,
+            is_anime_item,
+        )
         from resources.lib.simkl.ids import episode_num_from_info
 
         ep_info = info.get("info") or {}
+        show_info = info.get("_parent_show_info") or {}
         season_num = ep_info.get("season")
         episode_num = episode_num_from_info(ep_info)
         simple_info = {
@@ -957,7 +981,7 @@ class Sources:
             'year': str(ep_info.get('tvshow.year', ep_info.get('year', ''))),
             'season_number': str(season_num if season_num is not None else ''),
             'episode_number': str(episode_num if episode_num is not None else ''),
-            'show_aliases': ep_info.get('aliases', []),
+            'show_aliases': list(ep_info.get('aliases', [])),
             'country': ep_info.get('country_origin', ''),
             'no_seasons': str(info.get('season_count', '')),
             'absolute_number': str(info.get('absoluteNumber', '')),
@@ -970,8 +994,27 @@ class Sources:
             simple_info['show_aliases'].append(source_utils.clean_title(simple_info['show_title'].replace('.', '')))
         Sources._append_clean_alias(simple_info['show_title'], simple_info['show_aliases'])
         Sources._append_language_aliases(ep_info, simple_info['show_aliases'])
-        if any(x in i.lower() for i in ep_info.get('genre', ['']) for x in ['anime', 'animation']):
-            simple_info['isanime'] = True
+        simple_info['isanime'] = is_anime_item(ep_info, info)
+
+        if simple_info['isanime']:
+            simple_info.update(build_anime_simple_info_fields(ep_info, info, show_info))
+            g.log(
+                "Anime scraper handoff: isanime=%s, title='%s', aliases=%s, abs=%s, "
+                "alt_s=%s, alt_e=%s, anidb=%s, mal=%s, tvdb_season=%s, tvdb_part=%s"
+                % (
+                    simple_info['isanime'],
+                    simple_info['show_title'],
+                    simple_info['show_aliases'],
+                    simple_info.get('absolute_number', ''),
+                    simple_info.get('alternative_season', ''),
+                    simple_info.get('alternative_episode', ''),
+                    simple_info.get('anidb_id', ''),
+                    simple_info.get('mal_id', ''),
+                    simple_info.get('thetvdb_season', ''),
+                    simple_info.get('thetvdb_part', ''),
+                ),
+                "notice",
+            )
 
         return simple_info
 

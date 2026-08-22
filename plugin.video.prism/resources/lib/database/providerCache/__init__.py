@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import collections
 
 from resources.lib.database import Database
 from resources.lib.modules.globals import g
+
+PROVIDER_CATALOGS = ("movie", "tv", "anime")
 
 schema = {
     'packages': {
@@ -56,6 +60,50 @@ class ProviderCache(Database):
     def __init__(self):
         super().__init__(g.PROVIDER_CACHE_DB_PATH, schema)
         self.table_name = next(iter(schema))
+        self._migrate_provider_catalog_status()
+
+    @staticmethod
+    def _normalize_catalog(catalog: str | None) -> str:
+        value = (catalog or "movie").strip().lower()
+        if value in PROVIDER_CATALOGS:
+            return value
+        if value in ("movies", "movie"):
+            return "movie"
+        if value in ("tvshow", "shows", "show"):
+            return "tv"
+        return "movie"
+
+    @staticmethod
+    def catalog_status_column(catalog: str | None) -> str:
+        return f"status_{ProviderCache._normalize_catalog(catalog)}"
+
+    @staticmethod
+    def provider_status_for_catalog(provider: dict | None, catalog: str | None) -> str:
+        if not provider:
+            return "disabled"
+        column = ProviderCache.catalog_status_column(catalog)
+        state = provider.get(column) or provider.get("status") or "disabled"
+        return str(state).lower()
+
+    def _migrate_provider_catalog_status(self) -> None:
+        rows = self.fetchall("PRAGMA table_info(providers)") or []
+        col_names = {row.get("name") for row in rows if isinstance(row, dict)}
+        if not col_names:
+            return
+        if all(f"status_{catalog}" in col_names for catalog in PROVIDER_CATALOGS):
+            return
+        for catalog in PROVIDER_CATALOGS:
+            column = f"status_{catalog}"
+            if column not in col_names:
+                self.execute_sql(f"ALTER TABLE providers ADD COLUMN {column} TEXT")
+        self.execute_sql(
+            """
+            UPDATE providers
+            SET status_movie = COALESCE(status_movie, status),
+                status_tv = COALESCE(status_tv, status),
+                status_anime = COALESCE(status_anime, status)
+            """
+        )
 
     @property
     def provider_insert_query(self):
@@ -66,7 +114,8 @@ class ProviderCache(Database):
         """
         return (
             "INSERT OR IGNORE INTO providers "
-            "(provider_name, package, status, country, provider_type) VALUES (?, ?, ?, ?, ?)"
+            "(provider_name, package, status, country, provider_type, status_movie, status_tv, status_anime) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
 
     @property
@@ -174,9 +223,24 @@ class ProviderCache(Database):
         :return: None
         :rtype: None
         """
-        self.execute_sql(self.provider_insert_query, (provider_name, package, status, language, provider_type))
+        self.execute_sql(
+            self.provider_insert_query,
+            (provider_name, package, status, language, provider_type, status, status, status),
+        )
 
-    def adjust_provider_status(self, provider_name, package_name, state):
+    def _sync_legacy_provider_status(self, provider_name, package_name) -> None:
+        row = self.get_single_provider(provider_name, package_name) or {}
+        legacy = (
+            "enabled"
+            if any(self.provider_status_for_catalog(row, catalog) == "enabled" for catalog in PROVIDER_CATALOGS)
+            else "disabled"
+        )
+        self.execute_sql(
+            "UPDATE providers SET status=? WHERE provider_name=? AND package=?",
+            (legacy, provider_name, package_name),
+        )
+
+    def adjust_provider_status(self, provider_name, package_name, state, catalog=None):
         """
         Change status of provider
         :param provider_name: Name of provider
@@ -185,12 +249,39 @@ class ProviderCache(Database):
         :type package_name: str
         :param state: Value to set, (enabled,disabled)
         :type state: str
+        :param catalog: Optional movie/tv/anime scope; updates all catalogs when omitted
+        :type catalog: str | None
         :return: None
         :rtype: None
         """
+        state = str(state).lower()
+        if catalog:
+            column = self.catalog_status_column(catalog)
+            self.execute_sql(
+                f"UPDATE providers SET {column}=? WHERE provider_name=? AND package=?",
+                (state, provider_name, package_name),
+            )
+            self._sync_legacy_provider_status(provider_name, package_name)
+            return
+
         self.execute_sql(
-            "UPDATE providers SET status=? WHERE provider_name=? AND package=?", (state, provider_name, package_name)
+            """
+            UPDATE providers
+            SET status=?, status_movie=?, status_tv=?, status_anime=?
+            WHERE provider_name=? AND package=?
+            """,
+            (state, state, state, state, provider_name, package_name),
         )
+
+    def flip_provider_catalog_status(self, package_name, provider_name, catalog, status_override=None):
+        row = self.get_single_provider(provider_name, package_name) or {}
+        current_status = self.provider_status_for_catalog(row, catalog)
+        if status_override:
+            new_status = str(status_override).lower()
+        else:
+            new_status = "disabled" if current_status == "enabled" else "enabled"
+        self.adjust_provider_status(provider_name, package_name, new_status, catalog=catalog)
+        return new_status.title()
 
     def remove_individual_provider(self, provider_name, package_name):
         """

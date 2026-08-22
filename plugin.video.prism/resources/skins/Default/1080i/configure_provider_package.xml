@@ -65,7 +65,7 @@
 			<animation effect="slide" start="-1400,0" time="350" tween="cubic" easing="in">WindowOpen</animation>
 			<animation effect="slide" end="-1400,0" time="350" tween="cubic" easing="in">WindowClose</animation>
 			<viewtype label="Providers">list</viewtype>
-			<onright>1000</onright>
+			<onright>3000</onright>
 			<onleft>1111</onleft>
 			<width>1340</width>
 			<left>40</left>
@@ -796,7 +796,7 @@
 			<width>500</width>
 
 			<control type="group">
-				<height>670</height>
+				<height>865</height>
 
 				<!-- Card -->
 				<control type="image">
@@ -806,8 +806,41 @@
 
 				<control type="grouplist" id="3000">
 					<top>25</top>
-					<onleft>1000</onleft>
+					<onleft>2000</onleft>
 					<itemgap>10</itemgap>
+
+					<!-- Movies -->
+					<control type="button" id="6101">
+						<height>55</height>
+						<textoffsetx>20</textoffsetx>
+						<texturefocus colordiffuse="$INFO[Window().Property(settings.color)]">white.png</texturefocus>
+						<texturenofocus colordiffuse="22000000">white.png</texturenofocus>
+						<label>$ADDON[plugin.video.prism 30833]</label>
+						<align>right</align>
+						<textcolor>FFFFFFFF</textcolor>
+					</control>
+
+					<!-- TV Shows -->
+					<control type="button" id="6102">
+						<height>55</height>
+						<textoffsetx>20</textoffsetx>
+						<texturefocus colordiffuse="$INFO[Window().Property(settings.color)]">white.png</texturefocus>
+						<texturenofocus colordiffuse="22000000">white.png</texturenofocus>
+						<label>$ADDON[plugin.video.prism 30834]</label>
+						<align>right</align>
+						<textcolor>FFFFFFFF</textcolor>
+					</control>
+
+					<!-- Anime -->
+					<control type="button" id="6103">
+						<height>55</height>
+						<textoffsetx>20</textoffsetx>
+						<texturefocus colordiffuse="$INFO[Window().Property(settings.color)]">white.png</texturefocus>
+						<texturenofocus colordiffuse="22000000">white.png</texturenofocus>
+						<label>$ADDON[plugin.video.prism 30494]</label>
+						<align>right</align>
+						<textcolor>FFFFFFFF</textcolor>
+					</control>
 
 					<!-- Enable All Hosters -->
 					<control type="button" id="3001">
@@ -885,6 +918,35 @@
 						<align>right</align>
 						<textcolor>FFFFFFFF</textcolor>
 					</control>
+				</control>
+
+				<!-- Active catalog indicators -->
+				<control type="image">
+					<left>0</left>
+					<top>25</top>
+					<width>4</width>
+					<height>55</height>
+					<texture>white.png</texture>
+					<colordiffuse>$INFO[Window().Property(settings.color)]</colordiffuse>
+					<visible>String.IsEqual(Window().Property(profile.catalog),movie)</visible>
+				</control>
+				<control type="image">
+					<left>0</left>
+					<top>90</top>
+					<width>4</width>
+					<height>55</height>
+					<texture>white.png</texture>
+					<colordiffuse>$INFO[Window().Property(settings.color)]</colordiffuse>
+					<visible>String.IsEqual(Window().Property(profile.catalog),tv)</visible>
+				</control>
+				<control type="image">
+					<left>0</left>
+					<top>155</top>
+					<width>4</width>
+					<height>55</height>
+					<texture>white.png</texture>
+					<colordiffuse>$INFO[Window().Property(settings.color)]</colordiffuse>
+					<visible>String.IsEqual(Window().Property(profile.catalog),anime)</visible>
 				</control>
 			</control>
 		</control>
