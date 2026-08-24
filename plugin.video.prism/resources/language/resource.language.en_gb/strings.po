@@ -5477,3 +5477,38 @@ msgstr "Applies to every library menu"
 msgctxt "#31047"
 msgid "Authentication with {} timed out, please try again"
 msgstr "Authentication with {} timed out, please try again"
+
+#: /resources/settings.xml
+msgctxt "#31048"
+msgid "Exact Simkl search"
+msgstr "Exact Simkl search"
+
+#: /resources/settings.xml
+msgctxt "#31049"
+msgid "Match search titles more closely (Simkl exact=true). Disable for broader fuzzy matches when a query returns too few results."
+msgstr "Match search titles more closely (Simkl exact=true). Disable for broader fuzzy matches when a query returns too few results."
+
+#: /resources/settings.xml
+msgctxt "#31050"
+msgid "Search sort"
+msgstr "Search sort"
+
+#: /resources/settings.xml
+msgctxt "#31051"
+msgid "Relevance"
+msgstr "Relevance"
+
+#: /resources/settings.xml
+msgctxt "#31052"
+msgid "Search results per page"
+msgstr "Search results per page"
+
+#: /resources/settings.xml
+msgctxt "#31053"
+msgid "How Simkl title search results are ordered after all pages are fetched (movies, TV, and anime)."
+msgstr "How Simkl title search results are ordered after all pages are fetched (movies, TV, and anime)."
+
+#: /resources/settings.xml
+msgctxt "#31054"
+msgid "Number of titles shown on each page of Simkl search results."
+msgstr "Number of titles shown on each page of Simkl search results."

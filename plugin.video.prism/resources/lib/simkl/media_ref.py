@@ -211,38 +211,100 @@ def normalize_search_row(row: dict[str, Any], catalog: str) -> dict[str, Any] | 
         "type": row.get("type"),
         "ids": ids,
     }
+    if row.get("year") is not None and not item.get("release_date"):
+        item["release_date"] = str(row.get("year"))
     normalized = normalize_simkl_item(item, catalog)
     if not normalized:
         return None
     info = normalized.get("simkl_object", {}).get("info", {})
     info["score"] = row.get("score") or row.get("rank") or 1.0
+    if row.get("rank") is not None:
+        info["rank"] = row.get("rank")
     return normalized
+
+
+_SIMKL_SEARCH_MAX_PAGE = 20
+_SIMKL_SEARCH_FETCH_LIMIT = 50
+
+
+def fetch_search_pool(catalog: str, query: str, *, exact: bool) -> list[dict]:
+    """Fetch and dedupe all Simkl search pages for a query (unsorted)."""
+    return _fetch_search_pool_cached(catalog, query.strip().lower(), exact)
+
+
+@use_cache(cache_hours=1)
+def _fetch_search_pool_cached(catalog: str, query: str, exact: bool) -> list[dict[str, Any]]:
+    all_items: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    for page in range(1, _SIMKL_SEARCH_MAX_PAGE + 1):
+        page_items = _fetch_search_page_uncached(
+            catalog,
+            query,
+            page,
+            _SIMKL_SEARCH_FETCH_LIMIT,
+            exact,
+        )
+        if not page_items:
+            break
+        for item in page_items:
+            simkl_id = item.get("simkl_id")
+            if simkl_id is not None:
+                sid = int(simkl_id)
+                if sid in seen_ids:
+                    continue
+                seen_ids.add(sid)
+            info = item.get("simkl_object", {}).get("info", {})
+            info["search_position"] = len(all_items)
+            all_items.append(item)
+        if len(page_items) < _SIMKL_SEARCH_FETCH_LIMIT:
+            break
+    return all_items
 
 
 def fetch_search_page(catalog: str, query: str, page: int, page_limit: int) -> list[dict[str, Any]]:
     """Fetch and normalize one page of Simkl title search (no enrich/insert)."""
-    return _fetch_search_page_cached(catalog, query.strip().lower(), page, page_limit)
+    from resources.lib.simkl.search import simkl_search_exact_enabled
+
+    exact = simkl_search_exact_enabled()
+    return _fetch_search_page_cached(catalog, query.strip().lower(), page, page_limit, exact)
 
 
 @use_cache(cache_hours=1)
-def _fetch_search_page_cached(catalog: str, query: str, page: int, page_limit: int) -> list[dict[str, Any]]:
-    return _fetch_search_page_uncached(catalog, query, page, page_limit)
+def _fetch_search_page_cached(
+    catalog: str,
+    query: str,
+    page: int,
+    page_limit: int,
+    exact: bool,
+) -> list[dict[str, Any]]:
+    return _fetch_search_page_uncached(catalog, query, page, page_limit, exact)
 
 
-def _fetch_search_page_uncached(catalog: str, query: str, page: int, page_limit: int) -> list[dict[str, Any]]:
+def _fetch_search_page_uncached(
+    catalog: str,
+    query: str,
+    page: int,
+    page_limit: int,
+    exact: bool,
+) -> list[dict[str, Any]]:
     from resources.lib.indexers.simkl import SimklAPI
     from resources.lib.modules.globals import g
 
     simkl_type = _SEARCH_SIMKL_TYPE.get(catalog, "tv")
     api = SimklAPI()
+    params: dict[str, Any] = {
+        "client_id": api.client_id,
+        "q": query,
+        "page": page,
+        "limit": page_limit,
+        "extended": "full",
+    }
+    if exact:
+        params["exact"] = "true"
     results = api.get_json(
         f"/search/{simkl_type}",
         authorized=False,
-        client_id=api.client_id,
-        q=query,
-        page=page,
-        limit=page_limit,
-        extended="full",
+        **params,
     )
     if not results:
         return []
@@ -469,6 +531,7 @@ __all__ = [
     "encode_menu_action_args",
     "enrich_and_persist",
     "fetch_search_page",
+    "fetch_search_pool",
     "menu_action_args",
     "normalize_api_detail",
     "normalize_discover_db_row",

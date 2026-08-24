@@ -84,12 +84,6 @@ SEARCH_RESULTS_ACTIONS = {
     "anime": "animeSearchResults",
 }
 
-_SEARCH_API = {
-    "movie": ("search/movie", "movies"),
-    "tv": ("search/show", "shows"),
-    "anime": ("search/anime", "shows"),
-}
-
 
 def render_search_results_list(catalog: str, query: str, page_limit: int, list_builder) -> None:
     """Render a paginated Simkl title search with hybrid page-1 enrich + prefetch for next page."""
@@ -97,24 +91,34 @@ def render_search_results_list(catalog: str, query: str, page_limit: int, list_b
     from resources.lib.meta.list_pipeline import get_list_store, make_list_id
     from resources.lib.meta.menu_paint_profile import MenuPaintProfile, profile_list_kwargs
     from resources.lib.simkl.media_ref import persist_search_results
-    from resources.lib.simkl.search import search_page
+    from resources.lib.simkl.menu_helpers import paginate_refs_for_page
+    from resources.lib.simkl.search import (
+        fetch_all_search_results,
+        simkl_search_page_limit,
+        simkl_search_sort_mode,
+    )
 
-    url, media_type = _SEARCH_API[catalog]
-    list_id = make_list_id("search", catalog, query)
+    page_limit = simkl_search_page_limit()
+    sort_mode = simkl_search_sort_mode()
+    list_id = make_list_id("search", catalog, query, sort_mode)
     page = g.PAGE
     store = get_list_store("search")
 
     def loader():
-        return search_page(url, media_type, page, page_limit, query)
+        return filter_search_results(fetch_all_search_results(catalog, query))
 
-    media_list = store.load_page_items(catalog, list_id, page, loader)
-    filtered = filter_search_results(media_list)
-    if not filtered:
+    all_items = store.load_cached_items(catalog, list_id, loader)
+    if not all_items:
         notify_empty_search(30766)
         return
 
-    refs = persist_search_results(catalog, filtered)
-    has_next = len(filtered) >= page_limit
+    page_items = paginate_refs_for_page(all_items, page, page_limit=page_limit)
+    if not page_items:
+        notify_empty_search(30766)
+        return
+
+    refs = persist_search_results(catalog, page_items)
+    has_next = page * page_limit < len(all_items)
     list_kwargs = profile_list_kwargs(
         MenuPaintProfile.SEARCH,
         hide_unaired=False,
@@ -130,7 +134,7 @@ def render_search_results_list(catalog: str, query: str, page_limit: int, list_b
         list_builder,
         list_kwargs=list_kwargs,
         prefer_catalog_payload=True,
-        payload_rows=filtered,
+        payload_rows=page_items,
     )
 
 

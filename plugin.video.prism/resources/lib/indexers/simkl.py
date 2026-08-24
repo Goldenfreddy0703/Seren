@@ -311,14 +311,23 @@ class SimklAPI:
     def is_authenticated(self) -> bool:
         return bool(self.access_token)
 
-    def search(self, query: str, media_type: str = "movie", limit: int = 25):
+    def search(self, query: str, media_type: str = "movie", limit: int = 25, *, exact: bool | None = None):
         """Search Simkl. media_type: movie, tv, anime."""
+        from resources.lib.simkl.search import simkl_search_exact_enabled
+
+        if exact is None:
+            exact = simkl_search_exact_enabled()
         endpoint = {"movie": "movie", "tv": "tv", "anime": "anime"}.get(media_type, "movie")
+        params: dict[str, str | int] = {
+            "q": query,
+            "limit": limit,
+            "extended": "full",
+        }
+        if exact:
+            params["exact"] = "true"
         return self.get_json(
             f"/search/{endpoint}",
-            q=query,
-            limit=limit,
-            extended="full",
+            **params,
         )
 
     def get_activities(self):

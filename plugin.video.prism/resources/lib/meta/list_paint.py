@@ -1324,8 +1324,10 @@ def _overlay_episode_row_fast(
     *,
     show_info: dict[str, Any] | None,
     show_art: dict[str, Any] | None,
+    show_cast: list | None,
     season_info: dict[str, Any] | None,
     season_art: dict[str, Any] | None,
+    season_cast: list | None,
     parent_thumb: str | None,
     stamp: tuple[int, int | None],
 ) -> dict:
@@ -1351,8 +1353,22 @@ def _overlay_episode_row_fast(
         _fill_missing_display_fields(info, show_info, episode_safe=True)
     if season_info and not info.get("simkl_season_id"):
         info["simkl_season_id"] = season_info.get("simkl_id")
-    item["info"] = info
-    item["art"] = art
+
+    merged = {"info": info, "art": art, "cast": list(item.get("cast") or [])}
+    from resources.lib.modules.metadataHandler import MetadataHandler
+
+    MetadataHandler._show_season_art_fallback(merged, season_art, show_art)
+    MetadataHandler._add_season_show_art(merged, season_art, show_art)
+    MetadataHandler._add_season_show_cast(merged, season_cast, show_cast)
+    _apply_parent_show_episode_thumb(merged)
+    if parent_thumb and not merged["art"].get("thumb") and not merged["info"].get("thumb"):
+        merged["art"]["thumb"] = parent_thumb
+        merged["info"]["thumb"] = parent_thumb
+
+    item["info"] = merged["info"]
+    item["art"] = merged["art"]
+    if merged.get("cast"):
+        item["cast"] = merged["cast"]
     item["_parent_ctx"] = stamp
     return item
 
@@ -1395,8 +1411,10 @@ def overlay_parent_context_on_rows(
                 row,
                 show_info=show_info,
                 show_art=show_art,
+                show_cast=show_cast,
                 season_info=season_info,
                 season_art=season_art,
+                season_cast=season_cast,
                 parent_thumb=parent_thumb,
                 stamp=stamp,
             )

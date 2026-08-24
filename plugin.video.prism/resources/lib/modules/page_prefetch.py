@@ -361,36 +361,40 @@ def _prefetch_discover(page_params: dict[str, Any]) -> bool:
 def _prefetch_search(page_params: dict[str, Any]) -> bool:
     from resources.lib.meta.list_pipeline import get_list_store, make_list_id
     from resources.lib.simkl.media_ref import persist_search_results
-    from resources.lib.simkl.search import search_page
+    from resources.lib.simkl.menu_helpers import paginate_refs_for_page
+    from resources.lib.simkl.search import (
+        fetch_all_search_results,
+        simkl_search_page_limit,
+        simkl_search_sort_mode,
+    )
     from resources.lib.simkl.search_menus import filter_search_results, normalize_search_query
 
     action = page_params.get("action")
     search_map = {
-        "moviesSearchResults": ("movie", "search/movie", "movies"),
-        "showsSearchResults": ("tv", "search/show", "shows"),
-        "animeSearchResults": ("anime", "search/anime", "shows"),
+        "moviesSearchResults": "movie",
+        "showsSearchResults": "tv",
+        "animeSearchResults": "anime",
     }
-    mapped = search_map.get(action)
-    if not mapped:
+    catalog = search_map.get(action)
+    if not catalog:
         return False
-    catalog, url, media_type = mapped
     query = normalize_search_query(page_params.get("action_args"))
     if not query:
         return False
     page = int(page_params.get("page") or 1)
-    page_limit = g.get_int_setting("item.limit", 25)
-    list_id = make_list_id("search", catalog, query)
+    page_limit = simkl_search_page_limit()
+    sort_mode = simkl_search_sort_mode()
+    list_id = make_list_id("search", catalog, query, sort_mode)
     store = get_list_store("search")
-    items = store.load_page_items(
+    all_items = store.load_cached_items(
         catalog,
         list_id,
-        page,
-        lambda: search_page(url, media_type, page, page_limit, query),
+        lambda: filter_search_results(fetch_all_search_results(catalog, query)),
     )
-    filtered = filter_search_results(items)
-    if not filtered:
+    page_items = paginate_refs_for_page(all_items, page, page_limit=page_limit)
+    if not page_items:
         return False
-    refs = persist_search_results(catalog, filtered, enrich=False)
+    refs = persist_search_results(catalog, page_items, enrich=False)
     from resources.lib.discover.catalog_store import sync_items_for_refs
     from resources.lib.meta.menu_paint_profile import MenuPaintProfile
     from resources.lib.simkl.enrich import enrich_page_for_paint

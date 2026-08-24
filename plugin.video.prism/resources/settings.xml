@@ -8,6 +8,34 @@
 					<default>false</default>
 					<control type="toggle"/>
 				</setting>
+				<setting id="simkl.search.exact" type="boolean" label="31048" help="31049">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
+				<setting id="simkl.search.sort" type="integer" label="31050" help="31053">
+					<level>0</level>
+					<default>2</default>
+					<constraints>
+						<options>
+							<option label="31051">0</option>
+							<option label="30884">1</option>
+							<option label="30883">2</option>
+						</options>
+					</constraints>
+					<control type="spinner" format="string"/>
+				</setting>
+				<setting id="simkl.search.limit" type="integer" label="31052" help="31054">
+					<level>0</level>
+					<default>20</default>
+					<constraints>
+						<minimum>10</minimum>
+						<maximum>60</maximum>
+					</constraints>
+					<control type="slider" format="integer">
+						<popup>false</popup>
+					</control>
+				</setting>
 				<setting id="general.hideSpecials" type="boolean" label="30172" help="">
 					<level>0</level>
 					<default>true</default>
