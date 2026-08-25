@@ -14,6 +14,23 @@ from resources.lib.modules.timeLogger import stopwatch
 from resources.lib.simkl.library import _unwrap_sync_items, simkl_entry_to_sync_dict, sync_entry_media_blob
 
 
+def should_defer_simkl_activities_sync(*, force: bool = False) -> bool:
+    """Return True when background activity sync should wait (same gating as calendar prefetch)."""
+    if force:
+        return False
+    from resources.lib.modules.page_prefetch import foreground_browse_busy
+
+    if foreground_browse_busy():
+        g.log("Simkl activities sync: deferred — foreground browse active", "debug")
+        return True
+    from resources.lib.modules.cache_maintenance import service_background_idle_ready
+
+    if not service_background_idle_ready():
+        g.log("Simkl activities sync: deferred — background not idle", "debug")
+        return True
+    return False
+
+
 class SimklSyncDatabase(shows.SimklSyncDatabase):
     sync_errors = False
 
@@ -66,6 +83,8 @@ class SimklSyncDatabase(shows.SimklSyncDatabase):
 
     @stopwatch
     def sync_activities(self, silent=False, force=False):
+        if should_defer_simkl_activities_sync(force=force):
+            return
         with GlobalLock("simkl.sync"):
             self.force_sync = force
             self.silent = silent

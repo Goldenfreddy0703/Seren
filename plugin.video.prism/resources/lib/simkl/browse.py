@@ -269,22 +269,9 @@ def discover_genre_menu_icon(catalog: str) -> dict:
 def _simkl_genre_row_to_sync(row: dict, catalog: str) -> dict | None:
     if not isinstance(row, dict):
         return None
-    ids = row.get("ids") or {}
-    if ids.get("simkl_id") is None and ids.get("simkl") is not None:
-        ids = {"simkl_id": ids.get("simkl"), **{k: v for k, v in ids.items() if k != "simkl"}}
-    item = {
-        "title": row.get("title"),
-        "overview": row.get("overview") or row.get("description"),
-        "release_date": row.get("released") or row.get("release_date") or row.get("year"),
-        "poster": row.get("poster"),
-        "fanart": row.get("fanart") or row.get("backdrop"),
-        "runtime": row.get("runtime"),
-        "status": row.get("status"),
-        "anime_type": row.get("anime_type"),
-        "type": row.get("type"),
-        "ids": ids,
-        "ratings": row.get("ratings"),
-    }
+    from resources.lib.simkl.media_ref import _simkl_api_list_row_to_item
+
+    item = _simkl_api_list_row_to_item(row)
     normalized = normalize_simkl_item(item, catalog)
     if normalized:
         info = normalized.get("simkl_object", {}).get("info", {})

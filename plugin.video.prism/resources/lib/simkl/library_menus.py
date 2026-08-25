@@ -5,7 +5,6 @@ from resources.lib.indexers import simkl_auth_guard
 from resources.lib.modules.globals import g
 from resources.lib.simkl.menu_helpers import (
     library_list_page,
-    list_filter_kwargs,
     paginate_simkl_lists,
 )
 from resources.lib.simkl.statuses import MOVIE_STATUS_OPTIONS, SHOW_STATUS_OPTIONS
@@ -130,43 +129,91 @@ def my_anime_hub() -> None:
     g.close_directory(g.CONTENT_MENU)
 
 
-def render_status_list(catalog: str, status: str) -> None:
-    from resources.lib.modules.list_builder import ListBuilder
-    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
-    from resources.lib.simkl.library_cache import load_library_list_refs
-    from resources.lib.simkl.menu_helpers import library_list_page, library_status_list_kwargs
+def _library_page_items(items: list[dict]) -> tuple[list[dict], bool]:
+    """Paginate a pre-sorted library SyncRow list."""
+    from resources.lib.discover.sync_bridge import simkl_refs
 
-    list_id = make_list_id(status)
-    store = get_list_store("library")
+    refs = simkl_refs(items)
+    page_refs, no_paging = library_list_page(refs)
+    if no_paging:
+        return items, True
+    order = [int(ref["simkl_id"]) for ref in page_refs if ref.get("simkl_id") is not None]
+    by_id = {
+        int(row["simkl_id"]): row
+        for row in items
+        if isinstance(row, dict) and row.get("simkl_id") is not None
+    }
+    return [by_id[sid] for sid in order if sid in by_id], False
 
-    refs = store.get_refs(
-        catalog,
-        list_id,
-        lambda: load_library_list_refs(catalog, status),
-    )
 
-    if not refs:
+def _render_library_browse_page(
+    catalog: str,
+    items: list[dict],
+    list_builder,
+    *,
+    list_id: str,
+    list_kwargs: dict,
+    status: str | None = None,
+    paginate_items: bool = True,
+) -> None:
+    """Paint a title library list via the same path as genre browse menus."""
+    from resources.lib.discover.sync_bridge import simkl_refs
+    from resources.lib.meta.list_pipeline import get_list_store, render_list_page, seed_browse_page
+
+    if not items:
         g.cancel_directory()
         return
 
-    list_kwargs = library_status_list_kwargs(catalog, status, refs)
-    page_refs, no_paging = library_list_page(refs)
-    list_kwargs.update(
-        {
-            "no_paging": no_paging,
-            "library_paint": True,
-            "library_status": status,
-            "prefer_catalog_payload": True,
-        }
+    store = get_list_store("library")
+    store.remember_items(catalog, list_id, items)
+    if paginate_items:
+        page_items, no_paging = _library_page_items(items)
+    else:
+        page_items = items
+        no_paging = bool(list_kwargs.get("no_paging", True))
+    if not page_items:
+        g.cancel_directory()
+        return
+
+    seed_browse_page(catalog, page_items)
+    merged = dict(list_kwargs)
+    merged["no_paging"] = no_paging
+    if status:
+        merged.setdefault("library_status", status)
+
+    render_list_page(
+        "paint_first",
+        catalog,
+        page_items,
+        list_builder,
+        list_kwargs=merged,
+        refs=simkl_refs(page_items),
+        payload_rows=page_items,
+        seeded=True,
     )
 
-    from resources.lib.meta.list_paint import render_catalog_discover_refs
 
-    render_catalog_discover_refs(
+def render_status_list(catalog: str, status: str) -> None:
+    from resources.lib.meta.list_pipeline import make_list_id
+    from resources.lib.modules.list_builder import ListBuilder
+    from resources.lib.simkl.library_cache import load_library_list_items
+    from resources.lib.simkl.library_list_sync import schedule_library_status_verify
+    from resources.lib.simkl.menu_helpers import library_status_list_kwargs
+
+    items = load_library_list_items(catalog, status)
+    schedule_library_status_verify(catalog, status)
+    if not items:
+        g.cancel_directory()
+        return
+
+    list_kwargs = library_status_list_kwargs(catalog, status, items)
+    _render_library_browse_page(
         catalog,
-        page_refs,
+        items,
         ListBuilder(),
+        list_id=make_list_id(status),
         list_kwargs=list_kwargs,
+        status=status,
     )
 
 
@@ -193,42 +240,52 @@ def _refs_from_library_rows(rows: list[dict], catalog: str) -> list[dict]:
     return refs
 
 
+def _recently_watched_list_kwargs(catalog: str, items: list[dict], *, no_paging: bool) -> dict:
+    from resources.lib.discover.renderer import discover_list_kwargs
+
+    g.REQUEST_PARAMS["action"] = "libraryRecentlyWatched"
+    g.REQUEST_PARAMS["catalog"] = catalog
+    return {
+        **discover_list_kwargs(
+            enrichment_reason="library",
+            seeded=True,
+            prefer_catalog_payload=True,
+            hide_unaired=False,
+            hide_watched=False,
+        ),
+        "no_paging": no_paging,
+        "catalog_hint": catalog,
+    }
+
+
 def render_recently_watched_shows(catalog: str) -> None:
     from resources.lib.database.session import get_sync_database
-    from resources.lib.meta.list_paint import render_catalog_discover_refs
-    from resources.lib.meta.menu_paint_profile import MenuPaintProfile, profile_list_kwargs
+    from resources.lib.meta.list_paint import rows_to_sync_items
+    from resources.lib.meta.list_pipeline import make_list_id
     from resources.lib.modules.list_builder import ListBuilder
-    from resources.lib.simkl.menu_helpers import paginate_simkl_lists
 
     no_paging = not paginate_simkl_lists()
     page = g.PAGE
     db = get_sync_database()
-    items = db.get_recently_watched_shows(
+    rows = db.get_recently_watched_shows(
         page,
         force_all=no_paging,
         catalog=catalog,
     )
 
-    if not items:
+    if not rows:
         g.cancel_directory()
         return
 
-    refs = _refs_from_library_rows(items, catalog)
-    list_kwargs = profile_list_kwargs(
-        MenuPaintProfile.LIBRARY,
-        no_paging=no_paging,
-        seeded=True,
-        library_paint=True,
-        prefer_catalog_payload=True,
-    )
-
-    render_catalog_discover_refs(
+    items = rows_to_sync_items(rows, catalog) or rows
+    list_kwargs = _recently_watched_list_kwargs(catalog, items, no_paging=no_paging)
+    _render_library_browse_page(
         catalog,
-        refs,
+        items,
         ListBuilder(),
+        list_id=make_list_id("recent", catalog),
         list_kwargs=list_kwargs,
-        payload_rows=items,
-        prefer_catalog_payload=True,
+        paginate_items=False,
     )
 
 
@@ -325,39 +382,32 @@ def render_next_up(catalog: str) -> None:
 
 def render_recently_watched_movies() -> None:
     from resources.lib.database.session import get_sync_database
-    from resources.lib.meta.list_paint import render_catalog_discover_refs
-    from resources.lib.meta.menu_paint_profile import MenuPaintProfile, profile_list_kwargs
+    from resources.lib.meta.list_paint import rows_to_sync_items
+    from resources.lib.meta.list_pipeline import make_list_id
     from resources.lib.modules.list_builder import ListBuilder
     from resources.lib.simkl.menu_helpers import paginate_simkl_lists
 
     no_paging = not paginate_simkl_lists()
     page = g.PAGE
     db = get_sync_database()
-    items = db.get_watched_movies(page if not no_paging else 1) or []
-    for item in items:
-        if isinstance(item, dict):
-            item.setdefault("catalog", "movie")
+    rows = db.get_watched_movies(page if not no_paging else 1) or []
+    for row in rows:
+        if isinstance(row, dict):
+            row.setdefault("catalog", "movie")
 
-    if not items:
+    if not rows:
         g.cancel_directory()
         return
 
-    refs = _refs_from_library_rows(items, "movie")
-    list_kwargs = profile_list_kwargs(
-        MenuPaintProfile.LIBRARY,
-        no_paging=no_paging,
-        seeded=True,
-        library_paint=True,
-        prefer_catalog_payload=True,
-    )
-
-    render_catalog_discover_refs(
+    items = rows_to_sync_items(rows, "movie") or rows
+    list_kwargs = _recently_watched_list_kwargs("movie", items, no_paging=no_paging)
+    _render_library_browse_page(
         "movie",
-        refs,
+        items,
         ListBuilder(),
+        list_id=make_list_id("recent_movies"),
         list_kwargs=list_kwargs,
-        payload_rows=items,
-        prefer_catalog_payload=True,
+        paginate_items=False,
     )
 
 

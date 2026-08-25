@@ -34,21 +34,30 @@ def library_list_has_next(refs: list) -> bool:
     return g.PAGE * page_limit < len(refs)
 
 
-def library_status_list_kwargs(catalog: str, status: str, refs: list) -> dict:
+def library_status_list_kwargs(catalog: str, status: str, items: list) -> dict:
     """
     Shared list-builder kwargs for Simkl library status menus (watchlist, watching, etc.).
 
     Stamps catalog/status on REQUEST_PARAMS so Next Page links and prefetch use the canonical
-    simklLibraryList route with hybrid fast-menu defaults.
+    simklLibraryList route with genre-style browse paint defaults.
     """
-    from resources.lib.meta.menu_paint_profile import MenuPaintProfile, profile_list_kwargs
+    from resources.lib.discover.renderer import discover_list_kwargs
+    from resources.lib.discover.sync_bridge import simkl_refs
 
     g.REQUEST_PARAMS["action"] = "simklLibraryList"
     g.REQUEST_PARAMS["catalog"] = catalog
     g.REQUEST_PARAMS["status"] = status
 
+    refs = simkl_refs(items)
     return {
-        **profile_list_kwargs(MenuPaintProfile.LIBRARY),
+        **discover_list_kwargs(
+            enrichment_reason="library",
+            seeded=True,
+            prefer_catalog_payload=True,
+            hide_unaired=False,
+            hide_watched=False,
+        ),
+        "library_status": status,
         "has_next_page": library_list_has_next(refs),
         "next_action": "simklLibraryList",
         "catalog_hint": catalog,

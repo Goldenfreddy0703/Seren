@@ -1,6 +1,7 @@
 """Per-status Simkl watchlist verify/reconcile (mirrors per-show episode watch refresh)."""
 from __future__ import annotations
 
+import threading
 import time
 
 from resources.lib.modules.globals import g
@@ -10,6 +11,8 @@ from resources.lib.simkl.statuses import MOVIE_STATUS_OPTIONS, SHOW_STATUS_OPTIO
 _VERIFY_COOLDOWN_SECONDS = 120
 _MOVIE_STATUSES = tuple(status for status, _ in MOVIE_STATUS_OPTIONS)
 _SHOW_STATUSES = tuple(status for status, _ in SHOW_STATUS_OPTIONS)
+_verify_lock = threading.Lock()
+_verify_scheduled: set[tuple[str, str]] = set()
 
 
 def _verify_setting_key(catalog: str, status: str) -> str:
@@ -184,6 +187,106 @@ def _ingest_remote_status_payload(
         db.insert_simkl_shows(shows, force_meta=force_meta)
 
 
+def _normalize_remote_status_entries(catalog: str, status: str, payload) -> list[dict]:
+    """Normalize a Simkl all-items payload into ordered SyncRows for paint."""
+    media_key = _media_key(catalog)
+    items: list[dict] = []
+    for entry in _unwrap_sync_items(payload, media_key):
+        if not isinstance(entry, dict):
+            continue
+        row = dict(entry)
+        if not row.get("status"):
+            row["status"] = status
+        normalized = simkl_entry_to_sync_dict(row, catalog)
+        if not normalized:
+            continue
+        normalized["simkl_status"] = status
+        info = (normalized.get("simkl_object") or {}).get("info")
+        if isinstance(info, dict):
+            info["simkl_status"] = status
+        items.append(normalized)
+    return items
+
+
+def fetch_library_status_items_from_api(catalog: str, status: str) -> list[dict]:
+    """Cold-open fetch: Simkl all-items full payload → sync DB + SyncRows for paint."""
+    from resources.lib.indexers.simkl import SimklAPI
+    from resources.lib.database.session import get_sync_database
+    from resources.lib.simkl.library_cache import (
+        _load_refs_from_sync_db,
+        _save_cached_refs,
+        library_status_items_from_db,
+        record_library_sync_watermark,
+    )
+    from resources.lib.simkl.library_sort import sort_library_refs
+
+    if not SimklAPI().is_authenticated():
+        return []
+
+    db = get_sync_database()
+    media_key = _media_key(catalog)
+    try:
+        payload = db.simkl_api.get_all_items(
+            media_key,
+            status=status,
+            extended="full",
+            next_watch_info="no",
+        )
+    except Exception:
+        g.log_stacktrace()
+        return []
+
+    if not payload:
+        return []
+
+    _ingest_remote_status_payload(db, catalog, status, payload, force_meta=True)
+    try:
+        remote_ids = fetch_remote_status_simkl_ids(db.simkl_api, catalog, status)
+    except Exception:
+        g.log_stacktrace()
+        remote_ids = {
+            int(ref["simkl_id"])
+            for ref in _load_refs_from_sync_db(catalog, status)
+            if ref.get("simkl_id") is not None
+        }
+
+    for simkl_id in remote_ids:
+        db.set_simkl_status(int(simkl_id), catalog, status)
+
+    _mark_verified(catalog, status)
+    refs = sort_library_refs(_load_refs_from_sync_db(catalog, status), catalog, status)
+    if refs:
+        _save_cached_refs(catalog, status, refs)
+    record_library_sync_watermark(db, catalog)
+    return library_status_items_from_db(catalog, status)
+
+
+def schedule_library_status_verify(catalog: str, status: str) -> None:
+    """Background membership verify (stale-while-revalidate — never blocks menu paint)."""
+    key = (str(catalog), str(status))
+    with _verify_lock:
+        if key in _verify_scheduled:
+            return
+        _verify_scheduled.add(key)
+
+    def _run() -> None:
+        try:
+            if not library_list_needs_verify(catalog, status):
+                return
+            refresh_library_status_list(catalog, status)
+        except Exception:
+            g.log_stacktrace()
+        finally:
+            with _verify_lock:
+                _verify_scheduled.discard(key)
+
+    threading.Thread(
+        target=_run,
+        daemon=True,
+        name=f"prism-library-verify-{catalog}-{status}",
+    ).start()
+
+
 def refresh_library_status_list(catalog: str, status: str, *, force: bool = False) -> bool:
     """
     Verify one My Library bucket against Simkl.
@@ -230,6 +333,7 @@ def refresh_library_status_list(catalog: str, status: str, *, force: bool = Fals
         if refs:
             _save_cached_refs(catalog, status, refs)
         record_library_sync_watermark(db, catalog)
+        _refresh_library_list_store(catalog, status)
         return True
 
     g.log(
@@ -274,4 +378,14 @@ def refresh_library_status_list(catalog: str, status: str, *, force: bool = Fals
     if refs:
         _save_cached_refs(catalog, status, refs)
     record_library_sync_watermark(db, catalog)
+    _refresh_library_list_store(catalog, status)
     return True
+
+
+def _refresh_library_list_store(catalog: str, status: str) -> None:
+    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
+    from resources.lib.simkl.library_cache import library_status_items_from_db
+
+    items = library_status_items_from_db(catalog, status)
+    if items:
+        get_list_store("library").remember_items(catalog, make_list_id(status), items)

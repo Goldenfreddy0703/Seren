@@ -351,38 +351,57 @@ def record_library_sync_watermark(db=None, catalog: str | None = None) -> None:
         )
 
 
+def library_status_items_from_db(catalog: str, status: str) -> list[dict]:
+    """Load sorted library SyncRows from simkl_sync for one status bucket."""
+    from resources.lib.meta.list_paint import rows_to_sync_items
+    from resources.lib.simkl.library_sort import sort_library_refs
+    from resources.lib.simkl.media_ref import sync_db_rows_for_refs
+
+    refs = sort_library_refs(_load_refs_from_sync_db(catalog, status), catalog, status)
+    if not refs:
+        return []
+    rows = sync_db_rows_for_refs(catalog, refs)
+    items = rows_to_sync_items(rows, catalog) or list(rows)
+    order = {int(ref["simkl_id"]): idx for idx, ref in enumerate(refs) if ref.get("simkl_id") is not None}
+    items = [row for row in items if isinstance(row, dict) and row.get("simkl_id") is not None]
+    items.sort(key=lambda row: order.get(int(row["simkl_id"]), 10**9))
+    return items
+
+
+def load_library_list_items(catalog: str, status: str) -> list[dict]:
+    """Foreground library list loader: RAM cache → sync DB SyncRows → cold API fetch."""
+    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
+    from resources.lib.simkl.library_list_sync import fetch_library_status_items_from_api
+
+    list_id = make_list_id(status)
+    store = get_list_store("library")
+
+    def loader() -> list[dict]:
+        items = library_status_items_from_db(catalog, status)
+        if items:
+            return items
+        return fetch_library_status_items_from_api(catalog, status)
+
+    return store.load_cached_items(catalog, list_id, loader)
+
+
 def load_library_list_refs(catalog: str, status: str) -> list[dict]:
 
     """
 
     Return list-builder refs for a My Library status list.
 
-
-
-    Verifies the requested bucket against Simkl (like season/episode watch refresh),
-
-    serves a fresh membership cache when unchanged, and reconciles on drift.
-
+    Serves membership from local cache/DB immediately; verify runs in background.
     """
-
     from resources.lib.modules.globals import g
 
     from resources.lib.modules.widget_loader import mark_widget_session_loaded
 
-    from resources.lib.simkl.library_list_sync import (
-        library_list_needs_verify,
-        refresh_library_status_list,
-    )
+    from resources.lib.simkl.library_list_sync import schedule_library_status_verify
 
     from resources.lib.simkl.library_sort import sort_library_refs
 
-
-
-    if library_list_needs_verify(catalog, status):
-
-        refresh_library_status_list(catalog, status)
-
-
+    schedule_library_status_verify(catalog, status)
 
     if g.FROM_WIDGET and mark_widget_session_loaded(f"library.{catalog}.{status}"):
 

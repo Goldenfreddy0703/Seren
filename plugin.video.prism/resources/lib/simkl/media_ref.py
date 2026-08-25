@@ -190,29 +190,39 @@ def normalize_library_entry(entry: dict[str, Any], catalog: str) -> dict[str, An
     return normalized
 
 
+def _simkl_api_list_row_to_item(row: dict[str, Any]) -> dict[str, Any]:
+    """Map a Simkl API list row (genre browse, search, etc.) onto normalize_simkl_item input."""
+    ids = row.get("ids") or {}
+    if ids.get("simkl_id") is None and ids.get("simkl") is not None:
+        ids = {"simkl_id": ids.get("simkl"), **{k: v for k, v in ids.items() if k != "simkl"}}
+    item: dict[str, Any] = {
+        "title": row.get("title"),
+        "overview": row.get("overview") or row.get("description"),
+        "release_date": row.get("released") or row.get("release_date") or row.get("first_aired"),
+        "poster": row.get("poster"),
+        "fanart": row.get("fanart") or row.get("backdrop"),
+        "url": row.get("url"),
+        "runtime": row.get("runtime"),
+        "status": row.get("status"),
+        "country": row.get("country"),
+        "anime_type": row.get("anime_type"),
+        "type": row.get("type"),
+        "ids": ids,
+        "genres": row.get("genres"),
+        "ratings": row.get("ratings"),
+        "total_episodes": row.get("total_episodes"),
+    }
+    if row.get("year") is not None and not item.get("release_date"):
+        item["release_date"] = str(row.get("year"))
+    return item
+
+
 def normalize_search_row(row: dict[str, Any], catalog: str) -> dict[str, Any] | None:
     """Normalize a Simkl ``/search/{type}`` result row."""
     if not isinstance(row, dict):
         return None
 
-    ids = row.get("ids") or {}
-    if ids.get("simkl_id") is None and ids.get("simkl") is not None:
-        ids = {"simkl_id": ids.get("simkl"), **{k: v for k, v in ids.items() if k != "simkl"}}
-
-    item = {
-        "title": row.get("title"),
-        "overview": row.get("overview"),
-        "release_date": row.get("released") or row.get("first_aired"),
-        "poster": row.get("poster"),
-        "url": row.get("url"),
-        "runtime": row.get("runtime"),
-        "status": row.get("status"),
-        "anime_type": row.get("anime_type"),
-        "type": row.get("type"),
-        "ids": ids,
-    }
-    if row.get("year") is not None and not item.get("release_date"):
-        item["release_date"] = str(row.get("year"))
+    item = _simkl_api_list_row_to_item(row)
     normalized = normalize_simkl_item(item, catalog)
     if not normalized:
         return None
@@ -463,6 +473,25 @@ def partition_by_catalog(items: list[dict[str, Any]]) -> tuple[list[dict], list[
     return movies, tv, anime
 
 
+def sync_db_rows_for_refs(catalog: str, page_refs: list[dict]) -> list[dict]:
+    """Load full simkl_sync rows for list refs (library menus — avoids thin catalog_items hydrate)."""
+    if not page_refs:
+        return []
+    from resources.lib.database.session import get_sync_database
+    from resources.lib.simkl.menu_helpers import list_filter_kwargs
+
+    db = get_sync_database()
+    sync_params = {
+        **list_filter_kwargs(),
+        "skip_mill": True,
+        "skip_update": True,
+        "sync_path": True,
+    }
+    if catalog == "movie":
+        return list(db.get_movie_list(page_refs, **sync_params) or [])
+    return list(db.get_show_list(page_refs, **sync_params) or [])
+
+
 def render_mixed_sync_list(
     sync_items: list[dict[str, Any]],
     *,
@@ -555,5 +584,6 @@ __all__ = [
     "persist_search_results",
     "refs_for_list_builder",
     "render_mixed_sync_list",
+    "sync_db_rows_for_refs",
     "sync_catalog",
 ]

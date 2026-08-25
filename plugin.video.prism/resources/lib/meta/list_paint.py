@@ -72,7 +72,10 @@ def attach_preloaded_catalog_paint(
 
     from resources.lib.meta.menu_paint_profile import MenuPaintProfile
 
-    if library_paint:
+    profile_override = merged.get("paint_profile")
+    if profile_override:
+        paint_profile = str(profile_override)
+    elif library_paint:
         paint_profile = MenuPaintProfile.LIBRARY.value
     elif simkl_detail_paint:
         paint_profile = MenuPaintProfile.SEARCH.value
@@ -105,11 +108,8 @@ def attach_preloaded_catalog_paint(
         return merged
 
     if payload_rows:
-        page_sync = list(payload_rows)
-        if genre_paint:
-            from resources.lib.simkl.enrich import hydrate_sync_items_local
-
-            page_sync = hydrate_sync_items_local(page_sync)
+        normalized = rows_to_sync_items(payload_rows, catalog)
+        page_sync = normalized or list(payload_rows)
     elif cache_catalog == "mixed":
         page_sync = sync_items_for_mixed_refs(refs)
     else:
@@ -119,27 +119,14 @@ def attach_preloaded_catalog_paint(
     if not page_sync:
         return merged
 
-    from resources.lib.simkl.enrich import hydrate_sync_items_local
+    if cache_catalog == "mixed":
+        from resources.lib.simkl.enrich import prepare_mixed_page_sync_for_paint
 
-    if not payload_rows:
-        page_sync = hydrate_sync_items_local(page_sync)
-
-    if library_paint or simkl_detail_paint or genre_paint:
-        from resources.lib.simkl.enrich import enrich_page_for_paint
-
-        page_sync = enrich_page_for_paint(
-            catalog,
-            page_sync,
-            force_detail=False,
-        )
+        page_sync = prepare_mixed_page_sync_for_paint(page_sync, refs=refs)
     else:
-        from resources.lib.meta.paint_cache import publish_sync_rows_to_paint_store
-        from resources.lib.meta.paint_stamp import page_refs_display_stamped
-        from resources.lib.simkl.enrich import simkl_detail_needed
+        from resources.lib.simkl.enrich import prepare_page_sync_for_paint
 
-        rich_local = [item for item in page_sync if not simkl_detail_needed(item)]
-        if rich_local and not page_refs_display_stamped(refs):
-            publish_sync_rows_to_paint_store(catalog, rich_local)
+        page_sync = prepare_page_sync_for_paint(catalog, page_sync, refs=refs)
 
     painted = paint_catalog_page_rows(
         refs,
@@ -344,7 +331,15 @@ def render_catalog_rows(
         g.cancel_directory()
         return
     refs = prepare_catalog_refs(catalog, rows, sync_items=sync_items)
-    render_catalog_discover_refs(catalog, refs, list_builder, **kwargs)
+    paint_rows = sync_items or rows_to_sync_items(rows, catalog) or rows
+    render_catalog_discover_refs(
+        catalog,
+        refs,
+        list_builder,
+        payload_rows=paint_rows,
+        prefer_catalog_payload=True,
+        **kwargs,
+    )
 
 
 def attach_preloaded_catalog_paint_mixed(
@@ -426,29 +421,9 @@ def attach_preloaded_catalog_paint_mixed(
         )
         return merged
 
-    if library_paint or simkl_detail_paint:
-        from resources.lib.simkl.enrich import enrich_page_for_paint
+    from resources.lib.simkl.enrich import prepare_mixed_page_sync_for_paint
 
-        for cat, group in (("movie", movies), ("tv", tv), ("anime", anime)):
-            if not group:
-                continue
-            enrich_page_for_paint(
-                cat,
-                [item for item in all_payload if (item.get("catalog") or cat) == cat],
-                force_detail=False,
-            )
-    else:
-        from resources.lib.meta.paint_cache import publish_sync_rows_to_paint_store
-        from resources.lib.meta.paint_stamp import page_refs_display_stamped
-        from resources.lib.simkl.enrich import simkl_detail_needed
-
-        if not page_refs_display_stamped(all_refs):
-            for cat, group in (("movie", movies), ("tv", tv), ("anime", anime)):
-                if not group:
-                    continue
-                rich_local = [item for item in group if not simkl_detail_needed(item)]
-                if rich_local:
-                    publish_sync_rows_to_paint_store(cat, rich_local)
+    all_payload = prepare_mixed_page_sync_for_paint(all_payload, refs=all_refs)
 
     painted = paint_catalog_page_rows(
         all_refs,
@@ -590,11 +565,11 @@ def prefetch_episode_parent_simkl_detail(episode_rows: list[dict], catalog: str)
     if not refs:
         return
     from resources.lib.discover.catalog_store import sync_items_for_refs
-    from resources.lib.simkl.enrich import enrich_page_for_paint
+    from resources.lib.simkl.enrich import prepare_page_sync_for_paint
 
     page_sync = sync_items_for_refs(catalog, refs)
     if page_sync:
-        enrich_page_for_paint(catalog, page_sync)
+        prepare_page_sync_for_paint(catalog, page_sync, refs=refs)
 
 
 def _warm_parent_show_cast(show_ids: list[int]) -> None:

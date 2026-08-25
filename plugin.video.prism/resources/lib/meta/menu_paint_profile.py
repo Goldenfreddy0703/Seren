@@ -49,13 +49,13 @@ _ACTION_PROFILES: dict[str, MenuPaintProfile] = {
     "moviesSearchResults": MenuPaintProfile.SEARCH,
     "showsSearchResults": MenuPaintProfile.SEARCH,
     "animeSearchResults": MenuPaintProfile.SEARCH,
-    # Library / watchlist
-    "simklLibraryList": MenuPaintProfile.LIBRARY,
+    # Library title lists (genre-style paint)
+    "simklLibraryList": MenuPaintProfile.BROWSE,
+    "libraryRecentlyWatched": MenuPaintProfile.BROWSE,
+    "libraryWatchedMovies": MenuPaintProfile.BROWSE,
     "libraryOnDeck": MenuPaintProfile.LIBRARY_EPISODES,
     "libraryNextUp": MenuPaintProfile.LIBRARY_EPISODES,
-    "libraryRecentlyWatched": MenuPaintProfile.LIBRARY,
     "libraryWatchedEpisodes": MenuPaintProfile.LIBRARY_EPISODES,
-    "libraryWatchedMovies": MenuPaintProfile.LIBRARY,
     # Episode drilldown
     "showSeasons": MenuPaintProfile.DRILLDOWN,
     "seasonEpisodes": MenuPaintProfile.DRILLDOWN,
@@ -147,7 +147,7 @@ def profile_list_kwargs(
             base["skip_update"] = False
     elif profile == MenuPaintProfile.SEARCH:
         base.update(_library_hide_filters())
-        base["simkl_detail_paint"] = True
+        base["paint_profile"] = MenuPaintProfile.SEARCH.value
         base.setdefault("enrichment_reason", "search")
     elif profile == MenuPaintProfile.LIBRARY:
         base.update(_library_hide_filters())

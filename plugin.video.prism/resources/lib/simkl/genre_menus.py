@@ -48,7 +48,6 @@ def _render_genre_browse_page(
     list_kwargs = discover_list_kwargs(
         enrichment_reason="genre",
         seeded=True,
-        genre_paint=True,
         prefer_catalog_payload=True,
     )
     if page.has_next_page:

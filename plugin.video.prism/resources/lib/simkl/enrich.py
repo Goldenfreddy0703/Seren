@@ -561,6 +561,77 @@ def enrich_page_for_paint(
     return enrich_sync_items_persisted(catalog, page_sync, force_detail=force_detail)
 
 
+def prepare_page_sync_for_paint(
+    catalog: str,
+    page_sync: list[dict],
+    *,
+    refs: list[dict] | None = None,
+) -> list[dict]:
+    """Hydrate locally, publish display-ready rows, blocking-detail only for thin rows."""
+    if not page_sync:
+        return page_sync
+
+    page_sync = hydrate_sync_items_local(page_sync)
+
+    if refs is not None:
+        from resources.lib.meta.paint_cache import publish_sync_rows_to_paint_store
+        from resources.lib.meta.paint_stamp import page_refs_display_stamped
+
+        ready = [item for item in page_sync if not simkl_detail_needed(item)]
+        if ready and not page_refs_display_stamped(refs):
+            publish_sync_rows_to_paint_store(catalog, ready)
+
+    if any(simkl_detail_needed(item) for item in page_sync):
+        page_sync = enrich_page_for_paint(catalog, page_sync)
+    return page_sync
+
+
+def prepare_mixed_page_sync_for_paint(
+    page_sync: list[dict],
+    *,
+    refs: list[dict] | None = None,
+) -> list[dict]:
+    """Hydrate mixed-catalog rows locally, publish ready rows, enrich thin rows per catalog."""
+    if not page_sync:
+        return page_sync
+
+    from resources.lib.simkl.media_ref import partition_by_catalog
+
+    page_sync = hydrate_sync_items_local(page_sync)
+    movies, tv, anime = partition_by_catalog(page_sync)
+
+    if refs is not None:
+        from resources.lib.meta.paint_cache import publish_sync_rows_to_paint_store
+        from resources.lib.meta.paint_stamp import page_refs_display_stamped
+
+        if not page_refs_display_stamped(refs):
+            for cat, group in (("movie", movies), ("tv", tv), ("anime", anime)):
+                if not group:
+                    continue
+                ready = [item for item in group if not simkl_detail_needed(item)]
+                if ready:
+                    publish_sync_rows_to_paint_store(cat, ready)
+
+    enriched_by_id: dict[int, dict] = {
+        int(item["simkl_id"]): item
+        for item in page_sync
+        if isinstance(item, dict) and item.get("simkl_id") is not None
+    }
+    for cat, group in (("movie", movies), ("tv", tv), ("anime", anime)):
+        if not group or not any(simkl_detail_needed(item) for item in group):
+            continue
+        for row in enrich_page_for_paint(cat, group):
+            if isinstance(row, dict) and row.get("simkl_id") is not None:
+                enriched_by_id[int(row["simkl_id"])] = row
+
+    return [
+        enriched_by_id.get(int(item["simkl_id"]), item)
+        if isinstance(item, dict) and item.get("simkl_id") is not None
+        else item
+        for item in page_sync
+    ]
+
+
 def enrich_sync_ids_persisted(catalog: str, simkl_ids: list[int], db=None) -> None:
     """Blocking Simkl detail fetch for sync DB ids (shared by paint queue and discover enrich)."""
     if not simkl_ids:

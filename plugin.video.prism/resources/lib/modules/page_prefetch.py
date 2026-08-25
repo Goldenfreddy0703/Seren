@@ -326,14 +326,14 @@ def _prefetch_paint_catalog_page(
     if not page_sync:
         return False
 
-    if paint_profile in ("library", "search"):
-        from resources.lib.simkl.enrich import enrich_page_for_paint
+    if cache_catalog == "mixed":
+        from resources.lib.simkl.enrich import prepare_mixed_page_sync_for_paint
 
-        page_sync = enrich_page_for_paint(
-            catalog,
-            page_sync,
-            force_detail=False,
-        )
+        page_sync = prepare_mixed_page_sync_for_paint(page_sync, refs=page_refs)
+    else:
+        from resources.lib.simkl.enrich import prepare_page_sync_for_paint
+
+        page_sync = prepare_page_sync_for_paint(catalog, page_sync, refs=page_refs)
 
     paint_catalog_page_rows(
         page_refs,
@@ -398,11 +398,8 @@ def _prefetch_search(page_params: dict[str, Any]) -> bool:
     refs = persist_search_results(catalog, page_items, enrich=False)
     from resources.lib.discover.catalog_store import sync_items_for_refs
     from resources.lib.meta.menu_paint_profile import MenuPaintProfile
-    from resources.lib.simkl.enrich import enrich_page_for_paint
 
     page_sync = sync_items_for_refs(catalog, refs)
-    if page_sync:
-        enrich_page_for_paint(catalog, page_sync, force_detail=False)
     return _prefetch_paint_catalog_page(
         catalog,
         refs,
@@ -496,7 +493,7 @@ def _prefetch_genre_slug(page_params: dict[str, Any]) -> bool:
     refs = persist_genre_page(catalog, result.items, blocking_enrich=False, enrich_reason="prefetch_genre")
     if not refs:
         return False
-    return _prefetch_paint_catalog_page(catalog, refs)
+    return _prefetch_paint_catalog_page(catalog, refs, payload_rows=result.items)
 
 
 def _prefetch_multi_genre(page_params: dict[str, Any]) -> bool:
@@ -549,7 +546,7 @@ def _prefetch_multi_genre(page_params: dict[str, Any]) -> bool:
     refs = persist_genre_page(catalog, result.items, blocking_enrich=False, enrich_reason="prefetch_genre")
     if not refs:
         return False
-    return _prefetch_paint_catalog_page(catalog, refs)
+    return _prefetch_paint_catalog_page(catalog, refs, payload_rows=result.items)
 
 
 def _library_catalog_status(page_params: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -631,25 +628,30 @@ def _prefetch_library(page_params: dict[str, Any]) -> bool:
     catalog, status = _library_catalog_status(page_params)
     if not catalog or not status:
         return False
-    from resources.lib.meta.list_pipeline import get_list_store, make_list_id
-    from resources.lib.simkl.library_cache import load_library_list_refs
+    from resources.lib.meta.menu_paint_profile import MenuPaintProfile
+    from resources.lib.simkl.library_cache import load_library_list_items
+    from resources.lib.simkl.library_list_sync import schedule_library_status_verify
     from resources.lib.simkl.menu_helpers import paginate_refs_for_page
+    from resources.lib.discover.sync_bridge import simkl_refs
 
-    list_id = make_list_id(status)
-    store = get_list_store("library")
-    refs = store.get_refs(catalog, list_id, lambda: load_library_list_refs(catalog, status))
-    if not refs:
+    items = load_library_list_items(catalog, status)
+    schedule_library_status_verify(catalog, status)
+    if not items:
         return False
     page = int(page_params.get("page") or 1)
-    page_refs = paginate_refs_for_page(refs, page)
+    page_refs = paginate_refs_for_page(simkl_refs(items), page)
     if not page_refs:
         return False
-    from resources.lib.meta.menu_paint_profile import MenuPaintProfile
-
+    order = [int(ref["simkl_id"]) for ref in page_refs if ref.get("simkl_id") is not None]
+    by_id = {int(row["simkl_id"]): row for row in items if row.get("simkl_id") is not None}
+    page_items = [by_id[sid] for sid in order if sid in by_id]
+    if not page_items:
+        return False
     return _prefetch_paint_catalog_page(
         catalog,
         page_refs,
-        paint_profile=MenuPaintProfile.LIBRARY.value,
+        payload_rows=page_items,
+        paint_profile=MenuPaintProfile.BROWSE.value,
     )
 
 
@@ -729,7 +731,7 @@ def _prefetch_year(page_params: dict[str, Any]) -> bool:
     refs = enrich_and_persist(catalog, items, enrich=False)
     if not refs:
         return False
-    return _prefetch_paint_catalog_page(catalog, refs)
+    return _prefetch_paint_catalog_page(catalog, refs, payload_rows=items)
 
 
 def _prefetch_db_movie_page(page_params: dict[str, Any], *, method: str, reason: str) -> None:
