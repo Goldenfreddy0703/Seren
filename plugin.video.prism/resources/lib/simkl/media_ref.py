@@ -236,6 +236,7 @@ def fetch_search_pool(catalog: str, query: str, *, exact: bool) -> list[dict]:
 def _fetch_search_pool_cached(catalog: str, query: str, exact: bool) -> list[dict[str, Any]]:
     all_items: list[dict[str, Any]] = []
     seen_ids: set[int] = set()
+    pages_fetched = 0
     for page in range(1, _SIMKL_SEARCH_MAX_PAGE + 1):
         page_items = _fetch_search_page_uncached(
             catalog,
@@ -246,6 +247,7 @@ def _fetch_search_pool_cached(catalog: str, query: str, exact: bool) -> list[dic
         )
         if not page_items:
             break
+        pages_fetched += 1
         for item in page_items:
             simkl_id = item.get("simkl_id")
             if simkl_id is not None:
@@ -258,6 +260,12 @@ def _fetch_search_pool_cached(catalog: str, query: str, exact: bool) -> list[dic
             all_items.append(item)
         if len(page_items) < _SIMKL_SEARCH_FETCH_LIMIT:
             break
+    from resources.lib.modules.globals import g
+
+    g.log(
+        f"Simkl search pool: catalog={catalog} query={query!r} pages={pages_fetched} items={len(all_items)} exact={exact}",
+        "debug",
+    )
     return all_items
 
 

@@ -914,9 +914,12 @@ def dispatch(params):
             prefetch_calendars_enabled,
             weekly_cache_warm,
         )
+        from resources.lib.modules.cache_maintenance import service_background_idle_ready
+        from resources.lib.modules.page_prefetch import foreground_browse_busy
 
         if prefetch_calendars_enabled() and not weekly_cache_warm():
-            prefetch_all_calendars()
+            if not g.is_addon_visible() and not foreground_browse_busy() and service_background_idle_ready():
+                prefetch_all_calendars()
 
     elif action == "processMetaEnrichmentQueue":
         from resources.lib.meta.enrichment import MetaEnrichmentQueue

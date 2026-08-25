@@ -20,8 +20,9 @@ _prefetch_events_lock = threading.Lock()
 
 
 def prefetch_page_depth() -> int:
-    """Background page prefetch is disabled (Seren does not prefetch list pages)."""
-    return 0
+    """How many upcoming list pages to warm (general.prefetch.pages, 0 = off)."""
+    depth = g.get_int_setting("general.prefetch.pages", _PREFETCH_PAGES_DEFAULT)
+    return max(0, min(depth, _PREFETCH_PAGES_MAX))
 
 
 def prefetch_next_page_enabled() -> bool:
@@ -1022,9 +1023,20 @@ def schedule_page_prefetch_chain(page_params: dict[str, Any] | None) -> None:
     if depth <= 0 or not g.kodi_menu_caching_enabled():
         return
     try:
+        current_page = int(g.PAGE or 1)
+    except (TypeError, ValueError):
+        current_page = 1
+    try:
         start_page = int(page_params.get("page") or 1)
     except (TypeError, ValueError):
         start_page = 1
+    # page_params come from _build_next_page_params (page = g.PAGE + 1) — never prefetch the visible page.
+    if start_page <= current_page:
+        g.log(
+            f"page_prefetch skipped — target page {start_page} is not after current page {current_page}",
+            "debug",
+        )
+        return
     for offset in range(depth):
         params = dict(page_params)
         params["page"] = start_page + offset

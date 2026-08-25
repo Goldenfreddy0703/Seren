@@ -109,6 +109,11 @@
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
+				<setting id="general.widget.hide_empty" type="boolean" label="31055" help="31056">
+					<level>0</level>
+					<default>false</default>
+					<control type="toggle"/>
+				</setting>
 			</group>
 			<group id="2" label="30592">
 				<setting id="general.flatten.episodes" type="boolean" label="30208" help="">
@@ -3214,6 +3219,23 @@
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
+				</setting>
+				<setting id="general.prefetch.pages" type="integer" label="31025" help="31026">
+					<level>0</level>
+					<default>0</default>
+					<constraints>
+						<minimum>0</minimum>
+						<maximum>5</maximum>
+						<step>1</step>
+					</constraints>
+					<dependencies>
+						<dependency type="visible">
+							<condition operator="is" setting="general.menucaching">true</condition>
+						</dependency>
+					</dependencies>
+					<control type="slider" format="integer">
+						<popup>false</popup>
+					</control>
 				</setting>
 				<setting id="general.widget.stagger" type="boolean" label="30967" help="30968">
 					<level>0</level>

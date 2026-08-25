@@ -27,6 +27,7 @@ def _sleeping_retry_handler():
 
 
 def prism_endpoint():
+    foreground_menu = False
     try:
         g.init_globals(sys.argv)
 
@@ -42,6 +43,11 @@ def prism_endpoint():
                 from resources.lib.modules.drilldown_prefetch import set_drilldown_navigation_active
 
                 set_drilldown_navigation_active(True)
+            if g.PLUGIN_HANDLE > 0 and not g.FROM_WIDGET:
+                from resources.lib.modules.page_prefetch import set_foreground_menu_active
+
+                set_foreground_menu_active(True)
+                foreground_menu = True
             with WidgetLoadGate(), TimeLogger(f"{g.REQUEST_PARAMS.get('action', '')}"):
                 router.dispatch(g.REQUEST_PARAMS)
 
@@ -51,6 +57,10 @@ def prism_endpoint():
 
     finally:
         try:
+            if foreground_menu:
+                from resources.lib.modules.page_prefetch import set_foreground_menu_active
+
+                set_foreground_menu_active(False)
             action = (g.REQUEST_PARAMS or {}).get("action")
             if (
                 g.PLUGIN_HANDLE > 0

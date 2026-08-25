@@ -9,6 +9,27 @@ _LAST_LOAD_MS_KEY = "widget.last_load_ms"
 _SESSION_PREFIX = "widget.session."
 
 
+def widget_hide_empty_setting() -> bool:
+    """Read hide-empty toggle (Seren PR uses ADDON.getSettingBool)."""
+    try:
+        return bool(g.ADDON.getSettingBool("general.widget.hide_empty"))
+    except Exception:
+        return g.get_bool_setting("general.widget.hide_empty", False)
+
+
+def widget_hide_empty_enabled() -> bool:
+    """When true, empty widget folders return zero items (no placeholder row)."""
+    return bool(g.FROM_WIDGET and widget_hide_empty_setting())
+
+
+def finish_empty_widget_directory() -> None:
+    """Close a widget folder with no list items (see general.widget.hide_empty)."""
+    import xbmcplugin
+
+    xbmcplugin.setContent(g.PLUGIN_HANDLE, g.CONTENT_MENU)
+    xbmcplugin.endOfDirectory(g.PLUGIN_HANDLE, succeeded=True, cacheToDisc=False)
+
+
 def widget_stagger_enabled() -> bool:
     if g.IS_SERVICE or not g.FROM_WIDGET:
         return False

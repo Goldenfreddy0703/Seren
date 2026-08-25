@@ -5141,8 +5141,8 @@ msgid "Stagger widget loads"
 msgstr "Stagger widget loads"
 
 msgctxt "#30968"
-msgid "Delay when each skin widget starts loading to reduce database and API contention. Widgets still load in parallel; this only spaces out their start times. Leave off unless you see database lock warnings."
-msgstr "Delay when each skin widget starts loading to reduce database and API contention. Widgets still load in parallel; this only spaces out their start times. Leave off unless you see database lock warnings."
+msgid "Delay when each skin widget starts loading to reduce database and API contention. Widgets still load in parallel; this only spaces out their start times. Enable when Seren and Prism widgets overlap on the home screen, or if you see database lock warnings."
+msgstr "Delay when each skin widget starts loading to reduce database and API contention. Widgets still load in parallel; this only spaces out their start times. Enable when Seren and Prism widgets overlap on the home screen, or if you see database lock warnings."
 
 msgctxt "#30969"
 msgid "Widget load delay (milliseconds)"
@@ -5512,3 +5512,13 @@ msgstr "How Simkl title search results are ordered after all pages are fetched (
 msgctxt "#31054"
 msgid "Number of titles shown on each page of Simkl search results."
 msgstr "Number of titles shown on each page of Simkl search results."
+
+#: /resources/settings.xml
+msgctxt "#31055"
+msgid "Hide Empty Widgets"
+msgstr "Hide Empty Widgets"
+
+#: /resources/settings.xml
+msgctxt "#31056"
+msgid "When a home-screen widget has no items (Next Up, Continue Watching, Recently Watched, etc.), return an empty list so skins can hide the section. Arctic Fuse 3: also disable the skin setting Widgets → No Items Placeholder (Widgets.DisableNoResultsItem). Reload skin widgets or restart Kodi after changing this setting."
+msgstr "When a home-screen widget has no items (Next Up, Continue Watching, Recently Watched, etc.), return an empty list so skins can hide the section. Arctic Fuse 3: also disable the skin setting Widgets → No Items Placeholder (Widgets.DisableNoResultsItem). Reload skin widgets or restart Kodi after changing this setting."

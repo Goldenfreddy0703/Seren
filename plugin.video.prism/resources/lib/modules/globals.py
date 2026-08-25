@@ -1995,6 +1995,14 @@ class GlobalVariables:
 
     def cancel_directory(self):
         if g.FROM_WIDGET:
+            from resources.lib.modules.widget_loader import (
+                finish_empty_widget_directory,
+                widget_hide_empty_setting,
+            )
+
+            if widget_hide_empty_setting():
+                finish_empty_widget_directory()
+                return
             g.add_directory_item(
                 g.get_language_string(284, addon=False),
                 menu_item=g.create_icon_dict("simkl_sync", base_path=g.ICONS_PATH),

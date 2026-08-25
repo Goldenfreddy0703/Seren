@@ -243,11 +243,18 @@ def run_maintenance():
             prefetch_calendars_enabled,
             weekly_cache_warm,
         )
+        from resources.lib.modules.cache_maintenance import service_background_idle_ready
+        from resources.lib.modules.page_prefetch import foreground_browse_busy
 
         if prefetch_calendars_enabled() and not weekly_cache_warm():
-            warmed = prefetch_all_calendars()
-            if warmed:
-                g.log(f"Calendar prefetch warmed {warmed} weekly rows", "debug")
+            if g.is_addon_visible() or foreground_browse_busy():
+                g.log("Simkl calendar prefetch: deferred — foreground browse active", "debug")
+            elif not service_background_idle_ready():
+                g.log("Simkl calendar prefetch: deferred — background not idle", "debug")
+            else:
+                warmed = prefetch_all_calendars()
+                if warmed:
+                    g.log(f"Calendar prefetch warmed {warmed} weekly rows", "debug")
     except Exception as e:
         g.log(f"Failed to prefetch weekly calendars: {e}", "warning")
 

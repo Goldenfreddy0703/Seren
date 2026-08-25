@@ -721,6 +721,10 @@ class ListBuilder:
                 content_type = self._mixed_media_content_type(catalog_hint, movie_count, show_count)
                 use_cache = menu_cache if menu_cache is not None else g.kodi_menu_caching_enabled()
                 g.close_directory(content_type, sort=sort, cache=use_cache)
+                if page_params:
+                    from resources.lib.modules.page_prefetch import schedule_page_prefetch_chain
+
+                    schedule_page_prefetch_chain(page_params)
                 for refs, media_type in enrichment_batches:
                     self._schedule_background_enrichment(
                         refs,
@@ -1021,6 +1025,7 @@ class ListBuilder:
         params.pop("ignore_cache", None)
         params.pop("action_args", None)
 
+        directory_closed = False
         try:
             params["bulk_add"] = True
             params["content_type"] = content_type
@@ -1034,6 +1039,19 @@ class ListBuilder:
                 display_rating_priority=display_rating_priority,
             )
 
+            if not list_items and not smart_play:
+                from resources.lib.modules.widget_loader import (
+                    finish_empty_widget_directory,
+                    widget_hide_empty_enabled,
+                )
+
+                directory_closed = True
+                if widget_hide_empty_enabled():
+                    finish_empty_widget_directory()
+                    return
+                g.cancel_directory()
+                return
+
             if smart_play:
                 return list_items
             else:
@@ -1045,7 +1063,7 @@ class ListBuilder:
             raise e
 
         finally:
-            if not smart_play:
+            if not smart_play and not directory_closed:
                 page_params = self._build_next_page_params(
                     no_paging=no_paging,
                     has_next_page=has_next_page,
@@ -1064,6 +1082,10 @@ class ListBuilder:
                 g.smart_scroll_trailing_extra = 1 if page_params else 0
                 use_cache = menu_cache if menu_cache is not None else g.kodi_menu_caching_enabled()
                 g.close_directory(content_type, sort=sort, cache=use_cache)
+                if page_params:
+                    from resources.lib.modules.page_prefetch import schedule_page_prefetch_chain
+
+                    schedule_page_prefetch_chain(page_params)
                 self._schedule_background_enrichment(
                     enrichment_refs,
                     enrichment_media_type,
