@@ -2637,72 +2637,25 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         return rows
 
     def get_next_episode_for_show(self, simkl_show_id: int) -> tuple[int, int] | None:
-        """Next unwatched aired episode for one show (same progression as Next Up)."""
+        """Next unwatched aired episode for one show (earliest gap in season/episode order)."""
         simkl_show_id = int(simkl_show_id)
         now = self._get_aired_cutoff()
-        last_watched = self.fetchone(
-            """
+        first_unwatched = self.fetchone(
+            f"""
             SELECT season, number
             FROM episodes
             WHERE simkl_show_id = ?
-              AND watched >= 1
               AND season > 0
-            ORDER BY season DESC, number DESC
+              AND watched = 0
+              AND (air_date IS NULL OR Datetime(air_date) < Datetime('{now}'))
+            ORDER BY season ASC, number ASC
             LIMIT 1
             """,
             (simkl_show_id,),
         )
-
-        if not last_watched:
-            first = self.fetchone(
-                f"""
-                SELECT season, number
-                FROM episodes
-                WHERE simkl_show_id = ?
-                  AND season > 0
-                  AND watched = 0
-                  AND (air_date IS NULL OR Datetime(air_date) < Datetime('{now}'))
-                ORDER BY season ASC, number ASC
-                LIMIT 1
-                """,
-                (simkl_show_id,),
-            )
-            if not first or first.get("season") is None or first.get("number") is None:
-                return None
-            return int(first["season"]), int(first["number"])
-
-        max_season = int(last_watched["season"])
-        max_episode = int(last_watched["number"])
-        same_season = self.fetchone(
-            f"""
-            SELECT season, number
-            FROM episodes
-            WHERE simkl_show_id = ?
-              AND season = ?
-              AND number = ?
-              AND watched = 0
-              AND (air_date IS NULL OR Datetime(air_date) < Datetime('{now}'))
-            """,
-            (simkl_show_id, max_season, max_episode + 1),
-        )
-        if same_season and same_season.get("season") is not None:
-            return int(same_season["season"]), int(same_season["number"])
-
-        next_season = self.fetchone(
-            f"""
-            SELECT season, number
-            FROM episodes
-            WHERE simkl_show_id = ?
-              AND season = ?
-              AND number = 1
-              AND watched = 0
-              AND (air_date IS NULL OR Datetime(air_date) < Datetime('{now}'))
-            """,
-            (simkl_show_id, max_season + 1),
-        )
-        if next_season and next_season.get("season") is not None:
-            return int(next_season["season"]), int(next_season["number"])
-        return None
+        if not first_unwatched or first_unwatched.get("season") is None or first_unwatched.get("number") is None:
+            return None
+        return int(first_unwatched["season"]), int(first_unwatched["number"])
 
     def get_watched_episodes(self, page=1, catalog=None):
         """

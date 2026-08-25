@@ -318,6 +318,16 @@ class ListBuilder:
 
         MetaEnrichmentQueue.schedule_run_plugin(refs, media_type, reason=reason, catalog=catalog)
 
+    @staticmethod
+    def _show_list_click_params() -> tuple[str, dict]:
+        """Browse action + folder/playable flags for TV show list rows."""
+        action = "flatEpisodes" if g.get_bool_setting("general.flatten.episodes") else "showSeasons"
+        row_params = {"is_folder": True, "is_playable": False}
+        if g.get_bool_setting("smartplay.clickresume"):
+            action = "forceResumeShow"
+            row_params = {"is_folder": False, "is_playable": True}
+        return action, row_params
+
     def show_list_builder(self, media_list, **params):
         """
         Builds a menu list of shows
@@ -327,11 +337,8 @@ class ListBuilder:
         """
         catalog = params.pop("catalog", None)
         content_type = self._catalog_content_type(catalog)
-        action = "flatEpisodes" if g.get_bool_setting("general.flatten.episodes") else "showSeasons"
-        if g.get_bool_setting("smartplay.clickresume"):
-            params["is_folder"] = False
-            params["is_playable"] = True
-            action = "forceResumeShow"
+        action, row_params = self._show_list_click_params()
+        params.update(row_params)
 
         self._fast_list_defaults(params)
         show_db = self._sync_db()
@@ -658,11 +665,7 @@ class ListBuilder:
                     row_params = {"is_folder": False, "is_playable": True}
                 else:
                     show_count += 1
-                    action = "flatEpisodes" if g.get_bool_setting("general.flatten.episodes") else "showSeasons"
-                    row_params = {"is_folder": True, "is_playable": False}
-                    if g.get_bool_setting("smartplay.clickresume"):
-                        row_params = {"is_folder": False, "is_playable": True}
-                        action = "forceResumeShow"
+                    action, row_params = self._show_list_click_params()
 
                 label2 = label2_for_item(item) if label2_for_item else None
                 processed = self._post_process(
@@ -824,12 +827,6 @@ class ListBuilder:
                 show_rows = {int(row["simkl_id"]): row for row in overlaid if row.get("simkl_id") is not None}
         return movie_rows, show_rows
 
-    def _discover_show_action(self) -> str:
-        action = "flatEpisodes" if g.get_bool_setting("general.flatten.episodes") else "showSeasons"
-        if g.get_bool_setting("smartplay.clickresume"):
-            return "forceResumeShow"
-        return action
-
     def _discover_builder_paint_rows(self, media_list, *, fetch_rows, params):
         """Use preloaded library/search paint rows when present; else simkl_sync + CDN overlay."""
         preloaded = params.pop("preloaded_paint_rows", None)
@@ -855,6 +852,8 @@ class ListBuilder:
     def _show_discover_builder(self, media_list, *, default_catalog: str, **params):
         """Discover TV/anime browse — Seren-style simkl_sync path."""
         catalog_hint = self._discover_catalog_hint(default_catalog, params)
+        action, row_params = self._show_list_click_params()
+        params.update(row_params)
         rows = self._discover_builder_paint_rows(
             media_list,
             fetch_rows=self._sync_db().get_show_list,
@@ -863,7 +862,7 @@ class ListBuilder:
         self._common_menu_builder(
             rows,
             self._catalog_content_type(catalog_hint),
-            self._discover_show_action(),
+            action,
             catalog_hint=catalog_hint,
             **params,
         )

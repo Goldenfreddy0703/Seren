@@ -208,7 +208,7 @@ class SmartPlay:
         season_info = self.seasons_info.get(season)
         if season_info:
             episode_count = season_info.get("episode_count")
-            if episode_count and episode >= episode_count:
+            if episode_count and episode > int(episode_count):
                 season += 1
                 episode = 1
 
@@ -247,13 +247,7 @@ class SmartPlay:
 
     def final_episode_check(self, season, episode):
         """
-        Checks to see if the current item is the last episode aired for the show
-        :param season: Season number of item to check
-        :type season: int
-        :param episode: Episode number of item to check
-        :type episode: int
-        :return: True if item is last aired episode else false
-        :rtype: bool
+        True when resume coords are past the last aired regular episode (season > 0).
         """
         season = int(season)
         episode = int(episode)
@@ -263,21 +257,23 @@ class SmartPlay:
         row = get_sync_database().fetchone(
             """
             SELECT season, number FROM episodes
-            WHERE simkl_show_id = ? AND air_date IS NOT NULL
-            ORDER BY air_date DESC LIMIT 1
+            WHERE simkl_show_id = ? AND air_date IS NOT NULL AND season > 0
+            ORDER BY season DESC, number DESC
+            LIMIT 1
             """,
             (self.show_simkl_id,),
         )
         if not row:
             return False
 
-        last_season = row.get("season")
-        last_number = row.get("number")
+        last_season = int(row["season"])
+        last_number = int(row["number"])
 
-        if season > int(last_season):
+        if season > last_season:
             return True
-
-        return season == int(last_season) and episode == int(last_number)
+        if season == last_season and episode > last_number:
+            return True
+        return False
 
     def append_next_season(self):
         """
