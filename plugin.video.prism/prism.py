@@ -31,9 +31,13 @@ def _sleeping_retry_handler():
 def _release_plugin_threads() -> None:
     """Ensure no pool workers keep this Kodi plugin invoker alive after the menu returns."""
     try:
-        from resources.lib.common.thread_pool import release_global_executors
+        from resources.lib.common.thread_pool import plugin_action_allows_threads, release_global_executors
 
-        release_global_executors(wait=False, cancel_futures=True)
+        action = (g.REQUEST_PARAMS or {}).get("action")
+        release_global_executors(
+            wait=plugin_action_allows_threads(action),
+            cancel_futures=True,
+        )
     except Exception:
         pass
     if g.abort_requested():
@@ -48,14 +52,22 @@ def _release_plugin_threads() -> None:
 
 
 def prism_endpoint():
-    from resources.lib.common.thread_pool import enter_prism_plugin_mode, exit_prism_plugin_mode
+    from resources.lib.common.thread_pool import (
+        enter_prism_plugin_mode,
+        exit_prism_plugin_mode,
+        plugin_action_allows_threads,
+    )
 
     enter_prism_plugin_mode()
     foreground_menu = False
     try:
         try:
             g.init_globals(sys.argv)
-            g.set_runtime_setting("prism.inline_pool", True)
+            action = (g.REQUEST_PARAMS or {}).get("action")
+            if plugin_action_allows_threads(action):
+                exit_prism_plugin_mode()
+            else:
+                g.set_runtime_setting("prism.inline_pool", True)
 
             if _sleeping_retry_handler() and not g.abort_requested():
                 from resources.lib.modules.widget_loader import WidgetLoadGate

@@ -845,15 +845,9 @@ def inherit_show_fields(episode_info: dict[str, Any], show_info: dict[str, Any])
     if mal_show is not None:
         episode_info.setdefault("mal_show_id", mal_show)
         episode_info.setdefault("mal_id", mal_show)
-    for id_key, flat_keys in (
-        ("anidb", ("anidb_id",)),
-        ("anilist", ("anilist_id",)),
-        ("kitsu", ("kitsu_id",)),
-        ("tvdb", ("tvdb_id",)),
-    ):
-        value = show_ids.get(id_key) or show_info.get(flat_keys[0])
-        if value is not None:
-            episode_info.setdefault(flat_keys[0], value)
+    anidb_show = show_ids.get("anidb") or show_info.get("anidb_id")
+    if anidb_show is not None:
+        episode_info.setdefault("anidb_show_id", anidb_show)
     if show_info.get("status") and not episode_info.get("status"):
         episode_info["status"] = show_info["status"]
     if show_info.get("catalog") and not episode_info.get("catalog"):

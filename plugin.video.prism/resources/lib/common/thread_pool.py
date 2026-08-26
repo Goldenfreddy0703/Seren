@@ -27,6 +27,8 @@ def _guarded_thread_start(self) -> None:
 def enter_prism_plugin_mode() -> None:
     """Set before init_globals — Kodi plugin argv[0] is a URL, not prism.py."""
     global _PRISM_PLUGIN_MODE
+    if plugin_action_allows_threads():
+        return
     _PRISM_PLUGIN_MODE = True
     threading.Thread.start = _guarded_thread_start  # type: ignore[method-assign]
 
@@ -38,6 +40,31 @@ def exit_prism_plugin_mode() -> None:
 
 # Default, Low, Medium, High, Extreme
 _SCALED_WORKERS = [20, 10, 20, 40, 80]
+
+# Long-running plugin actions that need real worker threads (scraping, resolving).
+_PLUGIN_THREADED_ACTIONS = frozenset({"getSources", "preScrape"})
+
+
+def _peek_plugin_action_from_argv() -> str | None:
+    try:
+        import sys
+        from urllib.parse import parse_qsl
+
+        param_string = (sys.argv[2] if len(sys.argv) > 2 else "").lstrip("?/")
+        return dict(parse_qsl(param_string)).get("action")
+    except Exception:
+        return None
+
+
+def plugin_action_allows_threads(action: str | None = None) -> bool:
+    if action is None:
+        try:
+            action = (getattr(g, "REQUEST_PARAMS", None) or {}).get("action")
+        except Exception:
+            action = None
+        if not action:
+            action = _peek_plugin_action_from_argv()
+    return action in _PLUGIN_THREADED_ACTIONS
 
 
 class _InlineExecutor:
@@ -79,6 +106,8 @@ _INLINE_EXECUTOR = _InlineExecutor()
 def _use_inline_pool() -> bool:
     """Avoid orphan worker threads on Kodi plugin invoker exit (service keeps real pools)."""
     try:
+        if plugin_action_allows_threads():
+            return False
         if _PRISM_PLUGIN_MODE:
             return True
         if g.get_bool_runtime_setting("prism.inline_pool"):
