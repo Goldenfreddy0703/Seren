@@ -174,6 +174,9 @@ def _deferred_vacuum_idle_ready() -> bool:
 def _run_pending_deferred_vacuum(path: str, pending_key: str, last_run_key: str) -> bool:
     if not g.get_bool_runtime_setting(pending_key):
         return False
+    if g.abort_requested():
+        g.clear_runtime_setting(pending_key)
+        return False
     if vacuum_sqlite_if_large(path):
         g.set_runtime_setting(last_run_key, time.time())
     g.clear_runtime_setting(pending_key)

@@ -72,6 +72,9 @@ def attach_preloaded_catalog_paint(
 
     from resources.lib.meta.menu_paint_profile import MenuPaintProfile
 
+    enrichment_reason = str(merged.get("enrichment_reason") or "").lower()
+    defer_provider_prepare = bool(library_paint)
+
     profile_override = merged.get("paint_profile")
     if profile_override:
         paint_profile = str(profile_override)
@@ -126,7 +129,14 @@ def attach_preloaded_catalog_paint(
     else:
         from resources.lib.simkl.enrich import prepare_page_sync_for_paint
 
-        page_sync = prepare_page_sync_for_paint(catalog, page_sync, refs=refs)
+        page_sync = prepare_page_sync_for_paint(
+            catalog,
+            page_sync,
+            refs=refs,
+            # Provider cast/art may defer; Simkl title/poster must not — thin watchlist rows
+            # only have membership until GET /tv|movie|anime/{id} runs.
+            defer_simkl_detail=False,
+        )
 
     painted = paint_catalog_page_rows(
         refs,
@@ -136,6 +146,7 @@ def attach_preloaded_catalog_paint(
         prefer_rich_payload=prefer_rich,
         paint_profile=paint_profile,
         page_cache={"catalog": cache_catalog},
+        defer_provider_prepare=defer_provider_prepare,
     )
 
     from resources.lib.meta.paint_cache import mixed_page_paint_all_complete, overlay_display_meta_stamps
@@ -1508,4 +1519,6 @@ def ensure_show_metadata_async(simkl_show_id: int) -> None:
         except Exception:
             g.log_stacktrace()
 
-    threading.Thread(target=_run, daemon=True, name=f"prism-show-meta-{int(simkl_show_id)}").start()
+    from resources.lib.common.thread_pool import defer_background
+
+    defer_background(_run, name=f"prism-show-meta-{int(simkl_show_id)}")

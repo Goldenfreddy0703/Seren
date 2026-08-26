@@ -391,9 +391,15 @@ def get_item_information(action_args):
             item_information.update(episode_row)
         info = item_information.get("info")
         if isinstance(info, dict) and show_id:
-            show_row = db.fetchone("SELECT info FROM shows WHERE simkl_id = ?", (show_id,))
+            show_row = db.fetchone(
+                "SELECT info, imdb_id, tmdb_id, tvdb_id FROM shows WHERE simkl_id = ?",
+                (show_id,),
+            )
             show_info = (show_row or {}).get("info")
             if isinstance(show_info, dict):
+                for col in ("imdb_id", "tmdb_id", "tvdb_id"):
+                    if show_row.get(col) and not show_info.get(col):
+                        show_info[col] = show_row[col]
                 attach_show_scraper_context(item_information, show_info)
         return _finalize(item_information)
 
@@ -566,7 +572,13 @@ def run_threaded(target_func, *args, **kwargs):
     """
     from threading import Thread
 
-    thread = Thread(target=target_func, args=args, kwargs=kwargs)
+    from resources.lib.common.thread_pool import prism_plugin_no_threads
+
+    if prism_plugin_no_threads():
+        target_func(*args, **kwargs)
+        return None
+
+    thread = Thread(target=target_func, args=args, kwargs=kwargs, daemon=True)
     thread.start()
     return thread
 

@@ -51,7 +51,7 @@ def library_status_list_kwargs(catalog: str, status: str, items: list) -> dict:
     refs = simkl_refs(items)
     return {
         **discover_list_kwargs(
-            enrichment_reason="library",
+            enrichment_reason="browse",
             seeded=True,
             prefer_catalog_payload=True,
             hide_unaired=False,

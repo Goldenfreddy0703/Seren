@@ -158,7 +158,7 @@ def _render_library_browse_page(
 ) -> None:
     """Paint a title library list via the same path as genre browse menus."""
     from resources.lib.discover.sync_bridge import simkl_refs
-    from resources.lib.meta.list_pipeline import get_list_store, render_list_page, seed_browse_page
+    from resources.lib.meta.list_pipeline import get_list_store, render_list_page
 
     if not items:
         g.cancel_directory()
@@ -175,7 +175,10 @@ def _render_library_browse_page(
         g.cancel_directory()
         return
 
-    seed_browse_page(catalog, page_items)
+    from resources.lib.simkl.library_list_sync import prepare_library_browse_page
+
+    page_items = prepare_library_browse_page(catalog, page_items)
+
     merged = dict(list_kwargs)
     merged["no_paging"] = no_paging
     if status:
@@ -201,7 +204,6 @@ def render_status_list(catalog: str, status: str) -> None:
     from resources.lib.simkl.menu_helpers import library_status_list_kwargs
 
     items = load_library_list_items(catalog, status)
-    schedule_library_status_verify(catalog, status)
     if not items:
         g.cancel_directory()
         return
@@ -215,6 +217,7 @@ def render_status_list(catalog: str, status: str) -> None:
         list_kwargs=list_kwargs,
         status=status,
     )
+    schedule_library_status_verify(catalog, status)
 
 
 def _library_store():
@@ -247,7 +250,7 @@ def _recently_watched_list_kwargs(catalog: str, items: list[dict], *, no_paging:
     g.REQUEST_PARAMS["catalog"] = catalog
     return {
         **discover_list_kwargs(
-            enrichment_reason="library",
+            enrichment_reason="browse",
             seeded=True,
             prefer_catalog_payload=True,
             hide_unaired=False,

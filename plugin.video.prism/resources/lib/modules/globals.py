@@ -267,6 +267,28 @@ def normalize_cast_to_actors(cast_list):
     return actors
 
 
+def build_unique_ids_for_info(info):
+    """Map Prism info fields to Kodi InfoTagVideo unique ID keys."""
+    if not isinstance(info, dict):
+        return {}
+
+    media_type = info.get("mediatype")
+    id_keys = {
+        "tmdb_id": "tmdb",
+        "imdb_id": "imdb",
+        "tvdb_id": "tvdb",
+        "simkl_id": "simkl",
+        "mal_id": "mal",
+    }
+    unique_ids = {}
+    for id_key, unique_id_key in id_keys.items():
+        lookup = f"tvshow.{id_key}" if media_type in ("episode", "season") else id_key
+        value = info.get(lookup) or info.get(id_key)
+        if value:
+            unique_ids[unique_id_key] = str(value)
+    return unique_ids
+
+
 def set_video_info_tag(item, info, cast=None, unique_ids=None):
     """
     Set video metadata using InfoTagVideo API (Kodi 21+).
@@ -1706,18 +1728,7 @@ class GlobalVariables:
             if key.endswith("_id"):
                 item.setProperty(key, str(value))
 
-        # Build unique IDs dict for InfoTagVideo
-        media_type = info.get("mediatype", None)
-        id_keys = {
-            "tmdb_id": "tmdb",
-            "imdb_id": "imdb",
-            "tvdb_id": "tvdb",
-        }
-        unique_ids = {
-            unique_id_key: info[f"tvshow.{id_key}" if media_type in ["episode", "season"] else id_key]
-            for id_key, unique_id_key in id_keys.items()
-            if info.get(f"tvshow.{id_key}" if media_type in ["episode", "season"] else id_key)
-        }
+        unique_ids = build_unique_ids_for_info(info)
 
         # Named ratings are now handled in set_video_info_tag()
 

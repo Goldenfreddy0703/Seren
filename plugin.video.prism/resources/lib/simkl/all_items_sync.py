@@ -312,7 +312,9 @@ def _finalize_episode_sync_state(
             except Exception:
                 g.log_stacktrace()
 
-        threading.Thread(target=_background_warm, daemon=True).start()
+        from resources.lib.common.thread_pool import defer_background
+
+        defer_background(_background_warm)
         return
 
     _reapply_episode_watch_state_after_warm(db, payload)
@@ -630,6 +632,6 @@ def sync_simkl_library(db: "SimklSyncDatabase", remote_activities, *, force: boo
         db,
         payload,
         force=force,
-        blocking_warm=False,
+        blocking_warm=first_sync,
     )
     db.set_sync_progress(100, g.get_language_string(31013))

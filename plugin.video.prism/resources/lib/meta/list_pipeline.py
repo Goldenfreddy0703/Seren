@@ -421,11 +421,9 @@ class PaginatedListStore:
                 with _materialize_lock:
                     _catalog_upsert_keys.discard(key)
 
-        threading.Thread(
-            target=_run,
-            daemon=True,
-            name=f"prism-list-upsert-{self.namespace}-{catalog}-{list_id[:12]}",
-        ).start()
+        from resources.lib.common.thread_pool import defer_background
+
+        defer_background(_run, name=f"prism-list-upsert-{self.namespace}-{catalog}-{list_id[:12]}")
 
     def _schedule_list_materialize(self, catalog: str, list_id: str, sync_items: list[dict]) -> None:
         key = self._key(catalog, list_id)
@@ -449,11 +447,9 @@ class PaginatedListStore:
                 with _materialize_lock:
                     _materialized_keys.discard(key)
 
-        threading.Thread(
-            target=_run,
-            daemon=True,
-            name=f"prism-list-materialize-{self.namespace}-{catalog}-{list_id[:12]}",
-        ).start()
+        from resources.lib.common.thread_pool import defer_background
+
+        defer_background(_run, name=f"prism-list-materialize-{self.namespace}-{catalog}-{list_id[:12]}")
 
 
 _STORES: dict[str, PaginatedListStore] = {}

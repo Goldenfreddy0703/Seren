@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 
 from resources.lib.modules import router
@@ -26,53 +28,81 @@ def _sleeping_retry_handler():
     return not sleeping
 
 
-def prism_endpoint():
-    foreground_menu = False
+def _release_plugin_threads() -> None:
+    """Ensure no pool workers keep this Kodi plugin invoker alive after the menu returns."""
     try:
-        g.init_globals(sys.argv)
+        from resources.lib.common.thread_pool import release_global_executors
 
-        if _sleeping_retry_handler() and not g.abort_requested():
-            from resources.lib.modules.widget_loader import WidgetLoadGate
-
-            action = (g.REQUEST_PARAMS or {}).get("action")
-            if (
-                g.PLUGIN_HANDLE > 0
-                and not g.FROM_WIDGET
-                and action in ("seasonEpisodes", "flatEpisodes")
-            ):
-                from resources.lib.modules.drilldown_prefetch import set_drilldown_navigation_active
-
-                set_drilldown_navigation_active(True)
-            if g.PLUGIN_HANDLE > 0 and not g.FROM_WIDGET:
-                from resources.lib.modules.page_prefetch import set_foreground_menu_active
-
-                set_foreground_menu_active(True)
-                foreground_menu = True
-            with WidgetLoadGate(), TimeLogger(f"{g.REQUEST_PARAMS.get('action', '')}"):
-                router.dispatch(g.REQUEST_PARAMS)
-
+        release_global_executors(wait=False, cancel_futures=True)
     except Exception:
-        g.cancel_directory()
-        raise
-
-    finally:
+        pass
+    if g.abort_requested():
         try:
-            if foreground_menu:
-                from resources.lib.modules.page_prefetch import set_foreground_menu_active
+            from resources.lib.database.session import get_sync_database
 
-                set_foreground_menu_active(False)
-            action = (g.REQUEST_PARAMS or {}).get("action")
-            if (
-                g.PLUGIN_HANDLE > 0
-                and not g.FROM_WIDGET
-                and action in ("seasonEpisodes", "flatEpisodes")
-            ):
-                from resources.lib.modules.drilldown_prefetch import set_drilldown_navigation_active
-
-                set_drilldown_navigation_active(False)
+            db = get_sync_database()
+            for pool in (db.task_queue, db.mill_task_queue):
+                pool.force_stop()
         except Exception:
             pass
-        g.deinit()
+
+
+def prism_endpoint():
+    from resources.lib.common.thread_pool import enter_prism_plugin_mode, exit_prism_plugin_mode
+
+    enter_prism_plugin_mode()
+    foreground_menu = False
+    try:
+        try:
+            g.init_globals(sys.argv)
+            g.set_runtime_setting("prism.inline_pool", True)
+
+            if _sleeping_retry_handler() and not g.abort_requested():
+                from resources.lib.modules.widget_loader import WidgetLoadGate
+
+                action = (g.REQUEST_PARAMS or {}).get("action")
+                if (
+                    g.PLUGIN_HANDLE > 0
+                    and not g.FROM_WIDGET
+                    and action in ("seasonEpisodes", "flatEpisodes")
+                ):
+                    from resources.lib.modules.drilldown_prefetch import set_drilldown_navigation_active
+
+                    set_drilldown_navigation_active(True)
+                if g.PLUGIN_HANDLE > 0 and not g.FROM_WIDGET:
+                    from resources.lib.modules.page_prefetch import set_foreground_menu_active
+
+                    set_foreground_menu_active(True)
+                    foreground_menu = True
+                with WidgetLoadGate(), TimeLogger(f"{g.REQUEST_PARAMS.get('action', '')}"):
+                    router.dispatch(g.REQUEST_PARAMS)
+
+        except Exception:
+            g.cancel_directory()
+            raise
+
+        finally:
+            try:
+                if foreground_menu:
+                    from resources.lib.modules.page_prefetch import set_foreground_menu_active
+
+                    set_foreground_menu_active(False)
+                action = (g.REQUEST_PARAMS or {}).get("action")
+                if (
+                    g.PLUGIN_HANDLE > 0
+                    and not g.FROM_WIDGET
+                    and action in ("seasonEpisodes", "flatEpisodes")
+                ):
+                    from resources.lib.modules.drilldown_prefetch import set_drilldown_navigation_active
+
+                    set_drilldown_navigation_active(False)
+            except Exception:
+                pass
+            _release_plugin_threads()
+            g.clear_runtime_setting("prism.inline_pool")
+            g.deinit()
+    finally:
+        exit_prism_plugin_mode()
 
 
 if __name__ == "__main__":  # pragma: no cover

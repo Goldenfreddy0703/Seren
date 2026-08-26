@@ -30,12 +30,19 @@ class ProvidersServiceManager(CustomProviders, ThreadPool, MessageServer):
         :rtype: None
         """
         g.log('Starting Service Manager Long Life Service')
-        for package in self.known_packages:
-            self._start_package_services(package)
-        self._service_trigger_loop()
+        try:
+            for package in self.known_packages:
+                self._start_package_services(package)
+            self._service_trigger_loop()
+        finally:
+            for package in list(self._registered_services.keys()):
+                self._shutdown_package_services(package)
+            self.force_stop()
 
     def _service_trigger_loop(self):
         while not g.wait_for_abort(0.5):
+            if g.abort_requested() or g.HOME_WINDOW is None:
+                break
             self._handle_messages(self.get_messages())
 
     def _shutdown_package_services(self, package_name):

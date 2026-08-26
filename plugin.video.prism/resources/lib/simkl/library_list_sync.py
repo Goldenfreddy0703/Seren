@@ -101,6 +101,16 @@ def library_list_needs_verify(catalog: str, status: str, *, force: bool = False)
     if not stored_watermark:
         record_library_sync_watermark(db, catalog)
 
+    from resources.lib.simkl.enrich import simkl_detail_needed
+    from resources.lib.simkl.library_cache import library_status_items_from_db
+
+    if any(
+        simkl_detail_needed(item)
+        for item in library_status_items_from_db(catalog, status)
+        if isinstance(item, dict)
+    ):
+        return True
+
     return False
 
 
@@ -208,6 +218,55 @@ def _normalize_remote_status_entries(catalog: str, status: str, payload) -> list
     return items
 
 
+def prepare_library_browse_page(catalog: str, items: list[dict]) -> list[dict]:
+    """Genre-style prep: local CDN hydrate, Simkl detail for thin rows, catalog_items seed."""
+    if not items:
+        return items
+
+    from resources.lib.meta.list_pipeline import seed_browse_page
+    from resources.lib.simkl.enrich import (
+        _has_simkl_owned_metadata,
+        _row_info_art,
+        enrich_sync_items_persisted,
+        hydrate_sync_items_local,
+        simkl_detail_needed,
+    )
+
+    hydrated = hydrate_sync_items_local(items)
+    thin: list[dict] = []
+    seen: set[int] = set()
+    for item in hydrated:
+        if not isinstance(item, dict) or item.get("simkl_id") is None:
+            continue
+        sid = int(item["simkl_id"])
+        if sid in seen:
+            continue
+        info, _ = _row_info_art(item)
+        if simkl_detail_needed(item) or not _has_simkl_owned_metadata(info):
+            thin.append(item)
+            seen.add(sid)
+
+    if thin:
+        g.log(
+            f"Library browse prep: Simkl detail for {len(thin)} thin {catalog} row(s)",
+            "info",
+        )
+        enriched = enrich_sync_items_persisted(catalog, thin)
+        by_id = {
+            int(row["simkl_id"]): row
+            for row in enriched
+            if isinstance(row, dict) and row.get("simkl_id") is not None
+        }
+        hydrated = [
+            by_id.get(int(row["simkl_id"]), row)
+            if isinstance(row, dict) and row.get("simkl_id") is not None
+            else row
+            for row in hydrated
+        ]
+
+    return seed_browse_page(catalog, hydrated)
+
+
 def fetch_library_status_items_from_api(catalog: str, status: str) -> list[dict]:
     """Cold-open fetch: Simkl all-items full payload → sync DB + SyncRows for paint."""
     from resources.lib.indexers.simkl import SimklAPI
@@ -280,11 +339,22 @@ def schedule_library_status_verify(catalog: str, status: str) -> None:
             with _verify_lock:
                 _verify_scheduled.discard(key)
 
-    threading.Thread(
-        target=_run,
-        daemon=True,
-        name=f"prism-library-verify-{catalog}-{status}",
-    ).start()
+    from resources.lib.common.thread_pool import defer_background
+
+    defer_background(_run, name=f"prism-library-verify-{catalog}-{status}")
+
+
+def _enrich_thin_library_status_items(catalog: str, status: str) -> int:
+    """Gap-fill Simkl detail for membership rows that only have simkl_id + status locally."""
+    from resources.lib.simkl.enrich import enrich_sync_items_persisted, simkl_detail_needed
+    from resources.lib.simkl.library_cache import library_status_items_from_db
+
+    items = library_status_items_from_db(catalog, status)
+    thin = [item for item in items if isinstance(item, dict) and simkl_detail_needed(item)]
+    if not thin:
+        return 0
+    enrich_sync_items_persisted(catalog, thin)
+    return len(thin)
 
 
 def refresh_library_status_list(catalog: str, status: str, *, force: bool = False) -> bool:
@@ -333,6 +403,12 @@ def refresh_library_status_list(catalog: str, status: str, *, force: bool = Fals
         if refs:
             _save_cached_refs(catalog, status, refs)
         record_library_sync_watermark(db, catalog)
+        enriched = _enrich_thin_library_status_items(catalog, status)
+        if enriched:
+            g.log(
+                f"Simkl library metadata: gap-filled {enriched} thin {catalog}/{status} row(s)",
+                "info",
+            )
         _refresh_library_list_store(catalog, status)
         return True
 

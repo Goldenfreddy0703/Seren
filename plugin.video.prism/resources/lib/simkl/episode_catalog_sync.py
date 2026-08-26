@@ -326,4 +326,6 @@ def schedule_lazy_episode_warm(db: "SimklSyncDatabase", show_ids: set[int] | lis
         except Exception:
             g.log_stacktrace()
 
-    threading.Thread(target=_warm, daemon=True).start()
+    from resources.lib.common.thread_pool import defer_background
+
+    defer_background(_warm)

@@ -62,9 +62,9 @@ def resolve_anime_titles_from_source(source: dict[str, Any]) -> tuple[str | None
     elif source.get("en_title") is not None or source.get("title_en"):
         romaji = base_title
     else:
+        # Simkl GET /anime/{id} uses title for romaji; en_title may be absent — do not
+        # copy romaji into the English slot when en_title is missing.
         romaji = base_title
-        if not english and base_title:
-            english = base_title
 
     if not romaji and english:
         romaji = english
@@ -159,7 +159,7 @@ def pick_anime_display_title(info: dict[str, Any], *, prefer_romaji: bool = Fals
     if not info:
         return None
 
-    raw_en = _unescape(info.get("title_en"))
+    raw_en = _unescape(info.get("title_en") or info.get("en_title"))
     raw_romaji = _unescape(info.get("title_romaji"))
     canonical_title = _unescape(info.get("title"))
     en_title, romaji_title = _normalized_anime_title_slots(raw_en, raw_romaji, canonical_title)
@@ -293,14 +293,22 @@ def merge_anime_title_slots(dst: dict[str, Any], src: dict[str, Any]) -> bool:
         return False
     english, romaji = resolve_anime_titles_from_source(src)
     if not english and not romaji:
-        english = src.get("title_en")
+        english = src.get("title_en") or src.get("en_title")
         romaji = src.get("title_romaji")
     changed = False
-    if english and not dst.get("title_en"):
-        dst["title_en"] = english
-        changed = True
-    if romaji and not dst.get("title_romaji"):
-        dst["title_romaji"] = romaji
+    dst_en = (dst.get("title_en") or "").strip()
+    dst_romaji = (dst.get("title_romaji") or "").strip()
+    polluted_en = bool(dst_en and dst_romaji and dst_en == dst_romaji)
+    if english:
+        if not dst_en or polluted_en or (dst_en == (dst.get("title") or "").strip() and english != dst_en):
+            dst["title_en"] = english
+            changed = True
+    if romaji:
+        if not dst_romaji or polluted_en:
+            dst["title_romaji"] = romaji
+            changed = True
+    if src.get("en_title") and not dst.get("en_title"):
+        dst["en_title"] = src.get("en_title")
         changed = True
     if repair_inverted_anime_title_slots(dst):
         changed = True
@@ -316,10 +324,13 @@ def ensure_anime_title_slots(info: dict[str, Any]) -> bool:
         info["title_en"] = english
     if romaji and not info.get("title_romaji"):
         info["title_romaji"] = romaji
-    if not info.get("title_en"):
-        info["title_en"] = info.get("title_romaji") or info.get("title")
-    if not info.get("title_romaji"):
-        info["title_romaji"] = info.get("title_en") or info.get("title")
+    api_en = info.get("en_title")
+    if api_en and not info.get("title_en"):
+        info["title_en"] = _unescape(api_en)
+    if not info.get("title_en") and info.get("title_romaji"):
+        info["title_en"] = info["title_romaji"]
+    elif not info.get("title_romaji") and info.get("title_en"):
+        info["title_romaji"] = info["title_en"]
     if not info.get("title"):
         info["title"] = info.get("title_en") or info.get("title_romaji")
     repair_inverted_anime_title_slots(info)
@@ -569,6 +580,9 @@ def enrich_info_from_simkl(
             info["title_en"] = en_title
         if romaji_title and not info.get("title_romaji"):
             info["title_romaji"] = romaji_title
+        raw_api_en = source.get("en_title")
+        if raw_api_en and not info.get("en_title"):
+            info["en_title"] = _unescape(raw_api_en)
 
     if source.get("year") is not None and info.get("year") is None:
         info["year"] = _int_or_none(source.get("year"))
@@ -975,6 +989,12 @@ def finalize_playback_info(info: dict[str, Any]) -> None:
 
     if info.get("genres") and not info.get("genre"):
         info["genre"] = info["genres"]
+    if not info.get("imdb_id") and info.get("mediatype") == "episode":
+        for show_key in ("tvshow.imdb_id", "imdb_show_id"):
+            show_imdb = info.get(show_key)
+            if show_imdb:
+                info["imdb_id"] = _normalize_imdb_id(show_imdb)
+                break
     if info.get("imdb_id") and not info.get("imdbnumber"):
         info["imdbnumber"] = info["imdb_id"]
     if info.get("title") and not info.get("originaltitle") and info.get("mediatype") in ("movie", "episode"):

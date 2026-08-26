@@ -86,8 +86,12 @@ class SmartPlay:
             self.show_simkl_id,
             skip_watch_refresh=True,
         ):
+            if not isinstance(item, dict):
+                continue
             info = MetadataHandler.info(item)
             season_num = info.get("season")
+            if season_num is None:
+                season_num = item.get("season")
             if season_num is None:
                 continue
             info["episode_count"] = (

@@ -580,49 +580,75 @@ class ListBuilder:
                     movie_rows[sid] = row
                 else:
                     show_rows[sid] = row
+            enrichment_batches = []
             if not preloaded_paint_complete:
+                from resources.lib.discover.sync_bridge import simkl_refs
                 from resources.lib.meta.paint_cache import _merge_cached_cast
                 from resources.lib.meta.paint_complete import partition_paint_rows
 
                 sync_db = self._sync_db()
                 handler = sync_db.metadataHandler
                 paint_profile = str(params.get("paint_profile") or "browse")
-                if movie_rows:
-                    movie_list = list(movie_rows.values())
-                    _complete, incomplete_movies = partition_paint_rows(
-                        movie_list, "movie", profile=paint_profile
+                if enrichment_reason == "library":
+                    g.log(
+                        f"Library list: fast paint for {len(preloaded_paint_rows)} row(s); "
+                        "deferring provider gap-fill to background",
+                        "info",
                     )
-                    if incomplete_movies:
-                        merged_movies = _merge_cached_cast(incomplete_movies, "movie", sync_db)
-                        prepared, _refs, _stats = handler.prepare_list_rows_for_paint(
-                            merged_movies,
+                    if movie_rows:
+                        _complete, incomplete_movies = partition_paint_rows(
+                            list(movie_rows.values()),
                             "movie",
-                            db=sync_db,
                             profile=paint_profile,
-                            overlay_sync=False,
+                            handler=handler,
                         )
-                        for row in prepared:
-                            if row.get("simkl_id") is not None:
-                                movie_rows[int(row["simkl_id"])] = row
-                if show_rows:
-                    show_list = list(show_rows.values())
-                    _complete, incomplete_shows = partition_paint_rows(
-                        show_list, "tvshow", profile=paint_profile
-                    )
-                    if incomplete_shows:
-                        merged_shows = _merge_cached_cast(incomplete_shows, "tvshow", sync_db)
-                        prepared, _refs, _stats = handler.prepare_list_rows_for_paint(
-                            merged_shows,
+                        if incomplete_movies:
+                            enrichment_batches.append((simkl_refs(incomplete_movies), "movie"))
+                    if show_rows:
+                        _complete, incomplete_shows = partition_paint_rows(
+                            list(show_rows.values()),
                             "tvshow",
-                            db=sync_db,
                             profile=paint_profile,
-                            overlay_sync=False,
+                            handler=handler,
                         )
-                        for row in prepared:
-                            if row.get("simkl_id") is not None:
-                                show_rows[int(row["simkl_id"])] = row
-            enrichment_batches = []
-            if preloaded_paint_complete:
+                        if incomplete_shows:
+                            enrichment_batches.append((simkl_refs(incomplete_shows), "tvshow"))
+                else:
+                    if movie_rows:
+                        movie_list = list(movie_rows.values())
+                        _complete, incomplete_movies = partition_paint_rows(
+                            movie_list, "movie", profile=paint_profile
+                        )
+                        if incomplete_movies:
+                            merged_movies = _merge_cached_cast(incomplete_movies, "movie", sync_db)
+                            prepared, _refs, _stats = handler.prepare_list_rows_for_paint(
+                                merged_movies,
+                                "movie",
+                                db=sync_db,
+                                profile=paint_profile,
+                                overlay_sync=False,
+                            )
+                            for row in prepared:
+                                if row.get("simkl_id") is not None:
+                                    movie_rows[int(row["simkl_id"])] = row
+                    if show_rows:
+                        show_list = list(show_rows.values())
+                        _complete, incomplete_shows = partition_paint_rows(
+                            show_list, "tvshow", profile=paint_profile
+                        )
+                        if incomplete_shows:
+                            merged_shows = _merge_cached_cast(incomplete_shows, "tvshow", sync_db)
+                            prepared, _refs, _stats = handler.prepare_list_rows_for_paint(
+                                merged_shows,
+                                "tvshow",
+                                db=sync_db,
+                                profile=paint_profile,
+                                overlay_sync=False,
+                            )
+                            for row in prepared:
+                                if row.get("simkl_id") is not None:
+                                    show_rows[int(row["simkl_id"])] = row
+            else:
                 enrichment_batches = self._sync_db().consume_list_enrichment_batches()
         else:
             movie_rows, show_rows, enrichment_batches = self._load_milled_menu_rows(
@@ -920,8 +946,11 @@ class ListBuilder:
 
     @staticmethod
     def _use_parallel_list_build(count: int, content_type: str | None = None) -> bool:
+        from resources.lib.common.thread_pool import prism_plugin_no_threads
         from resources.lib.modules.globals import g
 
+        if prism_plugin_no_threads():
+            return False
         if content_type == g.CONTENT_EPISODE:
             return count > 0
         return count > 3
@@ -1085,12 +1114,17 @@ class ListBuilder:
                     from resources.lib.modules.page_prefetch import schedule_page_prefetch_chain
 
                     schedule_page_prefetch_chain(page_params)
-                self._schedule_background_enrichment(
-                    enrichment_refs,
-                    enrichment_media_type,
-                    reason=enrichment_reason,
-                    catalog=catalog_hint,
-                )
+                if enrichment_refs and enrichment_media_type:
+                    enrichment_batches = [(enrichment_refs, enrichment_media_type)]
+                else:
+                    enrichment_batches = self._sync_db().consume_list_enrichment_batches()
+                for refs, media_type in enrichment_batches:
+                    self._schedule_background_enrichment(
+                        refs,
+                        media_type,
+                        reason=enrichment_reason,
+                        catalog=catalog_hint,
+                    )
 
     def is_aired(self, item):
         """
@@ -1220,7 +1254,9 @@ class ListBuilder:
         if catalog and not info.get("catalog"):
             info["catalog"] = catalog
         mediatype = info.get("mediatype")
-        if catalog == "anime" and mediatype not in ("season", "episode"):
+        ids = info.get("ids") if isinstance(info.get("ids"), dict) else {}
+        is_anime_row = catalog == "anime" or info.get("mal_id") or ids.get("mal")
+        if is_anime_row and mediatype not in ("season", "episode"):
             from resources.lib.simkl.field_map import ensure_anime_title_slots
 
             ensure_anime_title_slots(info)
@@ -1242,10 +1278,7 @@ class ListBuilder:
         else:
             name = info.get("title") or item.get("name")
 
-        ids = info.get("ids") if isinstance(info.get("ids"), dict) else {}
-        if mediatype not in ("season", "episode") and (
-            catalog == "anime" or info.get("mal_id") or ids.get("mal")
-        ):
+        if is_anime_row and mediatype not in ("season", "episode"):
             from resources.lib.simkl.field_map import format_anime_display_name
             from resources.lib.simkl.ids import sync_flat_ids_from_ids, sync_ids_from_flat
 

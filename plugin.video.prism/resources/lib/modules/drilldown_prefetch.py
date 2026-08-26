@@ -114,7 +114,9 @@ def schedule_show_episode_premill(show_id: int, catalog: str | None = None) -> N
         except Exception:
             g.log_stacktrace()
 
-    threading.Thread(target=_launch, daemon=True, name="prism-drilldown-prefetch").start()
+    from resources.lib.common.thread_pool import defer_background
+
+    defer_background(_launch, name="prism-drilldown-prefetch")
 
 
 def run_drilldown_prefetch_invoke(params: dict[str, Any] | None) -> None:

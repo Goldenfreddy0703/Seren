@@ -3184,7 +3184,10 @@ class MetadataHandler:
 
     @staticmethod
     def info(data):
-        return data.get("info", {})
+        if not isinstance(data, dict):
+            return {}
+        info = data.get("info")
+        return info if isinstance(info, dict) else {}
 
     @staticmethod
     def art(data):

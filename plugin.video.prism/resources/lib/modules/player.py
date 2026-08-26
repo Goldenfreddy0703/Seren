@@ -16,7 +16,12 @@ from resources.lib.database.simkl_sync import bookmark
 from resources.lib.indexers.simkl import SimklAPI
 from resources.lib.simkl.payloads import info_to_scrobble_payload
 from resources.lib.modules import smartPlay
-from resources.lib.modules.globals import g, normalize_cast_to_actors, set_video_info_tag
+from resources.lib.modules.globals import (
+    build_unique_ids_for_info,
+    g,
+    normalize_cast_to_actors,
+    set_video_info_tag,
+)
 from resources.lib.modules import locale_playback
 
 
@@ -457,6 +462,7 @@ class PrismPlayer(xbmc.Player):
 
     def _create_list_item(self, stream_link):
         info = copy.deepcopy(self.item_information["info"])
+        unique_ids = build_unique_ids_for_info(info)
         g.clean_info_keys(info)
         g.convert_info_dates(info)
 
@@ -469,15 +475,12 @@ class PrismPlayer(xbmc.Player):
                 provider_module = provider_module.sources()
             item = provider_module.get_listitem(stream_link)
             # Use InfoTagVideo API for adaptive sources
-            set_video_info_tag(item, info)
+            set_video_info_tag(item, info, unique_ids=unique_ids)
         else:
             item = xbmcgui.ListItem(path=stream_link)
             info["FileNameAndPath"] = parse.unquote(self.playing_file)
             item.setProperty("IsPlayable", "true")
-            
-            # Build unique IDs for InfoTagVideo
-            unique_ids = {i.split("_")[0]: str(info[i]) for i in info if i.endswith("id") and info[i]}
-            
+
             # Get cast from item information
             cast = self.item_information.get("cast", [])
             if not isinstance(cast, list):

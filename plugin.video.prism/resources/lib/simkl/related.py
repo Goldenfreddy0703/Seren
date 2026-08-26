@@ -56,7 +56,7 @@ def detail_target_from_action_args(action_args: dict[str, Any] | None) -> tuple[
     return catalog, int(show_id)
 
 
-def _fetch_detail(catalog: str, simkl_id: int) -> dict[str, Any] | None:
+def _fetch_detail(catalog: str, simkl_id: int, *, prefer_anime: bool = False) -> dict[str, Any] | None:
     from resources.lib.simkl.ids import anime_api_path, movie_api_path, show_api_path
 
     api = SimklAPI()
@@ -64,7 +64,7 @@ def _fetch_detail(catalog: str, simkl_id: int) -> dict[str, Any] | None:
     paths = []
     if catalog == "movie":
         paths.append(movie_api_path(simkl_id))
-    elif catalog == "anime":
+    elif catalog == "anime" or prefer_anime:
         paths.append(anime_api_path(simkl_id))
         paths.append(show_api_path(simkl_id))
     else:

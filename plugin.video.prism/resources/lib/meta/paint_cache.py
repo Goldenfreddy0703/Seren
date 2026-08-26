@@ -545,6 +545,7 @@ def paint_rows_fast_or_prepare(
     db,
     *,
     profile: str = "browse",
+    defer_provider_prepare: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict], bool]:
     """Partition rows; skip provider prepare when every row is paint-complete."""
     if not rows:
@@ -555,6 +556,47 @@ def paint_rows_fast_or_prepare(
     rows = overlay_display_meta_stamps(rows)
     _complete, incomplete = partition_paint_rows(rows, media_type, profile=profile)
     if incomplete:
+        if defer_provider_prepare or str(profile).lower() == "library":
+            from resources.lib.modules.globals import g
+            from resources.lib.modules.metadataHandler import MetadataHandler
+
+            rows = _merge_cached_cast(rows, media_type, db)
+            handler = MetadataHandler()
+            cast_prepared, cast_batch_count = handler._apply_cast_gaps_to_rows(
+                list(incomplete),
+                media_type,
+                db=db,
+            )
+            cast_by_id = {
+                int(row["simkl_id"]): row
+                for row in cast_prepared
+                if isinstance(row, dict) and row.get("simkl_id") is not None
+            }
+            if cast_by_id:
+                rows = [
+                    cast_by_id.get(int(row["simkl_id"]), row)
+                    if isinstance(row, dict) and row.get("simkl_id") is not None
+                    else row
+                    for row in rows
+                ]
+                try:
+                    handler._persist_list_rows(
+                        [cast_by_id[sid] for sid in cast_by_id],
+                        media_type,
+                        db=db,
+                    )
+                except Exception:
+                    g.log_stacktrace()
+
+            _complete, still_incomplete = partition_paint_rows(rows, media_type, profile=profile)
+            cast_ready = len(incomplete) - len(still_incomplete)
+            g.log(
+                f"Library list: cast gap-fill for {cast_ready}/{len(incomplete)} {media_type} row(s); "
+                f"deferring art gap-fill to background",
+                "info",
+            )
+            enrichment_refs = enrichment_refs_for_paint_rows(still_incomplete, media_type)
+            return rows, enrichment_refs, not still_incomplete
         prepared_incomplete, enrichment_refs = _prepare_paint_rows(
             incomplete, media_type, db, profile=profile
         )
@@ -766,6 +808,7 @@ def _paint_media_group(
     db,
     prefer_rich_payload: bool = False,
     paint_profile: str = "browse",
+    defer_provider_prepare: bool = False,
 ) -> list[dict[str, Any]]:
     """Paint one media bucket: display_meta hit → payload seed → Seren-style prepare."""
     if not refs:
@@ -869,7 +912,11 @@ def _paint_media_group(
         prepare_skipped = True
     else:
         prepared, enrichment_refs, prepare_skipped = paint_rows_fast_or_prepare(
-            rows, media_type, db, profile=paint_profile
+            rows,
+            media_type,
+            db,
+            profile=paint_profile,
+            defer_provider_prepare=defer_provider_prepare,
         )
     prepared = [_ensure_paint_action_args(row, row.get("catalog")) for row in prepared]
     from resources.lib.meta.paint_stamp import attach_stamps_to_complete_rows
@@ -890,6 +937,7 @@ def paint_discover_page_rows(
     hide_watched: bool = False,
     prefer_rich_payload: bool = False,
     paint_profile: str = "browse",
+    defer_provider_prepare: bool = False,
 ) -> list[dict[str, Any]]:
     """
     POV-style discover paint: CDN payload seeds display_meta; no simkl_sync upsert.
@@ -924,16 +972,23 @@ def paint_discover_page_rows(
             db=db,
             prefer_rich_payload=prefer_rich_payload,
             paint_profile=paint_profile,
+            defer_provider_prepare=defer_provider_prepare,
         )
 
     if movie_refs and show_refs:
-        from concurrent.futures import ThreadPoolExecutor
+        from resources.lib.common.thread_pool import _use_inline_pool
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            movie_future = pool.submit(_paint_bucket, movie_refs, "movie")
-            show_future = pool.submit(_paint_bucket, show_refs, "tvshow")
-            painted.extend(movie_future.result())
-            painted.extend(show_future.result())
+        if _use_inline_pool():
+            painted.extend(_paint_bucket(movie_refs, "movie"))
+            painted.extend(_paint_bucket(show_refs, "tvshow"))
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                movie_future = pool.submit(_paint_bucket, movie_refs, "movie")
+                show_future = pool.submit(_paint_bucket, show_refs, "tvshow")
+                painted.extend(movie_future.result())
+                painted.extend(show_future.result())
     else:
         painted.extend(_paint_bucket(movie_refs, "movie"))
         painted.extend(_paint_bucket(show_refs, "tvshow"))
@@ -968,6 +1023,7 @@ def paint_catalog_page_rows(
     prefer_rich_payload: bool = False,
     paint_profile: str = "browse",
     page_cache: dict[str, Any] | None = None,
+    defer_provider_prepare: bool = False,
 ) -> list[dict[str, Any]]:
     """Paint a catalog page (discover or library) from pre-resolved SyncRows."""
     cache_key = None
@@ -997,6 +1053,7 @@ def paint_catalog_page_rows(
         hide_watched=hide_watched,
         prefer_rich_payload=prefer_rich_payload,
         paint_profile=paint_profile,
+        defer_provider_prepare=defer_provider_prepare,
     )
     painted = overlay_page_watch_fields(painted, db)
     if cache_key is not None:

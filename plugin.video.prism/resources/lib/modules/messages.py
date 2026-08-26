@@ -22,7 +22,10 @@ class MessageServer:
             self._index = index_value.split("|") if index_value else []
 
     def _get_property(self, message_id):
-        value = g.HOME_WINDOW.getProperty(self._prefix + message_id)
+        window = g.HOME_WINDOW
+        if window is None or g.abort_requested():
+            return None
+        value = window.getProperty(self._prefix + message_id)
         return base64.b64decode(value).decode("utf-8") if value else None
 
     def _clear_message(self, message_id):

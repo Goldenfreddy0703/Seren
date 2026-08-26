@@ -130,6 +130,23 @@ def _is_anime_info(info: dict) -> bool:
     return isinstance(ids, dict) and ids.get("mal") is not None
 
 
+def _anime_title_slots_need_detail(info: dict) -> bool:
+    """True when an anime row still lacks a distinct English title slot."""
+    if not _is_anime_info(info):
+        return False
+    from resources.lib.simkl.field_map import _is_likely_localized_english_title
+
+    english = (info.get("title_en") or info.get("en_title") or "").strip()
+    romaji = (info.get("title_romaji") or info.get("title") or "").strip()
+    if not romaji:
+        return False
+    if not english:
+        return True
+    if english == romaji and not _is_likely_localized_english_title(romaji):
+        return True
+    return False
+
+
 def gapfill_anime_title_rows(rows: list) -> list:
     """Fill anime title_en/title_romaji from stored title fields — never calls Simkl API."""
     if not rows:
@@ -257,13 +274,32 @@ def _merge_discover_db_gaps(item: dict) -> dict:
     return _merge_sync_item_rows(working, discover_sync)
 
 
+def _row_info_art(item: dict) -> tuple[dict, dict]:
+    blob = item.get("simkl_object") or {}
+    info = blob.get("info") if isinstance(blob.get("info"), dict) else {}
+    if not info and isinstance(item.get("info"), dict):
+        info = item["info"]
+    art = blob.get("art") if isinstance(blob.get("art"), dict) else {}
+    if not art and isinstance(item.get("art"), dict):
+        art = item["art"]
+    return info, art
+
+
+def _sync_row_list_paint_ready(item: dict) -> bool:
+    """True when a browse/list row can paint without a blocking Simkl detail fetch."""
+    if not isinstance(item, dict):
+        return False
+    info, art = _row_info_art(item)
+    title = info.get("title") or item.get("title")
+    poster = art.get("poster") or art.get("thumb") or info.get("poster")
+    return bool(title and poster)
+
+
 def _sync_row_display_ready(item: dict) -> bool:
     """True when Simkl detail fields are present (plot + poster at minimum)."""
     if not isinstance(item, dict):
         return False
-    blob = item.get("simkl_object") or {}
-    info = blob.get("info") if isinstance(blob.get("info"), dict) else {}
-    art = blob.get("art") if isinstance(blob.get("art"), dict) else {}
+    info, art = _row_info_art(item)
     title = info.get("title") or item.get("title")
     poster = art.get("poster") or art.get("thumb") or info.get("poster")
     plot = info.get("plot") or info.get("overview")
@@ -281,16 +317,17 @@ def _has_simkl_owned_metadata(info: dict) -> bool:
 
 
 def simkl_detail_needed(item: dict) -> bool:
-    """True when a row still needs GET /movies|tv|anime/{id} detail enrichment."""
-    if not _sync_row_display_ready(item):
+    """True when a row still needs GET /movies|tv|anime/{id} before list paint."""
+    if not isinstance(item, dict):
         return True
-    blob = item.get("simkl_object") or {}
-    info = blob.get("info") if isinstance(blob.get("info"), dict) else {}
-    if not info and isinstance(item.get("info"), dict):
-        info = item["info"]
-    if not _has_simkl_owned_metadata(info):
+    if not _sync_row_list_paint_ready(item):
         return True
-    return False
+    info, _ = _row_info_art(item)
+    if not (info.get("plot") or info.get("overview")):
+        return True
+    if _anime_title_slots_need_detail(info):
+        return True
+    return not _has_simkl_owned_metadata(info)
 
 
 def _hydrate_sync_item_local(
@@ -336,6 +373,11 @@ def hydrate_sync_items_local(items: list[dict]) -> list[dict]:
 
     if len(rows) == 1:
         return [hydrator(rows[0])]
+
+    # Page-sized lists (library, genres, etc.) hydrate inline — avoids thread-pool
+    # contention/deadlock with background sync while the menu thread is waiting.
+    if len(rows) <= 32:
+        return [hydrator(row) for row in rows]
 
     from resources.lib.common.thread_pool import get_shared_executor
 
@@ -460,7 +502,9 @@ def _fetch_simkl_detail(item: dict, *, force: bool = False) -> dict:
     from resources.lib.simkl.related import _fetch_detail
 
     sid = int(simkl_id)
-    detail = _fetch_detail(catalog, sid)
+    blob_info = (item.get("simkl_object") or {}).get("info") or item.get("info") or {}
+    prefer_anime = catalog == "anime" or _is_anime_info(blob_info if isinstance(blob_info, dict) else {})
+    detail = _fetch_detail(catalog, sid, prefer_anime=prefer_anime)
     if not detail:
         g.log(f"Simkl detail: API miss {sid} ({catalog})", "debug")
         return item
@@ -566,6 +610,7 @@ def prepare_page_sync_for_paint(
     page_sync: list[dict],
     *,
     refs: list[dict] | None = None,
+    defer_simkl_detail: bool = False,
 ) -> list[dict]:
     """Hydrate locally, publish display-ready rows, blocking-detail only for thin rows."""
     if not page_sync:
@@ -581,8 +626,35 @@ def prepare_page_sync_for_paint(
         if ready and not page_refs_display_stamped(refs):
             publish_sync_rows_to_paint_store(catalog, ready)
 
-    if any(simkl_detail_needed(item) for item in page_sync):
+    if not defer_simkl_detail and any(simkl_detail_needed(item) for item in page_sync):
+        needing = [item for item in page_sync if isinstance(item, dict) and simkl_detail_needed(item)]
+        from resources.lib.modules.globals import g
+
+        g.log(
+            f"Browse paint: Simkl detail for {len(needing)}/{len(page_sync)} {catalog} row(s)",
+            "info",
+        )
         page_sync = enrich_page_for_paint(catalog, page_sync)
+    else:
+        thin = [item for item in page_sync if simkl_detail_needed(item)]
+        if thin:
+            from resources.lib.modules.globals import g
+
+            g.log(
+                f"Simkl library paint: fetching detail for {len(thin)} thin {catalog} row(s)",
+                "info",
+            )
+            enriched_by_id = {
+                int(row["simkl_id"]): row
+                for row in enrich_page_for_paint(catalog, thin)
+                if isinstance(row, dict) and row.get("simkl_id") is not None
+            }
+            page_sync = [
+                enriched_by_id.get(int(item["simkl_id"]), item)
+                if isinstance(item, dict) and item.get("simkl_id") is not None
+                else item
+                for item in page_sync
+            ]
     return page_sync
 
 

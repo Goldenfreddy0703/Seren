@@ -1581,7 +1581,9 @@ def maybe_prefetch_calendars() -> None:
         finally:
             g.set_runtime_setting("calendar.prefetch.session_done", True)
 
-    threading.Thread(target=_run, daemon=True, name="prism-calendar-prefetch").start()
+    from resources.lib.common.thread_pool import defer_background
+
+    defer_background(_run, name="prism-calendar-prefetch")
 
 
 def get_calendar_items(catalog: str, *, window_days: int = DEFAULT_WINDOW_DAYS) -> tuple[list[dict[str, Any]], str]:

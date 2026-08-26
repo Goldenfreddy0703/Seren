@@ -51,6 +51,16 @@ class TaskPool:
     def tasks_enumerate(self, target, items, thread_cls=Thread) -> list[Thread]:
         if not items:
             return []
+        from resources.lib.common.thread_pool import prism_plugin_no_threads
+
+        if prism_plugin_no_threads():
+            for position, tag in enumerate(items, 1):
+                try:
+                    target(position, tag)
+                except Exception:
+                    g.log_stacktrace()
+            return []
+
         workers = min(len(items), self.maxsize)
         for position, tag in enumerate(items, 1):
             self._queue.put((position, tag))

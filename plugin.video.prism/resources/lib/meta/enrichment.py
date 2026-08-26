@@ -12,6 +12,8 @@ _DEFER_KEY = "meta_enrich.defer_until"
 _DEFER_MS = 250
 _worker_thread = None
 _worker_lock = threading.Lock()
+_enrich_launch_thread = None
+_enrich_launch_lock = threading.Lock()
 
 
 def _empty_pending() -> dict:
@@ -121,11 +123,41 @@ class MetaEnrichmentQueue:
     def _enrich_lock_name(cls, media_type: str) -> str:
         return f"meta.enrich.{media_type}"
 
+    @staticmethod
+    def _list_enrichment_reasons(pending: dict) -> list[str]:
+        reasons: list[str] = []
+        for batch in (pending.get("batches") or {}).values():
+            reasons.extend(batch.get("reasons") or [])
+        return reasons
+
+    @classmethod
+    def _should_skip_idle_gate(cls, pending: dict) -> bool:
+        """List/library cast+art gap-fill must run while the menu is still open."""
+        list_reasons = {
+            "list_open",
+            "library",
+            "discover",
+            "search",
+            "calendar",
+            "genre",
+            "actor",
+            "browse",
+        }
+        for reason in cls._list_enrichment_reasons(pending):
+            if reason in list_reasons or str(reason).startswith("prefetch_"):
+                return True
+        return False
+
     @classmethod
     def _kick_worker(cls) -> None:
         if g.get_bool_runtime_setting(_IN_FLIGHT_KEY):
             return
         if not cls._has_work():
+            return
+
+        if g.get_bool_runtime_setting("prism.inline_pool"):
+            if g.PLUGIN_HANDLE > 0:
+                g.set_runtime_setting("prism.pending_meta_enrich", True)
             return
 
         # In-process worker when not building a directory (service / maintenance / queue action).
@@ -137,10 +169,41 @@ class MetaEnrichmentQueue:
             cls._start_worker_thread()
             return
 
-        import xbmc
+        cls._schedule_run_plugin_launch()
 
-        url = g.create_url(g.BASE_URL, {"action": "processMetaEnrichmentQueue"})
-        xbmc.executebuiltin(f'RunPlugin("{url}")')
+    @classmethod
+    def _schedule_run_plugin_launch(cls) -> None:
+        """Wait for the foreground directory build to finish before RunPlugin (avoids g.deinit races)."""
+        global _enrich_launch_thread
+        with _enrich_launch_lock:
+            if _enrich_launch_thread is not None and _enrich_launch_thread.is_alive():
+                return
+
+            def _launch() -> None:
+                try:
+                    for _ in range(48):
+                        if not g.get_bool_runtime_setting("browse.menu_active"):
+                            break
+                        if g.abort_requested():
+                            return
+                        time.sleep(0.25)
+                    if g.get_bool_runtime_setting("browse.menu_active") or g.abort_requested():
+                        return
+                    if not cls._has_work() or g.get_bool_runtime_setting(_IN_FLIGHT_KEY):
+                        return
+                    import xbmc
+
+                    url = g.create_url(g.BASE_URL, {"action": "processMetaEnrichmentQueue"})
+                    xbmc.executebuiltin(f'RunPlugin("{url}")')
+                except Exception:
+                    g.log_stacktrace()
+
+            _enrich_launch_thread = threading.Thread(
+                target=_launch,
+                daemon=True,
+                name="prism-meta-enrich-launch",
+            )
+            _enrich_launch_thread.start()
 
     @classmethod
     def _start_worker_thread(cls) -> None:
@@ -161,12 +224,15 @@ class MetaEnrichmentQueue:
     @classmethod
     def process_idle(cls) -> bool:
         """Service hook: drain pending enrichment when browse/prefetch is idle."""
+        pending_foreground = g.get_bool_runtime_setting("prism.pending_meta_enrich")
         if g.get_bool_runtime_setting(_IN_FLIGHT_KEY) or not cls._has_work():
             return False
         from resources.lib.modules.cache_maintenance import service_background_idle_ready
 
-        if not service_background_idle_ready():
+        if not pending_foreground and not service_background_idle_ready():
             return False
+        if pending_foreground:
+            g.clear_runtime_setting("prism.pending_meta_enrich")
         cls._start_worker_thread()
         return True
 
@@ -242,69 +308,81 @@ class MetaEnrichmentQueue:
 
     @classmethod
     def process_request(cls, action_args: dict | None) -> None:
-        try:
-            cls._merge_from_action_args(action_args)
+        cls._merge_from_action_args(action_args)
+        while True:
             if g.get_bool_runtime_setting(_IN_FLIGHT_KEY):
                 return
+            if not cls._has_work() or g.abort_requested():
+                return
+            try:
+                g.set_runtime_setting(_IN_FLIGHT_KEY, True)
+                enriched_count = 0
+                while cls._has_work() and not g.abort_requested():
+                    defer_until = g.get_int_runtime_setting(_DEFER_KEY, 0)
+                    wait_ms = defer_until - int(time.time() * 1000)
+                    if wait_ms > 0:
+                        g.wait_for_abort(wait_ms / 1000.0)
 
-            g.set_runtime_setting(_IN_FLIGHT_KEY, True)
-            enriched_count = 0
-            while cls._has_work():
-                defer_until = g.get_int_runtime_setting(_DEFER_KEY, 0)
-                wait_ms = defer_until - int(time.time() * 1000)
-                if wait_ms > 0:
-                    g.wait_for_abort(wait_ms / 1000.0)
-
-                pending = cls._load_pending()
-                if not cls._has_work(pending):
-                    break
-
-                if g.PLUGIN_HANDLE <= 0:
-                    from resources.lib.modules.cache_maintenance import service_background_idle_ready
-
-                    if not service_background_idle_ready():
+                    pending = cls._load_pending()
+                    if not cls._has_work(pending):
                         break
 
-                child_jobs = list(pending.get("child_jobs") or [])
-                batches = {
-                    media_type: dict(batch)
-                    for media_type, batch in (pending.get("batches") or {}).items()
-                }
-                cls._save_pending(_empty_pending())
+                    skip_idle_gate = cls._should_skip_idle_gate(pending)
+                    if g.PLUGIN_HANDLE <= 0 and not skip_idle_gate:
+                        from resources.lib.modules.cache_maintenance import service_background_idle_ready
 
-                from resources.lib.meta.registry import mark_enriched
-                from resources.lib.modules.global_lock import GlobalLock
+                        if not service_background_idle_ready():
+                            break
 
-                for media_type, batch in batches.items():
-                    simkl_ids = batch.get("simkl_ids") or []
-                    if not simkl_ids:
-                        continue
-                    reason = (batch.get("reasons") or ["list_open"])[0]
-                    catalog = batch.get("catalog")
-                    with GlobalLock(cls._enrich_lock_name(media_type)):
-                        enriched_count += cls._process_entity_batch(
-                            simkl_ids,
-                            media_type,
-                            reason=reason,
-                            catalog=catalog,
+                    child_jobs = list(pending.get("child_jobs") or [])
+                    batches = {
+                        media_type: dict(batch)
+                        for media_type, batch in (pending.get("batches") or {}).items()
+                    }
+                    cls._save_pending(_empty_pending())
+
+                    from resources.lib.meta.registry import mark_enriched
+                    from resources.lib.modules.global_lock import GlobalLock
+
+                    for media_type, batch in batches.items():
+                        simkl_ids = batch.get("simkl_ids") or []
+                        if not simkl_ids:
+                            continue
+                        reason = (batch.get("reasons") or ["list_open"])[0]
+                        catalog = batch.get("catalog")
+                        g.log(
+                            f"Meta enrichment processing {len(simkl_ids)} {media_type} ({reason})",
+                            "info",
                         )
-                    mark_enriched(media_type, simkl_ids, reason=reason)
+                        with GlobalLock(cls._enrich_lock_name(media_type)):
+                            enriched_count += cls._process_entity_batch(
+                                simkl_ids,
+                                media_type,
+                                reason=reason,
+                                catalog=catalog,
+                            )
+                        mark_enriched(media_type, simkl_ids, reason=reason)
 
-                if child_jobs:
-                    with GlobalLock(cls._enrich_lock_name("tvshow")):
-                        enriched_count += cls._process_child_jobs(child_jobs)
+                    if child_jobs:
+                        with GlobalLock(cls._enrich_lock_name("tvshow")):
+                            enriched_count += cls._process_child_jobs(child_jobs)
 
-                if not cls._has_work():
-                    break
+                    if not cls._has_work():
+                        break
 
-            if enriched_count:
-                g.trigger_widget_refresh(if_playing=False)
-        except Exception:
-            g.log_stacktrace()
-        finally:
-            g.set_runtime_setting(_IN_FLIGHT_KEY, False)
-            if cls._has_work():
-                cls._kick_worker()
+                if enriched_count:
+                    g.trigger_widget_refresh(if_playing=False)
+            except Exception:
+                g.log_stacktrace()
+            finally:
+                g.set_runtime_setting(_IN_FLIGHT_KEY, False)
+
+            if not g.get_bool_runtime_setting("prism.inline_pool"):
+                if cls._has_work():
+                    cls._kick_worker()
+                return
+            if not cls._has_work() or g.abort_requested():
+                return
 
     @classmethod
     def _process_child_jobs(cls, jobs: list[dict]) -> int:
@@ -388,6 +466,10 @@ class MetaEnrichmentQueue:
 
         _complete, incomplete_rows = partition_paint_rows(rows, media_type, gap_scope="full")
         if not incomplete_rows:
+            g.log(
+                f"Meta enrichment skipped: all {len(simkl_ids)} {media_type} row(s) paint-complete",
+                "info",
+            )
             return len(simkl_ids)
         incomplete_ids = {
             int(row["simkl_id"])
@@ -419,6 +501,10 @@ class MetaEnrichmentQueue:
             from resources.lib.meta.profiles import MetaProfile, profile_scope
             from resources.lib.meta.providers import MetaProviderRouter
 
+            g.log(
+                f"Meta enrichment gap-fill {len(targets)} {media_type} ref(s) ({reason})",
+                "info",
+            )
             with profile_scope(MetaProfile.LIST):
                 MetaProviderRouter.enrich_list_refs(
                     targets,

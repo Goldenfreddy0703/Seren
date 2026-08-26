@@ -273,8 +273,10 @@ class SimklSyncDatabase(Database):
             self._migrate_last_changes_poll_column()
             g.set_runtime_setting("simkl_sync.migrations.done", True)
 
-        self._migrate_provider_cast_art_only_policy()
-        self._migrate_episode_watch_state_repair()
+        # Heavy migrations touch display_meta + bulk SQL — run from service only.
+        if int(getattr(g, "PLUGIN_HANDLE", 0) or 0) <= 0:
+            self._migrate_provider_cast_art_only_policy()
+            self._migrate_episode_watch_state_repair()
         self._migrate_activities_slim_schema()
 
         if self.activities is None:

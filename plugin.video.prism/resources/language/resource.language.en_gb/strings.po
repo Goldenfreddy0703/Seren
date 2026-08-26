@@ -5200,12 +5200,12 @@ msgstr "Hide the Next page row in skin widgets and skip prefetching page 2. Reco
 #: /resources/settings.xml
 msgctxt "#30984"
 msgid "Enable IMDb metadata"
-msgstr "Enable IMDb cast, genre multi-select, and actor search"
+msgstr "Enable IMDb cast gap-fill"
 
 #: /resources/settings.xml
 msgctxt "#30985"
-msgid "Use IMDb for genre multi-select, search by actor, and cast when Simkl data is incomplete. Title, plot, and ratings always come from Simkl."
-msgstr "Use IMDb for genre multi-select, search by actor, and cast when Simkl data is incomplete. Title, plot, and ratings always come from Simkl."
+msgid "Use IMDb GraphQL for cast when Simkl cast is incomplete, and for optional calendar metadata. Genre browse and actor search use TMDB/Tenrai/Simkl. Title, plot, and ratings always come from Simkl."
+msgstr "Use IMDb GraphQL for cast when Simkl cast is incomplete, and for optional calendar metadata. Genre browse and actor search use TMDB/Tenrai/Simkl. Title, plot, and ratings always come from Simkl."
 
 #: /resources/settings.xml
 msgctxt "#30986"

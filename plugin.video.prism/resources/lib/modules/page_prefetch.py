@@ -68,7 +68,9 @@ def _schedule_background_prefetch(page_params: dict[str, Any]) -> None:
         except Exception:
             g.log_stacktrace()
 
-    threading.Thread(target=_launch, daemon=True, name="prism-prefetch-launch").start()
+    from resources.lib.common.thread_pool import defer_background
+
+    defer_background(_launch, name="prism-prefetch-launch")
 
 
 def run_page_prefetch_invoke(page_params: dict[str, Any] | None) -> None:
@@ -647,6 +649,9 @@ def _prefetch_library(page_params: dict[str, Any]) -> bool:
     page_items = [by_id[sid] for sid in order if sid in by_id]
     if not page_items:
         return False
+    from resources.lib.simkl.library_list_sync import prepare_library_browse_page
+
+    page_items = prepare_library_browse_page(catalog, page_items)
     return _prefetch_paint_catalog_page(
         catalog,
         page_refs,

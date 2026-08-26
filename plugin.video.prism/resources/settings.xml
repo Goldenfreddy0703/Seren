@@ -3552,6 +3552,16 @@
 						<heading>30144</heading>
 					</control>
 				</setting>
+				<setting id="imdb.at-main" type="string" label="30986" help="30987">
+					<level>0</level>
+					<default/>
+					<constraints>
+						<allowempty>true</allowempty>
+					</constraints>
+					<control type="edit" format="string" mask="false">
+						<heading>30986</heading>
+					</control>
+				</setting>
 				<setting id="tvdb.apikey" type="string" label="30147" help="">
 					<level>0</level>
 					<default/>
@@ -3592,22 +3602,12 @@
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="metadata.anilist.enabled" type="boolean" label="30988" help="30989">
+				<setting id="metadata.tvdb.enabled" type="boolean" label="30956" help="30961">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>
 				</setting>
-				<setting id="imdb.at-main" type="text" label="30986" help="30987">
-					<level>0</level>
-					<default/>
-					<constraints>
-						<allowempty>true</allowempty>
-					</constraints>
-					<control type="edit" format="string" mask="false">
-						<heading>30986</heading>
-					</control>
-				</setting>
-				<setting id="metadata.tvdb.enabled" type="boolean" label="30956" help="30961">
+				<setting id="metadata.anilist.enabled" type="boolean" label="30988" help="30989">
 					<level>0</level>
 					<default>true</default>
 					<control type="toggle"/>

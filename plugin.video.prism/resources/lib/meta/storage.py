@@ -95,6 +95,7 @@ _SIMKL_EXTRA_INFO_KEYS = frozenset(
         "img",
         "anime_type",
         "catalog",
+        "en_title",
         "title_en",
         "title_romaji",
     }
