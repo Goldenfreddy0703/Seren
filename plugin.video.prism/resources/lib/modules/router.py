@@ -21,7 +21,9 @@ def dispatch(params):
         action_args = normalize_action_args(action_args)
         params["action_args"] = action_args
     pack_select = params.get("packSelect")
-    source_select = params.get("source_select") == "true"
+    source_select_param = params.get("source_select")
+    source_select = source_select_param == "true"
+    tmdb_external_play = params.get("tmdb_external_play") == "true"
     overwrite_cache = params.get("prism_reload") == "true"
     resume = params.get("resume")
     force_resume_check = params.get("forceresumecheck") == "true"
@@ -159,6 +161,11 @@ def dispatch(params):
         open_calendar("movie")
 
 
+    elif action == "tmdbHelper":
+        from resources.lib.modules.tmdb_helper import play_from_tmdb_helper
+
+        play_from_tmdb_helper(params)
+
     elif action == "getSources":
         from resources.lib.modules.smartPlay import SmartPlay
         from resources.lib.common import tools
@@ -184,7 +191,26 @@ def dispatch(params):
                 return None
 
             # workaround for widgets not generating a playlist on playback request
-            play_list = smart_play.playlist_present_check(smart_url_arg)
+            if tmdb_external_play:
+                if (
+                    smart_url_arg
+                    and item_information.get("info", {}).get("mediatype") == g.MEDIA_EPISODE
+                ):
+                    external_url_extras = {
+                        "smartPlay": "true",
+                        "tmdb_external_play": "true",
+                        "source_select": (
+                            source_select_param
+                            if source_select_param in ("true", "false")
+                            else "false"
+                        ),
+                        "forceresumecheck": params.get("forceresumecheck", "true"),
+                    }
+                    item_information["external_play_url_extras"] = external_url_extras
+                    smart_play.prepare_external_playlist(external_url_extras)
+                play_list = False
+            else:
+                play_list = smart_play.playlist_present_check(smart_url_arg)
 
             if play_list:
                 g.log("Cancelling non playlist playback", "warning")
@@ -225,9 +251,12 @@ def dispatch(params):
                 source_select_style = "Episodes"
             else:
                 source_select_style = "Movie"
-            manual_source_select = (
-                g.get_int_setting(f"general.playstyle{source_select_style}") == 1 or source_select
-            )
+            if source_select_param in ("true", "false"):
+                manual_source_select = source_select_param == "true"
+            else:
+                manual_source_select = (
+                    g.get_int_setting(f"general.playstyle{source_select_style}") == 1 or source_select
+                )
             sources = sources_helper.sort_sources(
                 ii,
                 sources_list,

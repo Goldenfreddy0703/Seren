@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import random
 import sys
 import contextlib
@@ -160,6 +161,10 @@ class SmartPlay:
         :param season_num: Season number to build from
         :param minimum_episode: Minimum episodes to add from
         """
+        action_args = self.item_information.get("action_args") or {}
+        if action_args.get("external_play"):
+            return self._build_external_playlist(season_num, minimum_episode)
+
         if season_num is None:
             season_num = self.item_information["info"]["season"]
 
@@ -181,6 +186,123 @@ class SmartPlay:
                 "warning",
             )
             return
+
+    def prepare_external_playlist(self, url_extras: dict[str, str] | None = None) -> None:
+        """Seed SmartPlay playlist for TMDb Helper external episode playback."""
+        self._stored_external_url_extras = dict(url_extras or {})
+        g.PLAYLIST.clear()
+        self._add_playlist_episode(self.item_information, url_extras=self._stored_external_url_extras)
+
+    def _external_url_extras(self) -> dict[str, str]:
+        stored = getattr(self, "_stored_external_url_extras", None)
+        if stored:
+            return dict(stored)
+        extras = self.item_information.get("external_play_url_extras")
+        if isinstance(extras, dict):
+            return {str(key): str(value) for key, value in extras.items()}
+        return {}
+
+    def _resolve_tmdb_show_id(self) -> int | None:
+        info = self.item_information.get("info") or {}
+        action_args = self.item_information.get("action_args") or {}
+        for source in (action_args, info):
+            for key in ("tmdb_id", "tmdb_show_id"):
+                value = source.get(key)
+                if value is not None:
+                    try:
+                        return int(value)
+                    except (TypeError, ValueError):
+                        continue
+
+        if not self.show_simkl_id:
+            return None
+
+        from resources.lib.database.session import get_sync_database
+
+        show_row = get_sync_database().get_show(self.show_simkl_id)
+        if not isinstance(show_row, dict):
+            return None
+        if show_row.get("tmdb_id") is not None:
+            return int(show_row["tmdb_id"])
+        show_info = show_row.get("info")
+        if isinstance(show_info, dict) and show_info.get("tmdb_id") is not None:
+            return int(show_info["tmdb_id"])
+        return None
+
+    def _external_season_episode_count(self, season_num: int) -> int | None:
+        tmdb_show_id = self._resolve_tmdb_show_id()
+        if tmdb_show_id is not None:
+            from resources.lib.modules.tmdb_helper import fetch_tmdb_season_episodes
+
+            episodes = fetch_tmdb_season_episodes(tmdb_show_id, int(season_num))
+            if episodes:
+                return len(episodes)
+
+        season = self.seasons_info.get(season_num, {})
+        episode_count = season.get("episode_count") or season.get("aired_episodes")
+        if episode_count is not None:
+            return int(episode_count)
+        return None
+
+    def _build_external_playlist(self, season_num=None, minimum_episode=None) -> None:
+        if season_num is None:
+            season_num = self.item_information["info"]["season"]
+        if minimum_episode is None:
+            minimum_episode = int(self.item_information["info"]["episode"]) + 1
+
+        action_args = self.item_information.get("action_args") or {}
+        catalog = action_args.get("catalog") or self.item_information.get("catalog") or "tv"
+        url_extras = self._external_url_extras()
+        tmdb_show_id = self._resolve_tmdb_show_id()
+        if tmdb_show_id is None:
+            g.log("External SmartPlay: missing TMDb show id for playlist build", "warning")
+            return
+
+        from resources.lib.modules.tmdb_helper import (
+            build_external_episode_menu_item,
+            fetch_tmdb_season_episodes,
+        )
+
+        added = 0
+        for tmdb_episode in fetch_tmdb_season_episodes(tmdb_show_id, int(season_num)):
+            ep_num = int(tmdb_episode.get("episode_number") or 0)
+            if ep_num < int(minimum_episode):
+                continue
+            menu_item = build_external_episode_menu_item(
+                int(self.show_simkl_id),
+                int(season_num),
+                ep_num,
+                catalog,
+                tmdb_show_id=tmdb_show_id,
+                tmdb_episode=tmdb_episode,
+            )
+            self._add_playlist_episode(menu_item, url_extras=url_extras)
+            added += 1
+
+        if not added:
+            g.log(
+                f"External SmartPlay: no further TMDb episodes found for season {season_num}",
+                "debug",
+            )
+
+    def _add_playlist_episode(self, menu_item: dict, url_extras: dict[str, str] | None = None) -> None:
+        url_extras = dict(url_extras or {})
+        info = menu_item.get("info") or {}
+        name = info.get("title") or menu_item.get("name") or ""
+        action_args = menu_item.get("action_args")
+        if not isinstance(action_args, dict):
+            action_args = encode_action_args(menu_item)
+
+        entry = g.add_directory_item(
+            name,
+            action="getSources",
+            menu_item=copy.deepcopy(menu_item),
+            action_args=action_args,
+            bulk_add=True,
+            is_playable=True,
+            **url_extras,
+        )
+        g.PLAYLIST.add(url=entry[0], listitem=entry[1])
 
     def get_resume_episode(self):
         """
@@ -287,6 +409,17 @@ class SmartPlay:
         """
         episode = self.item_information["info"]["episode"]
         season = self.item_information["info"]["season"]
+        action_args = self.item_information.get("action_args") or {}
+        if action_args.get("external_play"):
+            episode_count = self._external_season_episode_count(int(season))
+            if episode_count is None or int(episode) != int(episode_count):
+                return
+            next_season = int(season) + 1
+            if not self._external_season_episode_count(next_season):
+                return
+            self.build_playlist(next_season, 1)
+            return
+
         current_season_info = self.seasons_info[season]
         if episode != current_season_info["episode_count"]:
             return
@@ -399,15 +532,15 @@ class SmartPlay:
     def create_single_item_playlist_from_info(self):
         g.cancel_playback()
         name = self.item_information["info"]["title"]
-        item = g.add_directory_item(
+        entry = g.add_directory_item(
             name,
             action="getSources",
-            menu_item=self.item_information,
+            menu_item=copy.deepcopy(self.item_information),
             action_args=encode_action_args(self.item_information),
             bulk_add=True,
             is_playable=True,
         )
-        g.PLAYLIST.add(url=f"{g.BASE_URL}/?{g.PARAM_STRING}", listitem=item[1])
+        g.PLAYLIST.add(url=entry[0], listitem=entry[1])
         return g.PLAYLIST
 
     @staticmethod
@@ -475,8 +608,12 @@ class SmartPlay:
         from resources.lib.simkl.ids import episode_num_from_info
 
         season_num = self.item_information["info"]["season"]
-        season = self.seasons_info.get(season_num, {})
-        episode_count = season.get("episode_count") or season.get("aired_episodes")
+        action_args = self.item_information.get("action_args") or {}
+        if action_args.get("external_play"):
+            episode_count = self._external_season_episode_count(int(season_num))
+        else:
+            season = self.seasons_info.get(season_num, {})
+            episode_count = season.get("episode_count") or season.get("aired_episodes")
         if episode_count is None:
             return True
         episode_num = episode_num_from_info(self.item_information["info"])

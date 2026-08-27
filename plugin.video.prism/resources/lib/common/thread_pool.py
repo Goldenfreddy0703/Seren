@@ -42,7 +42,7 @@ def exit_prism_plugin_mode() -> None:
 _SCALED_WORKERS = [20, 10, 20, 40, 80]
 
 # Long-running plugin actions that need real worker threads (scraping, resolving).
-_PLUGIN_THREADED_ACTIONS = frozenset({"getSources", "preScrape"})
+_PLUGIN_THREADED_ACTIONS = frozenset({"getSources", "preScrape", "tmdbHelper"})
 
 
 def _peek_plugin_action_from_argv() -> str | None:

@@ -302,6 +302,88 @@ def _show_id_from_video_playlist():
     return None
 
 
+def _find_episode_row_by_coords(db, show_id, season_num, episode_num):
+    row = db.fetchone(
+        """
+        SELECT simkl_id
+        FROM episodes
+        WHERE simkl_show_id = ? AND season = ? AND number = ?
+        LIMIT 1
+        """,
+        (int(show_id), int(season_num), int(episode_num)),
+    )
+    if row and row.get("simkl_id") is not None:
+        episode_row = db.get_episode(int(row["simkl_id"]), int(show_id))
+        if _episode_item_has_info(episode_row):
+            return episode_row
+
+    rows = db.get_episode_list(
+        int(show_id),
+        season=int(season_num),
+        hide_unaired=False,
+        hide_watched=False,
+        skip_update=True,
+        skip_watch_refresh=True,
+    )
+    for candidate in rows:
+        info = candidate.get("info") or {}
+        ep_num = info.get("episode")
+        if ep_num is None:
+            ep_num = info.get("number")
+        if int(info.get("season", -1)) == int(season_num) and int(ep_num or -1) == int(episode_num):
+            return candidate
+    return None
+
+
+def _synthesize_external_episode_item(db, show_id, season_num, episode_num, action_args):
+    from resources.lib.simkl.field_map import ensure_episode_title, inherit_show_fields
+    from resources.lib.simkl.ids import attach_tv_context, season_key, synthetic_episode_id
+
+    show_row = db.get_show(int(show_id))
+    if not isinstance(show_row, dict):
+        show_row = {}
+    show_info = show_row.get("info") if isinstance(show_row.get("info"), dict) else {}
+    catalog = (
+        action_args.get("catalog")
+        or show_info.get("catalog")
+        or show_row.get("catalog")
+        or "tv"
+    )
+
+    ep_simkl_id = synthetic_episode_id(int(show_id), int(season_num), int(episode_num))
+    ep_info = {
+        "simkl_id": ep_simkl_id,
+        "mediatype": "episode",
+        "catalog": catalog,
+        "season": int(season_num),
+        "episode": int(episode_num),
+        "number": int(episode_num),
+        "simkl_show_id": int(show_id),
+        "simkl_season_id": season_key(int(show_id), int(season_num)),
+        "external_play": True,
+    }
+    inherit_show_fields(ep_info, show_info)
+    ensure_episode_title(ep_info)
+    attach_tv_context(
+        ep_info,
+        int(show_id),
+        season_num=int(season_num),
+        season_row_id=ep_info["simkl_season_id"],
+    )
+
+    return {
+        "simkl_id": ep_simkl_id,
+        "simkl_show_id": int(show_id),
+        "info": ep_info,
+        "art": show_row.get("art") or {},
+        "cast": show_row.get("cast") or [],
+        "catalog": catalog,
+        "is_airing": show_row.get("is_airing") or show_info.get("is_airing"),
+        "season_count": show_row.get("season_count") or show_info.get("season_count"),
+        "episode_count": show_row.get("episode_count") or show_info.get("episode_count"),
+    }
+
+
 def _load_episode_item_information(db, action_args, episode_id, show_id):
     if not episode_id or not show_id:
         return {}
@@ -383,8 +465,62 @@ def get_item_information(action_args):
     if mediatype == "episode":
         from resources.lib.database.session import get_sync_database
 
-        episode_id = episode_id_from_args(action_args)
         db = get_sync_database()
+
+        if action_args.get("external_play") and action_args.get("simkl_show_id") is not None:
+            show_id = int(action_args["simkl_show_id"])
+            season_num = action_args.get("season")
+            episode_num = action_args.get("episode")
+            if season_num is not None and episode_num is not None:
+                item_information.update(
+                    _synthesize_external_episode_item(
+                        db, show_id, int(season_num), int(episode_num), action_args
+                    )
+                )
+                tmdb_show_id = action_args.get("tmdb_id")
+                try:
+                    tmdb_show_id = int(tmdb_show_id) if tmdb_show_id is not None else None
+                except (TypeError, ValueError):
+                    tmdb_show_id = None
+                if tmdb_show_id is None:
+                    show_row = db.get_show(show_id)
+                    if isinstance(show_row, dict):
+                        try:
+                            tmdb_show_id = int(show_row.get("tmdb_id")) if show_row.get("tmdb_id") is not None else None
+                        except (TypeError, ValueError):
+                            tmdb_show_id = None
+                        if tmdb_show_id is None and isinstance(show_row.get("info"), dict):
+                            try:
+                                tmdb_show_id = int(show_row["info"].get("tmdb_id")) if show_row["info"].get("tmdb_id") is not None else None
+                            except (TypeError, ValueError):
+                                tmdb_show_id = None
+                if tmdb_show_id is not None:
+                    from resources.lib.modules.tmdb_helper import (
+                        apply_tmdb_episode_meta,
+                        fetch_tmdb_episode,
+                    )
+
+                    apply_tmdb_episode_meta(
+                        item_information,
+                        fetch_tmdb_episode(
+                            tmdb_show_id,
+                            int(season_num),
+                            int(episode_num),
+                            hide_unaired=False,
+                        ),
+                    )
+                info = item_information.get("info")
+                if isinstance(info, dict):
+                    show_row = db.get_show(show_id)
+                    show_info = (show_row or {}).get("info") if isinstance(show_row, dict) else None
+                    if isinstance(show_info, dict):
+                        for col in ("imdb_id", "tmdb_id", "tvdb_id"):
+                            if isinstance(show_row, dict) and show_row.get(col) and not show_info.get(col):
+                                show_info[col] = show_row[col]
+                        attach_show_scraper_context(item_information, show_info)
+                return _finalize(item_information)
+
+        episode_id = episode_id_from_args(action_args)
         show_id = _resolve_episode_show_id(db, action_args, episode_id)
         episode_row = _load_episode_item_information(db, action_args, episode_id, show_id)
         if episode_row:
@@ -421,7 +557,7 @@ def deconstruct_action_args(action_args):
     action_args = parse.unquote(action_args)
     try:
         return json.loads(action_args)
-    except ValueError:
+    except (ValueError, json.JSONDecodeError):
         return action_args
 
 
