@@ -22,7 +22,7 @@ from resources.lib.modules.globals import (
     normalize_cast_to_actors,
     set_video_info_tag,
 )
-from resources.lib.modules import locale_playback
+from resources.lib.modules import locale_playback, playback_streams
 
 
 class PrismPlayer(xbmc.Player):
@@ -437,6 +437,10 @@ class PrismPlayer(xbmc.Player):
                 self.smart_module.build_playlist()
             elif g.PLAYLIST.size() == g.PLAYLIST.getposition() + 1:
                 self.smart_module.append_next_season()
+
+        catalog = locale_playback.catalog_from_item(self.item_information)
+        if catalog == "anime":
+            playback_streams.apply_anime_streams(self, catalog=catalog)
 
     def _end_playback(self):
         self._finalize_playback_progress()

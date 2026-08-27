@@ -341,7 +341,7 @@
 				<!-- Card (anime — includes sub/dub presets) -->
 				<control type="image">
 					<width>500</width>
-					<height>520</height>
+					<height>630</height>
 					<texture>white.png</texture>
 					<colordiffuse>99362e33</colordiffuse>
 					<visible>String.IsEqual(Window().Property(profile.catalog),anime)</visible>
@@ -412,6 +412,30 @@
 						<align>right</align>
 						<textcolor>FFFFFFFF</textcolor>
 						<visible>String.IsEqual(Window().Property(profile.catalog),anime)</visible>
+						<onleft>9000</onleft>
+					</control>
+
+					<control type="button" id="6107">
+						<height>55</height>
+						<textoffsetx>20</textoffsetx>
+						<texturefocus colordiffuse="$INFO[Window().Property(settings.color)]">white.png</texturefocus>
+						<texturenofocus colordiffuse="22000000">white.png</texturenofocus>
+						<label>$ADDON[plugin.video.prism 31063]: $INFO[Window().Property(locale.subtitlekeyword.label)]</label>
+						<align>right</align>
+						<textcolor>FFFFFFFF</textcolor>
+						<visible>String.IsEqual(Window().Property(profile.catalog),anime)</visible>
+						<onleft>9000</onleft>
+					</control>
+
+					<control type="button" id="6109">
+						<height>55</height>
+						<textoffsetx>20</textoffsetx>
+						<texturefocus colordiffuse="$INFO[Window().Property(settings.color)]">white.png</texturefocus>
+						<texturenofocus colordiffuse="22000000">white.png</texturenofocus>
+						<label>$ADDON[plugin.video.prism 31065]: $INFO[Window().Property(locale.subtitlekeyword.custom)]</label>
+						<align>right</align>
+						<textcolor>FFFFFFFF</textcolor>
+						<visible>String.IsEqual(Window().Property(profile.catalog),anime) + String.IsEqual(Window().Property(locale.subtitlekeyword),custom)</visible>
 						<onleft>9000</onleft>
 					</control>
 

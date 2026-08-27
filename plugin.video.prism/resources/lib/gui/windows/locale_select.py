@@ -1,7 +1,7 @@
 import xbmcgui
 
 from resources.lib.gui.windows.base_window import BaseWindow
-from resources.lib.modules import catalog_profiles, locale_playback
+from resources.lib.modules import catalog_profiles, locale_playback, playback_streams
 from resources.lib.modules.globals import g
 
 
@@ -16,6 +16,8 @@ class LocaleSelect(BaseWindow):
     RESET_CONTROL = 6104
     SUB_PRESET_CONTROL = 6105
     DUB_PRESET_CONTROL = 6106
+    KEYWORD_CONTROL = 6107
+    CUSTOM_KEYWORD_CONTROL = 6109
 
     PLAYBACK_SETTINGS_SECTION = 7
 
@@ -49,6 +51,29 @@ class LocaleSelect(BaseWindow):
         self.setProperty("locale.usekodi", str(use_kodi))
         self._mark_selected(self.audio_list, locale_playback.get_catalog_audio(self.catalog))
         self._mark_selected(self.subtitle_list, locale_playback.get_catalog_subtitle(self.catalog))
+        self._refresh_anime_stream_properties()
+
+    def _refresh_anime_stream_properties(self):
+        if self.catalog != "anime":
+            return
+        keyword_mode = playback_streams.get_subtitle_keyword_mode()
+        self.setProperty("locale.subtitlekeyword", keyword_mode)
+        self.setProperty("locale.subtitlekeyword.label", playback_streams.subtitle_keyword_label(keyword_mode))
+        self.setProperty("locale.subtitlekeyword.custom", playback_streams.get_custom_subtitle_keyword())
+
+    def _cycle_subtitle_keyword(self):
+        if self.catalog != "anime":
+            return
+        next_mode = playback_streams.cycle_subtitle_keyword_mode()
+        if next_mode == playback_streams.KEYWORD_CUSTOM:
+            playback_streams.prompt_custom_subtitle_keyword()
+        self._refresh_anime_stream_properties()
+
+    def _edit_custom_subtitle_keyword(self):
+        if self.catalog != "anime":
+            return
+        if playback_streams.prompt_custom_subtitle_keyword():
+            self._refresh_anime_stream_properties()
 
     @staticmethod
     def _ensure_list_populated(list_control, options):
@@ -102,6 +127,8 @@ class LocaleSelect(BaseWindow):
 
     def _reset_catalog(self):
         locale_playback.reset_catalog_locale(self.catalog)
+        if self.catalog == "anime":
+            playback_streams.reset_anime_stream_settings()
         self._refresh_catalog_state()
 
     def _apply_anime_preset(self, preset: str):
@@ -131,6 +158,10 @@ class LocaleSelect(BaseWindow):
             self._apply_anime_preset("sub")
         elif control_id == self.DUB_PRESET_CONTROL:
             self._apply_anime_preset("dub")
+        elif control_id == self.KEYWORD_CONTROL:
+            self._cycle_subtitle_keyword()
+        elif control_id == self.CUSTOM_KEYWORD_CONTROL:
+            self._edit_custom_subtitle_keyword()
         elif control_id == self.CLOSE_CONTROL:
             self.close()
 

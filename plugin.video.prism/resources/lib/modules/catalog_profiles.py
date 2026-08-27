@@ -65,11 +65,13 @@ ANIME_PLAYBACK_PRESETS = {
         "use_kodi": False,
         "audio": "Japanese",
         "subtitle": "English",
+        "subtitlekeyword": "dialog",
     },
     "dub": {
         "use_kodi": False,
         "audio": "English",
-        "subtitle": "English",
+        "subtitle": "none",
+        "subtitlekeyword": "signs_songs",
     },
 }
 
@@ -296,10 +298,15 @@ def apply_anime_playback_preset(preset: str) -> bool:
         set_catalog_subtitle,
         set_use_kodi_defaults,
     )
+    from resources.lib.modules.playback_streams import (
+        set_custom_subtitle_keyword,
+        set_subtitle_keyword_mode,
+    )
 
     set_use_kodi_defaults("anime", bool(profile.get("use_kodi", False)))
     set_catalog_audio("anime", profile["audio"])
     set_catalog_subtitle("anime", profile["subtitle"])
+    set_subtitle_keyword_mode(str(profile.get("subtitlekeyword", "off")))
     return True
 
 

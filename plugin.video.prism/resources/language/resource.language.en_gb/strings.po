@@ -5522,3 +5522,53 @@ msgstr "Hide Empty Widgets"
 msgctxt "#31056"
 msgid "When a home-screen widget has no items (Next Up, Continue Watching, Recently Watched, etc.), return an empty list so skins can hide the section. Arctic Fuse 3: also disable the skin setting Widgets → No Items Placeholder (Widgets.DisableNoResultsItem). Reload skin widgets or restart Kodi after changing this setting."
 msgstr "When a home-screen widget has no items (Next Up, Continue Watching, Recently Watched, etc.), return an empty list so skins can hide the section. Arctic Fuse 3: also disable the skin setting Widgets → No Items Placeholder (Widgets.DisableNoResultsItem). Reload skin widgets or restart Kodi after changing this setting."
+
+#: /resources/settings.xml /resources/skins/Default/1080i/locale_select.xml
+msgctxt "#31057"
+msgid "Signs & Songs"
+msgstr "Signs & Songs"
+
+#: /resources/settings.xml /resources/skins/Default/1080i/locale_select.xml
+msgctxt "#31058"
+msgid "Auto subtitles for dub"
+msgstr "Auto subtitles for dub"
+
+#: /resources/settings.xml
+msgctxt "#31059"
+msgid "During anime playback, prefer embedded subtitle tracks whose name matches the selected keyword mode. Matching is not limited to your preferred subtitle language."
+msgstr "During anime playback, prefer embedded subtitle tracks whose name matches the selected keyword mode. Matching is not limited to your preferred subtitle language."
+
+#: /resources/settings.xml
+msgctxt "#31060"
+msgid "When English audio is active during anime playback, enable subtitles (typically Signs & Songs only when that keyword mode is also enabled)."
+msgstr "When English audio is active during anime playback, enable subtitles (typically Signs & Songs only when that keyword mode is also enabled)."
+
+#: /resources/settings.xml
+msgctxt "#31061"
+msgid "Off"
+msgstr "Off"
+
+#: /resources/settings.xml
+msgctxt "#31062"
+msgid "Dialog"
+msgstr "Dialog"
+
+#: /resources/settings.xml /resources/skins/Default/1080i/locale_select.xml
+msgctxt "#31063"
+msgid "Subtitle keyword"
+msgstr "Subtitle keyword"
+
+#: /resources/settings.xml
+msgctxt "#31064"
+msgid "Custom"
+msgstr "Custom"
+
+#: /resources/settings.xml /resources/skins/Default/1080i/locale_select.xml
+msgctxt "#31065"
+msgid "Custom keyword"
+msgstr "Custom keyword"
+
+#: /resources/settings.xml
+msgctxt "#31066"
+msgid "Substring to match in embedded subtitle track names when the keyword mode is set to Custom."
+msgstr "Substring to match in embedded subtitle track names when the keyword mode is set to Custom."
