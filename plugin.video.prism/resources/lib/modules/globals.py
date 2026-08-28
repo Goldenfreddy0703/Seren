@@ -910,6 +910,7 @@ class GlobalVariables:
         self.SKINS_PATH = tools.translate_path(os.path.join(self.ADDON_USERDATA_PATH, "skins"))
         self.CACHE_DB_PATH = tools.translate_path(os.path.join(self.ADDON_USERDATA_PATH, "cache.db"))
         self.TORRENT_CACHE = tools.translate_path(os.path.join(self.ADDON_USERDATA_PATH, "torrentCache.db"))
+        self.DEBRID_CACHE_DB_PATH = tools.translate_path(os.path.join(self.ADDON_USERDATA_PATH, "debridCache.db"))
         self.TORRENT_ASSIST = tools.translate_path(os.path.join(self.ADDON_USERDATA_PATH, "torentAssist.db"))
         self.PROVIDER_CACHE_DB_PATH = tools.translate_path(os.path.join(self.ADDON_USERDATA_PATH, "providers.db"))
         self.PREMIUMIZE_DB_PATH = tools.translate_path(os.path.join(self.ADDON_USERDATA_PATH, "premiumize.db"))

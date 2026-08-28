@@ -23,6 +23,7 @@ from resources.lib.common.thread_pool import ThreadPool
 from resources.lib.database.skinManager import SkinManager
 from resources.lib.database.torrentCache import TorrentCache
 from resources.lib.debrid import all_debrid
+from resources.lib.debrid import external_cache
 from resources.lib.debrid import premiumize
 from resources.lib.debrid import real_debrid
 from resources.lib.debrid import offcloud
@@ -1219,6 +1220,70 @@ class TorrentCacheCheck:
         self.season_strings = None
         self.scraper_class = scraper_class
         self.rd_api = real_debrid.RealDebrid()
+        self._db_cached_rows = []
+
+    @staticmethod
+    def _external_imdb_context(info):
+        item_info = (info or {}).get("info") or {}
+        imdb = item_info.get("tvshow.imdb_id") or item_info.get("imdb_id")
+        season = item_info.get("alternative_season") or item_info.get("season")
+        episode = item_info.get("alternative_episode") or item_info.get("episode")
+        return imdb, season, episode
+
+    def _init_db_cache_rows(self, torrent_list):
+        hash_list = [torrent["hash"] for torrent in torrent_list if torrent.get("hash")]
+        self._db_cached_rows = []
+        if not g.get_bool_setting("general.torrentCache") or not hash_list:
+            return
+        try:
+            from resources.lib.database.debridCache import DebridCache
+
+            self._db_cached_rows = DebridCache().get_many(hash_list)
+        except Exception:
+            self._db_cached_rows = []
+
+    def _split_by_db_cache(self, torrent_list, debrid_key):
+        try:
+            from resources.lib.database.debridCache import DebridCache
+
+            dc = DebridCache()
+            known_cached = dc.get_cached_hashes_for_service(self._db_cached_rows, debrid_key)
+            known_all = dc.get_known_hashes_for_service(self._db_cached_rows, debrid_key)
+        except Exception:
+            return [], torrent_list
+
+        db_cached = [torrent for torrent in torrent_list if torrent["hash"] in known_cached]
+        unchecked = [torrent for torrent in torrent_list if torrent["hash"] not in known_all]
+        return db_cached, unchecked
+
+    @staticmethod
+    def _write_cache_results(unchecked_torrents, cached_hashes_set, debrid_key):
+        if not g.get_bool_setting("general.torrentCache"):
+            return
+        try:
+            from resources.lib.database.debridCache import DebridCache
+
+            results = []
+            normalized = {info_hash.lower() for info_hash in cached_hashes_set}
+            for torrent in unchecked_torrents:
+                info_hash = torrent["hash"]
+                cached = "True" if info_hash.lower() in normalized else "False"
+                results.append((info_hash, cached))
+            if results:
+                DebridCache().set_many_background(results, debrid_key)
+        except Exception:
+            pass
+
+    def _mark_confirmed_torrents(self, torrent_list, confirmed_hashes, debrid_provider):
+        confirmed = {info_hash.lower() for info_hash in confirmed_hashes}
+        stored = set()
+        for torrent in torrent_list:
+            info_hash = torrent.get("hash", "").lower()
+            if info_hash and info_hash in confirmed:
+                torrent["debrid_provider"] = debrid_provider
+                self.store_torrent(torrent)
+                stored.add(info_hash)
+        return stored
 
     def store_torrent(self, torrent):
         """
@@ -1263,6 +1328,7 @@ class TorrentCacheCheck:
         :return: None
         :rtype: None
         """
+        self._init_db_cache_rows(torrent_list)
         if g.real_debrid_enabled() and g.get_bool_setting('rd.torrents'):
             self.threads.put(self._realdebrid_worker, copy.deepcopy(torrent_list), info)
 
@@ -1270,7 +1336,7 @@ class TorrentCacheCheck:
             self.threads.put(self._premiumize_worker, copy.deepcopy(torrent_list))
 
         if g.all_debrid_enabled() and g.get_bool_setting('alldebrid.torrents'):
-            self.threads.put(self._all_debrid_worker, copy.deepcopy(torrent_list))
+            self.threads.put(self._all_debrid_worker, copy.deepcopy(torrent_list), info)
 
         if g.torbox_enabled() and g.get_bool_setting('tb.torrents'):
             self.threads.put(self._torbox_worker, copy.deepcopy(torrent_list))
@@ -1278,31 +1344,64 @@ class TorrentCacheCheck:
             self.threads.put(self._offcloud_worker, copy.deepcopy(torrent_list))
         self.threads.wait_completion()
 
-    def _all_debrid_worker(self, torrent_list):
+    def _all_debrid_worker(self, torrent_list, info):
         try:
-            if len(torrent_list) == 0:
+            if not torrent_list:
                 return
-            
-            for i in torrent_list:
-                try:
-                    i['debrid_provider'] = 'all_debrid'
-                    self.store_torrent(i)
-                except KeyError:
-                    g.log(
-                        "KeyError in AllDebrid Cache check worker. "
-                        "Failed to walk AllDebrid cache check response, check your auth and account status",
-                        "error",
-                    )
-                    return
+
+            db_cached, unchecked = self._split_by_db_cache(torrent_list, "ad")
+            confirmed = self._mark_confirmed_torrents(db_cached, {t["hash"] for t in db_cached}, "all_debrid")
+
+            needs_check = []
+            for torrent in unchecked:
+                if torrent.get("hash", "").lower() not in confirmed:
+                    needs_check.append(torrent)
+
+            if needs_check:
+                imdb, season, episode = self._external_imdb_context(info)
+                if imdb:
+                    hash_list = [torrent["hash"].lower() for torrent in needs_check]
+                    ext_cached, success = external_cache.check_ad_external(hash_list, imdb, season, episode)
+                    if success is not False:
+                        confirmed |= self._mark_confirmed_torrents(needs_check, ext_cached, "all_debrid")
+
+            self._write_cache_results(unchecked, confirmed, "ad")
         except Exception:
             g.log_stacktrace()
 
     def _realdebrid_worker(self, torrent_list, info):
         try:
-            for i in torrent_list:
-                with contextlib.suppress(KeyError):
-                    i['debrid_provider'] = 'real_debrid'
-                    self.store_torrent(i)
+            if not torrent_list:
+                return
+
+            db_cached, unchecked = self._split_by_db_cache(torrent_list, "rd")
+            confirmed = self._mark_confirmed_torrents(db_cached, {t["hash"] for t in db_cached}, "real_debrid")
+
+            needs_check = []
+            for torrent in unchecked:
+                info_hash = torrent.get("hash", "").lower()
+                if torrent.get("rd_cached"):
+                    torrent["debrid_provider"] = "real_debrid"
+                    self.store_torrent(torrent)
+                    confirmed.add(info_hash)
+                elif info_hash not in confirmed:
+                    needs_check.append(torrent)
+
+            if needs_check:
+                imdb, season, episode = self._external_imdb_context(info)
+                if imdb:
+                    hash_list = [torrent["hash"].lower() for torrent in needs_check]
+                    ext_cached, success = external_cache.check_rd_external(hash_list, imdb, season, episode)
+                    if success is not False:
+                        confirmed |= self._mark_confirmed_torrents(needs_check, ext_cached, "real_debrid")
+                    elif success is False:
+                        rd_cached_set = self.rd_api.check_cache_batch(hash_list)
+                        if rd_cached_set:
+                            confirmed |= self._mark_confirmed_torrents(
+                                needs_check, rd_cached_set, "real_debrid"
+                            )
+
+            self._write_cache_results(unchecked, confirmed, "rd")
         except Exception:
             g.log_stacktrace()
 
@@ -1326,45 +1425,67 @@ class TorrentCacheCheck:
 
     def _premiumize_worker(self, torrent_list):
         try:
-            hash_list = [i['hash'] for i in torrent_list]
+            db_cached, unchecked = self._split_by_db_cache(torrent_list, "pm")
+            confirmed = self._mark_confirmed_torrents(db_cached, {t["hash"] for t in db_cached}, "premiumize")
+
+            hash_list = [torrent["hash"] for torrent in unchecked]
             if not hash_list:
+                self._write_cache_results(unchecked, confirmed, "pm")
                 return
+
             premiumize_cache = premiumize.Premiumize().hash_check(hash_list)
-            premiumize_cache = premiumize_cache['response']
-            for count, i in enumerate(torrent_list):
+            premiumize_cache = premiumize_cache["response"]
+            for count, torrent in enumerate(unchecked):
                 if premiumize_cache[count] is True:
-                    i['debrid_provider'] = 'premiumize'
-                    self.store_torrent(i)
+                    torrent["debrid_provider"] = "premiumize"
+                    self.store_torrent(torrent)
+                    confirmed.add(torrent["hash"])
+
+            self._write_cache_results(unchecked, confirmed, "pm")
         except Exception:
             g.log_stacktrace()
 
     def _torbox_worker(self, torrent_list):
         try:
-            hash_list = [i['hash'] for i in torrent_list]
+            db_cached, unchecked = self._split_by_db_cache(torrent_list, "tb")
+            confirmed = self._mark_confirmed_torrents(db_cached, {t["hash"] for t in db_cached}, "torbox")
+
+            hash_list = [torrent["hash"] for torrent in unchecked]
             if not hash_list:
+                self._write_cache_results(unchecked, confirmed, "tb")
                 return
-            cached_hashes = torbox.TorBox().check_hash(hash_list)
-            if not cached_hashes:
-                return
-            for i in torrent_list:
-                if i['hash'].lower() in [h.lower() for h in cached_hashes]:
-                    i['debrid_provider'] = 'torbox'
-                    self.store_torrent(i)
+
+            cached_hashes = torbox.TorBox().check_hash(hash_list) or []
+            cached_lower = {info_hash.lower() for info_hash in cached_hashes}
+            for torrent in unchecked:
+                if torrent["hash"].lower() in cached_lower:
+                    torrent["debrid_provider"] = "torbox"
+                    self.store_torrent(torrent)
+                    confirmed.add(torrent["hash"])
+
+            self._write_cache_results(unchecked, confirmed, "tb")
         except Exception:
             g.log_stacktrace()
 
     def _offcloud_worker(self, torrent_list):
         try:
-            hash_list = [i['hash'] for i in torrent_list]
+            db_cached, unchecked = self._split_by_db_cache(torrent_list, "oc")
+            confirmed = self._mark_confirmed_torrents(db_cached, {t["hash"] for t in db_cached}, "offcloud")
+
+            hash_list = [torrent["hash"] for torrent in unchecked]
             if not hash_list:
+                self._write_cache_results(unchecked, confirmed, "oc")
                 return
-            cached_hashes = offcloud.OffCloud().check_hash(hash_list)
-            if not cached_hashes:
-                return
-            for i in torrent_list:
-                if i['hash'].lower() in [h.lower() for h in cached_hashes]:
-                    i['debrid_provider'] = 'offcloud'
-                    self.store_torrent(i)
+
+            cached_hashes = offcloud.OffCloud().check_hash(hash_list) or []
+            cached_lower = {info_hash.lower() for info_hash in cached_hashes}
+            for torrent in unchecked:
+                if torrent["hash"].lower() in cached_lower:
+                    torrent["debrid_provider"] = "offcloud"
+                    self.store_torrent(torrent)
+                    confirmed.add(torrent["hash"])
+
+            self._write_cache_results(unchecked, confirmed, "oc")
         except Exception:
             g.log_stacktrace()
 

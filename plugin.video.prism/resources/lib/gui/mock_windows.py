@@ -313,42 +313,13 @@ def mock_skip_segment():
 
 
 def mock_get_sources():
-    import time
-
     try:
         get_sources_window = mock_modules.GetSources(
             *SkinManager().confirm_skin_path("get_sources.xml"), item_information=_mock_information
         )
         get_sources_window.setProperty("notification_text", g.get_language_string(30054))
-        get_sources_window.show()
-        xbmc.sleep(1500)
-        get_sources_window.setProperty("has_torrent_providers", "true")
-        get_sources_window.setProperty("has_hoster_providers", "true")
-        get_sources_window.setProperty("has_adaptive_providers", "true")
-        get_sources_window.setProperty("has_direct_providers", "true")
-        get_sources_window.setProperty("has_cloud_scrapers", "true")
-        start_time = time.time()
-        timeout = 15
-        get_sources_window.setProperty("process_started", "true")
-        for stats in mock_source_statistics:
-            runtime = time.time() - start_time
-            get_sources_window.setProperty("runtime", str(f"{round(runtime, 2)} seconds"))
-            timeout_progress = int(100 - float(1 - (runtime / float(timeout))) * 100)
-            get_sources_window.setProperty('timeout_progress', str(timeout_progress))
-            get_sources_window.setProgress(
-                int(
-                    100
-                    - (
-                        len(stats['remainingProviders'])
-                        / float(len(mock_source_statistics[0]["remainingProviders"]))
-                        * 100
-                    )
-                )
-            )
-            get_sources_window.update_properties(stats)
-            xbmc.sleep(750)
-        xbmc.sleep(10000)
-        get_sources_window.close()
+        get_sources_window.setProperty("mock_preview", "true")
+        get_sources_window.doModal()
     finally:
         del get_sources_window
 

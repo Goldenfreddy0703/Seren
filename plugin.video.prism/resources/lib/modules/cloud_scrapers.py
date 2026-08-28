@@ -82,18 +82,30 @@ class CloudScraper(ApiBase):
 
     @staticmethod
     def _apply_general_filter(cloud_items):
-        return [i for i in cloud_items if i['release_title'].endswith(g.common_video_extensions)]
+        return [i for i in cloud_items if CloudScraper._file_has_video_extension(i)]
+
+    @staticmethod
+    def _file_has_video_extension(item):
+        for key in ("release_title", "name", "path", "short_name"):
+            value = item.get(key)
+            if isinstance(value, str) and value.lower().endswith(g.common_video_extensions):
+                return True
+        return False
+
+    def _cloud_match_title(self, item):
+        return source_utils.build_cloud_match_title(item)
 
     def _identify_items(self, cloud_items):
         sources = []
 
         if self.media_type == g.MEDIA_EPISODE:
             for item in cloud_items:
-                release_title = source_utils.clean_title(item["release_title"])
-                if (
-                    self.episode_regex(release_title)
-                    or self.show_regex(release_title)
-                    or self.season_regex(release_title)
+                release_title = self._cloud_match_title(item)
+                if source_utils.cloud_episode_item_matches(
+                    release_title,
+                    episode_regex=self.episode_regex,
+                    season_regex=self.season_regex,
+                    simple_info=self.simple_info,
                 ):
                     sources.append(item)
 
@@ -147,15 +159,19 @@ class CloudScraper(ApiBase):
 
         return items
 
-    @staticmethod
-    def _get_clean_title(item):
-        return source_utils.clean_title(item.get("release_title", ""))
+    def _get_clean_title(self, item):
+        return self._cloud_match_title(item)
 
     def _is_valid_pack(self, item):
         clean_title = self._get_clean_title(item)
         if self.media_type == g.MEDIA_EPISODE:
-            return bool(
-                self.episode_regex(clean_title) or self.season_regex(clean_title) or self.show_regex(clean_title)
+            if not self.simple_info:
+                return False
+            return source_utils.cloud_episode_item_matches(
+                clean_title,
+                episode_regex=self.episode_regex,
+                season_regex=self.season_regex,
+                simple_info=self.simple_info,
             )
 
         else:
@@ -303,6 +319,7 @@ class TorBoxCloudScraper(CloudScraper):
         normalized["url"] = item.get("url", "")
         normalized["is_usenet"] = item.get("is_usenet", False)
         normalized["folder_name"] = item.get("folder_name", "")
+        normalized["name"] = item.get("name") or item.get("short_name") or normalized.get("release_title", "")
         return normalized
 
     def _is_valid_pack(self, item):
@@ -352,6 +369,7 @@ class OffCloudCloudScraper(CloudScraper):
         normalized = super()._normalize_item(item)
         normalized["url"] = item.get("url", "")
         normalized["folder_name"] = item.get("folder_name", "")
+        normalized["name"] = item.get("name") or item.get("short_name") or normalized.get("release_title", "")
         return normalized
 
     def _is_valid_pack(self, item):

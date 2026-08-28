@@ -799,11 +799,22 @@ class _RealDebridDownloader(_DebridDownloadBase):
         return self.available_files
 
     def _resolve_file_url(self, file):
-        return self.debrid_module.resolve_hoster(file[0])
+        item = file[0]
+        if isinstance(item, str):
+            link = item
+        elif isinstance(item, dict):
+            link = item.get("url") or item.get("link")
+        else:
+            link = None
+        if not link or not isinstance(link, str):
+            raise SourceNotAvailable()
+        if link.startswith("http") and ".download.real-debrid.com/" in link:
+            return link
+        return self.debrid_module.resolve_hoster(link)
 
     def _resolver_setup(self, selected_files):
         if self.source.get("type") in ["hoster", "cloud"]:
-            return [(self.source.get("url", ""), self.source.get("release_tile"))]
+            return [(self.source.get("url", ""), self.source.get("release_title"))]
         
         info = self.torrent_info
         remote_files = {str(i["id"]): idx for idx, i in enumerate(info["files"])}

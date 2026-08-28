@@ -86,5 +86,6 @@ class GetSourcesWindow(SingleItemWindow):
         self.scraper_class = scraper_class
 
     def close(self):
-        self.scraper_class.canceled = True
+        if self.scraper_class is not None:
+            self.scraper_class.canceled = True
         super().close()

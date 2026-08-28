@@ -127,10 +127,22 @@ class TorrentCache(Database):
             [f"DELETE FROM {MOVIE_CACHE_TYPE} where expires < ?", f"DELETE FROM {TV_CACHE_TYPE} where expires < ?"],
             (time.time(),),
         )
+        try:
+            from resources.lib.database.debridCache import DebridCache
+
+            DebridCache().cleanup()
+        except Exception:
+            pass
         g.clear_runtime_setting(busy_key)
 
     def clear_all(self):
         g.show_busy_dialog()
         self.rebuild_database()
+        try:
+            from resources.lib.database.debridCache import DebridCache
+
+            DebridCache().clear_all()
+        except Exception:
+            pass
         xbmcgui.Dialog().ok(g.ADDON_NAME, g.get_language_string(30480))
         g.close_busy_dialog()

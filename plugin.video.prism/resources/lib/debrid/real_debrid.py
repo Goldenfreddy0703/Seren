@@ -250,6 +250,54 @@ class RealDebrid:
             return response.json()
         except (ValueError, AttributeError):
             return response
+
+    def _get_url_no_refresh(self, url):
+        """GET without token refresh — used for deprecated instantAvailability."""
+        if not self.token:
+            return None
+        try:
+            response = self.session.get(
+                self.base_url + url,
+                headers=self._get_headers(),
+                timeout=10,
+            )
+            if response.status_code in (403, 429):
+                return {"_rd_status": response.status_code}
+            if not response.ok:
+                g.log(f"RD instantAvailability HTTP {response.status_code}", "warning")
+                return None
+            return response.json()
+        except Exception as exc:
+            g.log(f"RD instantAvailability request error: {exc}", "warning")
+            return None
+
+    def check_cache_batch(self, hash_list):
+        cached_hashes = set()
+        chunk_size = 50
+        for index in range(0, len(hash_list), chunk_size):
+            chunk = hash_list[index:index + chunk_size]
+            hash_string = "/" + "/".join(chunk)
+            try:
+                response = self._get_url_no_refresh(f"torrents/instantAvailability{hash_string}")
+                if response is None:
+                    continue
+                if isinstance(response, dict) and "_rd_status" in response:
+                    status = response["_rd_status"]
+                    g.log(
+                        f"RD instantAvailability: HTTP {status} — stopping chunk loop.",
+                        "warning",
+                    )
+                    break
+                if not isinstance(response, dict):
+                    continue
+                for info_hash, info in response.items():
+                    if isinstance(info, dict) and info.get("rd"):
+                        cached_hashes.add(info_hash.lower())
+            except Exception as exc:
+                g.log(f"RD instantAvailability chunk error: {exc}", "warning")
+            if index + chunk_size < len(hash_list):
+                time.sleep(0.2)
+        return cached_hashes
         
     def check_hash(self, hash_value):
         magnet = f'magnet:?xt=urn:btih:{hash_value}'

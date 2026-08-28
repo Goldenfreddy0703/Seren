@@ -195,7 +195,9 @@ class Resolver:
                 g.log(f"Offcloud cloud resolve error: {e}", "error")
                 return None
 
-        if "provider_imports" in source:
+        if "provider_imports" in source and not (
+            source.get("type") == "cloud" and source.get("debrid_provider") in self.resolvers
+        ):
             source = self._handle_provider_imports_resolving(source)
 
         if "debrid_provider" in source:

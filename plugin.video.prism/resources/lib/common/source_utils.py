@@ -1,6 +1,8 @@
 """
 Module for common utilities that may be used when working with source items
 """
+from __future__ import annotations
+
 import contextlib
 import re
 import string
@@ -417,6 +419,107 @@ def check_episode_title_match(show_titles, release_title, simple_info):
                 if release_title.startswith(clean_title(title)):
                     return True
     return False
+
+
+def build_cloud_match_title(item: dict) -> str:
+    """Combine cloud folder/path/filename for matching (TorBox, Offcloud, etc.)."""
+    if not isinstance(item, dict):
+        return ""
+    parts: list[str] = []
+    for key in ("folder_name", "name", "path", "release_title", "short_name"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    return clean_title(" ".join(parts))
+
+
+def _show_titles_from_simple_info(simple_info: dict) -> list[str]:
+    titles = [simple_info.get("show_title") or ""]
+    titles.extend(simple_info.get("show_aliases") or [])
+    return [title for title in titles if title]
+
+
+def _release_contains_show_title(release_title: str, simple_info: dict) -> bool:
+    for title in _show_titles_from_simple_info(simple_info):
+        for candidate in (
+            clean_title_with_simple_info(title, simple_info),
+            clean_title(title),
+        ):
+            if candidate and candidate in release_title:
+                return True
+    return False
+
+
+def cloud_loose_episode_match(release_title: str, simple_info: dict) -> bool:
+    """Loose episode matching for cloud files when release-group prefixes break anchored regex."""
+    release_title = clean_title(release_title)
+    if not _release_contains_show_title(release_title, simple_info):
+        return False
+
+    season = str(simple_info.get("season_number") or "")
+    episode = str(simple_info.get("episode_number") or "")
+    if not season or not episode:
+        return False
+
+    compact = release_title.replace(" ", "")
+    season_fill = season.zfill(2)
+    episode_fill = episode.zfill(2)
+    for needle in (
+        f"s{season_fill}e{episode_fill}",
+        f"s{season}e{episode}",
+        f"s0{season}e0{episode}",
+        f"{season}x{episode}",
+        f"{season}x{episode_fill}",
+        f"{season_fill}x{episode_fill}",
+    ):
+        if needle in compact:
+            return True
+
+    for pattern in (
+        f"season {season} episode {episode}",
+        f"season {season_fill} episode {episode_fill}",
+        f"season {season} ep {episode}",
+        f"season {season_fill} ep {episode_fill}",
+    ):
+        if pattern in release_title:
+            return True
+
+    absolute_number = simple_info.get("absolute_number")
+    if absolute_number not in (None, ""):
+        abs_num = str(absolute_number).lstrip("0") or "0"
+        padded = str(absolute_number).zfill(3)
+        haystack = f" {release_title} "
+        for needle in (
+            f" {padded} ",
+            f" {abs_num} ",
+            f"-{padded}-",
+            f"-{abs_num}-",
+            f" e{abs_num} ",
+            f" ep{abs_num} ",
+            f" episode {abs_num} ",
+        ):
+            if needle in haystack:
+                return True
+
+    return check_episode_title_match(
+        [clean_title_with_simple_info(title, simple_info) for title in _show_titles_from_simple_info(simple_info)],
+        release_title,
+        simple_info,
+    )
+
+
+def cloud_episode_item_matches(
+    release_title: str,
+    *,
+    episode_regex,
+    season_regex,
+    simple_info: dict,
+) -> bool:
+    """Return True when a cloud file path matches the requested episode."""
+    release_title = clean_title(release_title)
+    if episode_regex(release_title) or season_regex(release_title):
+        return True
+    return cloud_loose_episode_match(release_title, simple_info)
 
 
 def filter_movie_title(org_release_title, release_title, movie_title, simple_info):

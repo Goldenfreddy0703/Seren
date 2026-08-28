@@ -526,13 +526,13 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                     simkl_id=simkl_id,
                     season_row_id=season_row_id,
                 )
-            if not simkl_pulled:
-                episodes_need_format = self._episodes_scope_need_format(
-                    simkl_show_id,
-                    season_num=season_num,
-                    simkl_id=simkl_id,
-                    season_row_id=season_row_id,
-                )
+                if not simkl_pulled:
+                    episodes_need_format = self._episodes_scope_need_format(
+                        simkl_show_id,
+                        season_num=season_num,
+                        simkl_id=simkl_id,
+                        season_row_id=season_row_id,
+                    )
         if skip_update:
             if simkl_pulled or episodes_need_format:
                 self._format_episodes_local(simkl_show_id, season_row_id, simkl_id)
