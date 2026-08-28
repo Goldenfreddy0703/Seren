@@ -11,17 +11,6 @@ _shared_executor = None
 _provider_executor = None
 _shared_executor_lock = threading.Lock()
 _PRISM_PLUGIN_MODE = False
-_REAL_THREAD_START = threading.Thread.start
-
-
-def _guarded_thread_start(self) -> None:
-    """Kodi Python is single-threaded for GUI calls — run inline during plugin menus."""
-    if _PRISM_PLUGIN_MODE:
-        if self._target is None:
-            return
-        self.run()
-        return
-    return _REAL_THREAD_START(self)
 
 
 def enter_prism_plugin_mode() -> None:
@@ -30,13 +19,11 @@ def enter_prism_plugin_mode() -> None:
     if plugin_action_allows_threads():
         return
     _PRISM_PLUGIN_MODE = True
-    threading.Thread.start = _guarded_thread_start  # type: ignore[method-assign]
 
 
 def exit_prism_plugin_mode() -> None:
     global _PRISM_PLUGIN_MODE
     _PRISM_PLUGIN_MODE = False
-    threading.Thread.start = _REAL_THREAD_START  # type: ignore[method-assign]
 
 # Default, Low, Medium, High, Extreme
 _SCALED_WORKERS = [20, 10, 20, 40, 80]

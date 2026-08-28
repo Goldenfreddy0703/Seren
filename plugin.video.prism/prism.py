@@ -36,7 +36,7 @@ def _release_plugin_threads() -> None:
         action = (g.REQUEST_PARAMS or {}).get("action")
         release_global_executors(
             wait=plugin_action_allows_threads(action),
-            cancel_futures=True,
+            cancel_futures=plugin_action_allows_threads(action),
         )
     except Exception:
         pass
