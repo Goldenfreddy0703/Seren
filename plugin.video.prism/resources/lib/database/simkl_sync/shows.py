@@ -319,9 +319,9 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         meta_cache.set_many_rows("show", rows or [])
 
         if not sync_path:
-        from resources.lib.meta.display_store import get_display_meta_store
+            from resources.lib.meta.display_store import get_display_meta_store
 
-        rows = get_display_meta_store().overlay_rows(rows, "tvshow")
+            rows = get_display_meta_store().overlay_rows(rows, "tvshow")
         if skip_update and not sync_path:
             from resources.lib.meta.paint_cache import paint_sync_list_rows
 
@@ -520,19 +520,19 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 )
                 scope_formatted = True
             else:
-            simkl_pulled = self._ensure_simkl_episode_tree(
-                simkl_show_id,
-                season_num=season_num,
-                simkl_id=simkl_id,
-                season_row_id=season_row_id,
-            )
-            if not simkl_pulled:
-                episodes_need_format = self._episodes_scope_need_format(
+                simkl_pulled = self._ensure_simkl_episode_tree(
                     simkl_show_id,
                     season_num=season_num,
                     simkl_id=simkl_id,
                     season_row_id=season_row_id,
                 )
+                if not simkl_pulled:
+                    episodes_need_format = self._episodes_scope_need_format(
+                        simkl_show_id,
+                        season_num=season_num,
+                        simkl_id=simkl_id,
+                        season_row_id=season_row_id,
+                    )
         if skip_update:
             if simkl_pulled or episodes_need_format:
                 self._format_episodes_local(simkl_show_id, season_row_id, simkl_id)
@@ -584,9 +584,9 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 else:
                     self._format_episodes_local(simkl_show_id)
             else:
-            self._format_episodes(
-                [{"simkl_id": row["simkl_id"]} for row in rows if self._episode_row_needs_format(row)]
-            )
+                self._format_episodes(
+                    [{"simkl_id": row["simkl_id"]} for row in rows if self._episode_row_needs_format(row)]
+                )
             rows = self.fetchall(statement)
         return rows
 
@@ -786,7 +786,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
     def hydrate_mixed_episode_rows_for_paint(self, rows: list[dict]) -> list[dict]:
         """Build display-ready episode rows in memory from cached Simkl meta (no DB upsert)."""
         if not rows:
-        return rows
+            return rows
         from resources.lib.simkl.ids import episode_num_from_info
 
         thin_ids = [
@@ -1266,7 +1266,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 expected = int(completeness.get("expected") or 0)
                 local_cnt = int(completeness.get("local_cnt") or 0)
                 if expected > 1 and local_cnt < expected:
-                return True
+                    return True
         return False
 
     def _needs_simkl_season_pull(
@@ -2372,7 +2372,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             shows = [{"simkl_id": show_id} for show_id in show_ids]
 
         if not skip_mill:
-        self._update_mill_format_shows(shows, True)
+            self._update_mill_format_shows(shows, True)
         else:
             from resources.lib.database.simkl_sync.milling import refresh_listed_episodes_from_simkl
 

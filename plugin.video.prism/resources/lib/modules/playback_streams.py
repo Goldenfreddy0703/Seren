@@ -291,18 +291,7 @@ def apply_anime_streams(player: xbmc.Player, *, catalog: str = "anime") -> None:
         time.sleep(0.5)
 
     if not subtitle_streams:
-        g.log("Playback streams: no embedded subtitle streams reported by Kodi", "debug")
         return
-
-    g.log(
-        "Playback streams: "
-        + ", ".join(
-            f"{row.get('index')}:{(row.get('name') or '')!r}/{(row.get('language') or '')}"
-            for row in subtitle_streams
-            if isinstance(row, dict)
-        ),
-        "debug",
-    )
 
     stream_index = _pick_subtitle_stream(
         subtitle_streams,
@@ -320,13 +309,8 @@ def apply_anime_streams(player: xbmc.Player, *, catalog: str = "anime") -> None:
 
     try:
         player.setSubtitleStream(stream_index)
-        g.log(
-            f"Playback streams: selected subtitle stream {stream_index} "
-            f"(keyword_mode={keyword_mode})",
-            "debug",
-        )
     except RuntimeError:
-        g.log("Playback streams: failed to set subtitle stream", "debug")
+        pass
 
 
 def prompt_custom_subtitle_keyword() -> bool:
