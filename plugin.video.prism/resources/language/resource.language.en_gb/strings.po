@@ -5535,8 +5535,8 @@ msgstr "Auto subtitles for dub"
 
 #: /resources/settings.xml
 msgctxt "#31059"
-msgid "During anime playback, prefer embedded subtitle tracks whose name matches the selected keyword mode. Matching is not limited to your preferred subtitle language."
-msgstr "During anime playback, prefer embedded subtitle tracks whose name matches the selected keyword mode. Matching is not limited to your preferred subtitle language."
+msgid "After playback starts, Prism matches embedded subtitle track names first when the track name filter is on. If nothing matches, your Preferred Subtitle setting is used."
+msgstr "After playback starts, Prism matches embedded subtitle track names first when the track name filter is on. If nothing matches, your Preferred Subtitle setting is used."
 
 #: /resources/settings.xml
 msgctxt "#31060"
@@ -5555,8 +5555,8 @@ msgstr "Dialog"
 
 #: /resources/settings.xml /resources/skins/Default/1080i/locale_select.xml
 msgctxt "#31063"
-msgid "Subtitle keyword"
-msgstr "Subtitle keyword"
+msgid "Track name filter"
+msgstr "Track name filter"
 
 #: /resources/settings.xml
 msgctxt "#31064"
@@ -5570,5 +5570,25 @@ msgstr "Custom keyword"
 
 #: /resources/settings.xml
 msgctxt "#31066"
-msgid "Substring to match in embedded subtitle track names when the keyword mode is set to Custom."
-msgstr "Substring to match in embedded subtitle track names when the keyword mode is set to Custom."
+msgid "Substring to match in embedded subtitle track names when the track name filter is set to Custom."
+msgstr "Substring to match in embedded subtitle track names when the track name filter is set to Custom."
+
+#: /resources/skins/Default/1080i/locale_select.xml
+msgctxt "#31067"
+msgid "Track name filter"
+msgstr "Track name filter"
+
+#: /resources/skins/Default/1080i/locale_select.xml
+msgctxt "#31076"
+msgid "Track name filter - Off"
+msgstr "Track name filter - Off"
+
+#: /resources/skins/Default/1080i/locale_select.xml
+msgctxt "#31077"
+msgid "Track name filter - On"
+msgstr "Track name filter - On"
+
+#: /resources/skins/Default/1080i/locale_select.xml
+msgctxt "#31078"
+msgid "Matches track names first. If none match, it uses your Preferred Subtitle setting."
+msgstr "Matches track names first. If none match, it uses your Preferred Subtitle setting."

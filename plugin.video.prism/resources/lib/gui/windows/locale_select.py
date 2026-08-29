@@ -11,13 +11,13 @@ class LocaleSelect(BaseWindow):
     CATALOG_CONTROLS = {6101: "movie", 6102: "tv", 6103: "anime"}
     AUDIO_LIST = 8000
     SUBTITLE_LIST = 9000
+    KEYWORD_LIST = 10000
     USE_KODI_TOGGLE = 6200
+    KEYWORD_TOGGLE = 6210
     CLOSE_CONTROL = 6001
     RESET_CONTROL = 6104
     SUB_PRESET_CONTROL = 6105
     DUB_PRESET_CONTROL = 6106
-    KEYWORD_CONTROL = 6107
-    CUSTOM_KEYWORD_CONTROL = 6109
 
     PLAYBACK_SETTINGS_SECTION = 7
 
@@ -28,17 +28,22 @@ class LocaleSelect(BaseWindow):
         self.catalog = catalog_profiles.normalize_catalog(catalog or catalog_profiles.get_last_catalog())
         self._audio_options = locale_playback.language_options("audio")
         self._subtitle_options = locale_playback.language_options("subtitle")
+        self._keyword_options = playback_streams.keyword_filter_options()
         self.audio_list = None
         self.subtitle_list = None
+        self.keyword_list = None
 
     def onInit(self):
         self.audio_list = self.getControlList(self.AUDIO_LIST)
         self.subtitle_list = self.getControlList(self.SUBTITLE_LIST)
+        self.keyword_list = self.getControlList(self.KEYWORD_LIST)
         self._ensure_list_populated(self.audio_list, self._audio_options)
         self._ensure_list_populated(self.subtitle_list, self._subtitle_options)
+        self._ensure_list_populated(self.keyword_list, self._keyword_options)
         self._update_catalog_properties()
         self._refresh_catalog_state()
         self.set_default_focus(control_id=self.USE_KODI_TOGGLE)
+        self._update_track_filter_navigation()
         super().onInit()
 
     def _update_catalog_properties(self):
@@ -52,28 +57,43 @@ class LocaleSelect(BaseWindow):
         self._mark_selected(self.audio_list, locale_playback.get_catalog_audio(self.catalog))
         self._mark_selected(self.subtitle_list, locale_playback.get_catalog_subtitle(self.catalog))
         self._refresh_anime_stream_properties()
+        self._update_track_filter_navigation()
+
+    def _track_filter_enabled(self) -> bool:
+        return (
+            self.catalog == "anime"
+            and self.getProperty("locale.trackfilter.enabled") == "True"
+        )
+
+    def _update_track_filter_navigation(self):
+        """Wire close / filter list / Kodi toggle when the filter panel is shown."""
+        try:
+            close_btn = self.getControl(self.CLOSE_CONTROL)
+            kodi_toggle = self.getControl(self.USE_KODI_TOGGLE)
+            keyword_list = self.getControl(self.KEYWORD_LIST)
+            subtitle_list = self.getControl(self.SUBTITLE_LIST)
+            sidebar_movie = self.getControl(6101)
+        except RuntimeError:
+            return
+
+        if self._track_filter_enabled():
+            close_btn.controlDown(keyword_list)
+            keyword_list.setNavigation(close_btn, kodi_toggle, subtitle_list, sidebar_movie)
+            kodi_toggle.controlUp(keyword_list)
+        else:
+            close_btn.controlDown(kodi_toggle)
+            kodi_toggle.controlUp(close_btn)
 
     def _refresh_anime_stream_properties(self):
         if self.catalog != "anime":
+            self.setProperty("locale.trackfilter.enabled", "False")
             return
+
         keyword_mode = playback_streams.get_subtitle_keyword_mode()
-        self.setProperty("locale.subtitlekeyword", keyword_mode)
-        self.setProperty("locale.subtitlekeyword.label", playback_streams.subtitle_keyword_label(keyword_mode))
-        self.setProperty("locale.subtitlekeyword.custom", playback_streams.get_custom_subtitle_keyword())
-
-    def _cycle_subtitle_keyword(self):
-        if self.catalog != "anime":
-            return
-        next_mode = playback_streams.cycle_subtitle_keyword_mode()
-        if next_mode == playback_streams.KEYWORD_CUSTOM:
-            playback_streams.prompt_custom_subtitle_keyword()
-        self._refresh_anime_stream_properties()
-
-    def _edit_custom_subtitle_keyword(self):
-        if self.catalog != "anime":
-            return
-        if playback_streams.prompt_custom_subtitle_keyword():
-            self._refresh_anime_stream_properties()
+        enabled = playback_streams.keyword_mode_active(keyword_mode)
+        self.setProperty("locale.trackfilter.enabled", str(enabled))
+        if enabled and self.keyword_list is not None:
+            self._mark_selected(self.keyword_list, keyword_mode)
 
     @staticmethod
     def _ensure_list_populated(list_control, options):
@@ -105,6 +125,17 @@ class LocaleSelect(BaseWindow):
         locale_playback.set_use_kodi_defaults(self.catalog, use_kodi)
         self.setProperty("locale.usekodi", str(use_kodi))
 
+    def _toggle_track_filter(self):
+        if self.catalog != "anime":
+            return
+        keyword_mode = playback_streams.get_subtitle_keyword_mode()
+        if playback_streams.keyword_mode_active(keyword_mode):
+            playback_streams.set_subtitle_keyword_mode(playback_streams.KEYWORD_OFF)
+        else:
+            playback_streams.set_subtitle_keyword_mode(playback_streams.KEYWORD_SIGNS_SONGS)
+        self._refresh_anime_stream_properties()
+        self._update_track_filter_navigation()
+
     def _select_from_list(self, list_control, options, kind):
         index = list_control.getSelectedPosition()
         if index < 0 or index >= len(options):
@@ -117,6 +148,30 @@ class LocaleSelect(BaseWindow):
             locale_playback.set_catalog_subtitle(self.catalog, value)
         self._mark_selected(list_control, value)
 
+    def _select_keyword_mode(self):
+        if self.catalog != "anime":
+            return
+        if not playback_streams.keyword_mode_active():
+            return
+
+        index = self.keyword_list.getSelectedPosition()
+        if index < 0 or index >= len(self._keyword_options):
+            return
+
+        _label, value = self._keyword_options[index]
+        if value == playback_streams.KEYWORD_CUSTOM:
+            if not playback_streams.prompt_custom_subtitle_keyword():
+                self._refresh_anime_stream_properties()
+                return
+            if not playback_streams.get_custom_subtitle_keyword():
+                self._refresh_anime_stream_properties()
+                return
+            self._keyword_options = playback_streams.keyword_filter_options()
+            self._ensure_list_populated(self.keyword_list, self._keyword_options)
+
+        playback_streams.set_subtitle_keyword_mode(value)
+        self._mark_selected(self.keyword_list, value)
+
     def _switch_catalog(self, new_catalog):
         new_catalog = catalog_profiles.normalize_catalog(new_catalog)
         if new_catalog == self.catalog:
@@ -124,6 +179,7 @@ class LocaleSelect(BaseWindow):
         self.catalog = new_catalog
         self._update_catalog_properties()
         self._refresh_catalog_state()
+        self._update_track_filter_navigation()
 
     def _reset_catalog(self):
         locale_playback.reset_catalog_locale(self.catalog)
@@ -146,10 +202,14 @@ class LocaleSelect(BaseWindow):
 
         if control_id == self.USE_KODI_TOGGLE:
             self._toggle_use_kodi()
+        elif control_id == self.KEYWORD_TOGGLE:
+            self._toggle_track_filter()
         elif control_id == self.AUDIO_LIST:
             self._select_from_list(self.audio_list, self._audio_options, "audio")
         elif control_id == self.SUBTITLE_LIST:
             self._select_from_list(self.subtitle_list, self._subtitle_options, "subtitle")
+        elif control_id == self.KEYWORD_LIST:
+            self._select_keyword_mode()
         elif control_id in self.CATALOG_CONTROLS:
             self._switch_catalog(self.CATALOG_CONTROLS[control_id])
         elif control_id == self.RESET_CONTROL:
@@ -158,10 +218,6 @@ class LocaleSelect(BaseWindow):
             self._apply_anime_preset("sub")
         elif control_id == self.DUB_PRESET_CONTROL:
             self._apply_anime_preset("dub")
-        elif control_id == self.KEYWORD_CONTROL:
-            self._cycle_subtitle_keyword()
-        elif control_id == self.CUSTOM_KEYWORD_CONTROL:
-            self._edit_custom_subtitle_keyword()
         elif control_id == self.CLOSE_CONTROL:
             self.close()
 

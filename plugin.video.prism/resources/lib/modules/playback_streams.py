@@ -1,4 +1,4 @@
-"""Per-stream audio/subtitle selection during playback (anime keyword/dub subs)."""
+"""Per-stream subtitle selection during playback (anime track name filter)."""
 from __future__ import annotations
 
 import time
@@ -104,6 +104,15 @@ def keyword_mode_active(mode: str | None = None) -> bool:
     return (mode or get_subtitle_keyword_mode()) != KEYWORD_OFF
 
 
+def keyword_filter_options() -> tuple[tuple[str, str], ...]:
+    """Return (label, mode) pairs for the locale picker (excludes Off)."""
+    return tuple(
+        (subtitle_keyword_label(mode), mode)
+        for mode in KEYWORD_MODES
+        if mode != KEYWORD_OFF
+    )
+
+
 def reset_anime_stream_settings() -> None:
     set_subtitle_keyword_mode(KEYWORD_OFF)
     set_custom_subtitle_keyword("")
@@ -141,7 +150,7 @@ def _get_player_properties(player_id: int) -> dict[str, Any]:
         "Player.GetProperties",
         {
             "playerid": player_id,
-            "properties": ["subtitles", "audiostreams", "currentsubtitle", "currentaudiostream"],
+            "properties": ["subtitles", "currentsubtitle"],
         },
     )
     return result if isinstance(result, dict) else {}
@@ -176,36 +185,22 @@ def _preferred_subtitle_code(catalog: str) -> str | None:
     return _language_code(value)
 
 
-def _preferred_audio_code(catalog: str) -> str | None:
-    if locale_playback.uses_kodi_defaults(catalog):
-        value = locale_playback.get_kodi_setting_value(locale_playback.KODI_AUDIO_SETTING)
-    else:
-        value = locale_playback.get_catalog_audio(catalog)
-    return _language_code(value)
-
-
-def _current_audio_language(player: xbmc.Player, audio_streams: list[dict]) -> str | None:
-    try:
-        index = player.getAudioStream()
-    except RuntimeError:
-        index = None
-    if index is None:
-        props = _get_player_properties(_active_video_player_id())
-        current = props.get("currentaudiostream")
-        if isinstance(current, dict):
-            return (current.get("language") or "").lower() or None
-        return None
-    if 0 <= index < len(audio_streams):
-        return (audio_streams[index].get("language") or "").lower() or None
-    return None
+def _kodi_stream_index(stream: dict, *, fallback: int | None = None) -> int:
+    """Return the index Kodi expects for setSubtitleStream."""
+    index = stream.get("index")
+    if index is not None:
+        return int(index)
+    if fallback is not None:
+        return int(fallback)
+    return 0
 
 
 def _find_keyword_stream(subtitle_streams: list[dict], keywords: tuple[str, ...]) -> int | None:
-    for index, stream in enumerate(subtitle_streams):
+    for position, stream in enumerate(subtitle_streams):
         if not isinstance(stream, dict):
             continue
         if _subtitle_name_matches_keywords(stream.get("name") or "", keywords):
-            return index
+            return _kodi_stream_index(stream, fallback=position)
     return None
 
 
@@ -213,13 +208,43 @@ def _find_language_stream(subtitle_streams: list[dict], language_code: str | Non
     if not language_code:
         return None
     if language_code == "forced":
-        for index, stream in enumerate(subtitle_streams):
+        for position, stream in enumerate(subtitle_streams):
             if isinstance(stream, dict) and stream.get("isforced"):
-                return index
+                return _kodi_stream_index(stream, fallback=position)
         return None
-    for index, stream in enumerate(subtitle_streams):
+    for position, stream in enumerate(subtitle_streams):
         if isinstance(stream, dict) and (stream.get("language") or "").lower() == language_code:
-            return index
+            return _kodi_stream_index(stream, fallback=position)
+    return None
+
+
+def _catalog_subtitle_setting(catalog: str) -> str:
+    if locale_playback.uses_kodi_defaults(catalog):
+        value = locale_playback.get_kodi_setting_value(locale_playback.KODI_SUBTITLE_SETTING)
+    else:
+        value = locale_playback.get_catalog_subtitle(catalog)
+    return (value or "").strip().lower()
+
+
+def _pick_preferred_subtitle_stream(
+    subtitle_streams: list[dict],
+    *,
+    catalog: str,
+) -> int | None:
+    """Pick a stream from Preferred Subtitle (language, forced, default track)."""
+    if _catalog_subtitle_setting(catalog) == "none":
+        return None
+
+    preferred = _preferred_subtitle_code(catalog)
+    match = _find_language_stream(subtitle_streams, preferred)
+    if match is not None:
+        return match
+
+    for position, stream in enumerate(subtitle_streams):
+        if isinstance(stream, dict) and stream.get("isdefault"):
+            return _kodi_stream_index(stream, fallback=position)
+    if subtitle_streams and isinstance(subtitle_streams[0], dict):
+        return _kodi_stream_index(subtitle_streams[0], fallback=0)
     return None
 
 
@@ -228,7 +253,6 @@ def _pick_subtitle_stream(
     *,
     catalog: str,
     keyword_mode: str,
-    active_audio_language: str | None = None,
 ) -> int | None:
     if not subtitle_streams:
         return None
@@ -238,48 +262,12 @@ def _pick_subtitle_stream(
         match = _find_keyword_stream(subtitle_streams, keywords)
         if match is not None:
             return match
-        # Dub watch: don't fall back to dialogue subs when only keyword tracks are wanted.
-        if keyword_mode_active(keyword_mode) and (active_audio_language or "").lower() == "eng":
-            if _preferred_subtitle_code(catalog) is None:
-                return None
 
-    preferred = _preferred_subtitle_code(catalog)
-    match = _find_language_stream(subtitle_streams, preferred)
-    if match is not None:
-        return match
-
-    for index, stream in enumerate(subtitle_streams):
-        if isinstance(stream, dict) and stream.get("isdefault"):
-            return index
-    return 0
-
-
-def _should_show_subtitles(
-    *,
-    catalog: str,
-    subtitle_streams: list[dict],
-    active_audio_language: str | None,
-    keyword_mode: str,
-) -> bool:
-    keywords = _keywords_for_mode(keyword_mode)
-    if keywords and _find_keyword_stream(subtitle_streams, keywords) is not None:
-        return True
-
-    preferred_sub = _preferred_subtitle_code(catalog)
-    if preferred_sub is None:
-        return False
-
-    preferred_audio = _preferred_audio_code(catalog)
-    active_audio = active_audio_language or preferred_audio
-
-    if active_audio == "jpn":
-        return True
-
-    return preferred_sub is not None
+    return _pick_preferred_subtitle_stream(subtitle_streams, catalog=catalog)
 
 
 def apply_anime_streams(player: xbmc.Player, *, catalog: str = "anime") -> None:
-    """Select keyword-matched / dub subtitle streams after playback starts."""
+    """Select keyword-matched subtitle streams after playback starts (audio via locale JSON-RPC)."""
     from resources.lib.modules.catalog_profiles import normalize_catalog
 
     if normalize_catalog(catalog) != "anime":
@@ -290,48 +278,43 @@ def apply_anime_streams(player: xbmc.Player, *, catalog: str = "anime") -> None:
         return
 
     subtitle_streams: list[dict] = []
-    audio_streams: list[dict] = []
 
-    for _attempt in range(8):
+    for _attempt in range(12):
         if not player.isPlayingVideo():
             return
         props = _get_player_properties(_active_video_player_id())
         subtitle_streams = [
             row for row in (props.get("subtitles") or []) if isinstance(row, dict)
         ]
-        audio_streams = [
-            row for row in (props.get("audiostreams") or []) if isinstance(row, dict)
-        ]
-        if subtitle_streams or audio_streams:
+        if subtitle_streams:
             break
-        time.sleep(0.25)
+        time.sleep(0.5)
 
-    if not subtitle_streams and not audio_streams:
-        g.log("Playback streams: no embedded streams reported by Kodi", "debug")
+    if not subtitle_streams:
+        g.log("Playback streams: no embedded subtitle streams reported by Kodi", "debug")
         return
 
-    active_audio = _current_audio_language(player, audio_streams)
-    show_subs = _should_show_subtitles(
-        catalog=catalog,
-        subtitle_streams=subtitle_streams,
-        active_audio_language=active_audio,
-        keyword_mode=keyword_mode,
+    g.log(
+        "Playback streams: "
+        + ", ".join(
+            f"{row.get('index')}:{(row.get('name') or '')!r}/{(row.get('language') or '')}"
+            for row in subtitle_streams
+            if isinstance(row, dict)
+        ),
+        "debug",
     )
-
-    try:
-        player.showSubtitles(show_subs)
-    except RuntimeError:
-        pass
-
-    if not show_subs:
-        return
 
     stream_index = _pick_subtitle_stream(
         subtitle_streams,
         catalog=catalog,
         keyword_mode=keyword_mode,
-        active_audio_language=active_audio,
     )
+
+    try:
+        player.showSubtitles(stream_index is not None)
+    except RuntimeError:
+        pass
+
     if stream_index is None:
         return
 

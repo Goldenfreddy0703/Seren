@@ -85,6 +85,7 @@
 				<label>$ADDON[plugin.video.prism 30880]</label>
 				<altlabel>$ADDON[plugin.video.prism 30881]</altlabel>
 				<usealttexture>String.IsEqual(Window().Property(locale.usekodi),True)</usealttexture>
+				<onup condition="String.IsEqual(Window().Property(profile.catalog),anime) + String.IsEqual(Window().Property(locale.trackfilter.enabled),True)">10000</onup>
 				<onup>6001</onup>
 				<ondown>8000</ondown>
 				<onleft>6101</onleft>
@@ -94,9 +95,9 @@
 
 		<!-- Audio -->
 		<control type="group">
-			<width>660</width>
+			<width>670</width>
 			<left>20</left>
-			<height>760</height>
+			<height>795</height>
 			<top>220</top>
 
 			<control type="image">
@@ -107,7 +108,7 @@
 			<control type="label">
 				<top>10</top>
 				<left>40</left>
-				<width>580</width>
+				<width>590</width>
 				<height>50</height>
 				<font>font12</font>
 				<textcolor>FFFFFFFF</textcolor>
@@ -119,7 +120,7 @@
 				<left>10</left>
 				<top>70</top>
 				<width>20</width>
-				<height>670</height>
+				<height>705</height>
 				<onleft>6200</onleft>
 				<onright>8000</onright>
 				<onup>6200</onup>
@@ -133,8 +134,8 @@
 			<control type="list" id="8000">
 				<left>40</left>
 				<top>60</top>
-				<width>580</width>
-				<height>680</height>
+				<width>590</width>
+				<height>715</height>
 				<onleft>8111</onleft>
 				<onright>9111</onright>
 				<onup>6200</onup>
@@ -146,7 +147,7 @@
 					<control type="label">
 						<top>10</top>
 						<left>10</left>
-						<width>540</width>
+						<width>550</width>
 						<height>50</height>
 						<font>font12</font>
 						<textcolor>66FFFFFF</textcolor>
@@ -158,7 +159,7 @@
 					<control type="label">
 						<top>10</top>
 						<left>10</left>
-						<width>540</width>
+						<width>550</width>
 						<height>50</height>
 						<font>font12</font>
 						<textcolor>$INFO[Window().Property(settings.color)]</textcolor>
@@ -173,7 +174,7 @@
 					<control type="image">
 						<top>8</top>
 						<left>0</left>
-						<width>560</width>
+						<width>570</width>
 						<height>52</height>
 						<texture>white.png</texture>
 						<colordiffuse>33FFFFFF</colordiffuse>
@@ -181,7 +182,7 @@
 					<control type="label">
 						<top>10</top>
 						<left>10</left>
-						<width>540</width>
+						<width>550</width>
 						<height>50</height>
 						<font>font12</font>
 						<textcolor>FFFFFFFF</textcolor>
@@ -193,7 +194,7 @@
 					<control type="label">
 						<top>10</top>
 						<left>10</left>
-						<width>540</width>
+						<width>550</width>
 						<height>50</height>
 						<font>font12</font>
 						<textcolor>$INFO[Window().Property(settings.color)]</textcolor>
@@ -208,9 +209,9 @@
 
 		<!-- Subtitles -->
 		<control type="group">
-			<width>660</width>
-			<left>700</left>
-			<height>760</height>
+			<width>670</width>
+			<left>710</left>
+			<height>795</height>
 			<top>220</top>
 
 			<control type="image">
@@ -221,7 +222,7 @@
 			<control type="label">
 				<top>10</top>
 				<left>40</left>
-				<width>580</width>
+				<width>590</width>
 				<height>50</height>
 				<font>font12</font>
 				<textcolor>FFFFFFFF</textcolor>
@@ -233,7 +234,7 @@
 				<left>10</left>
 				<top>70</top>
 				<width>20</width>
-				<height>670</height>
+				<height>705</height>
 				<onleft>8000</onleft>
 				<onright>9000</onright>
 				<onup>6200</onup>
@@ -247,8 +248,8 @@
 			<control type="list" id="9000">
 				<left>40</left>
 				<top>60</top>
-				<width>580</width>
-				<height>680</height>
+				<width>590</width>
+				<height>715</height>
 				<onleft>9111</onleft>
 				<onright>6101</onright>
 				<onup>6200</onup>
@@ -260,7 +261,7 @@
 					<control type="label">
 						<top>10</top>
 						<left>10</left>
-						<width>540</width>
+						<width>550</width>
 						<height>50</height>
 						<font>font12</font>
 						<textcolor>66FFFFFF</textcolor>
@@ -272,7 +273,7 @@
 					<control type="label">
 						<top>10</top>
 						<left>10</left>
-						<width>540</width>
+						<width>550</width>
 						<height>50</height>
 						<font>font12</font>
 						<textcolor>$INFO[Window().Property(settings.color)]</textcolor>
@@ -287,7 +288,7 @@
 					<control type="image">
 						<top>8</top>
 						<left>0</left>
-						<width>560</width>
+						<width>570</width>
 						<height>52</height>
 						<texture>white.png</texture>
 						<colordiffuse>33FFFFFF</colordiffuse>
@@ -295,7 +296,7 @@
 					<control type="label">
 						<top>10</top>
 						<left>10</left>
-						<width>540</width>
+						<width>550</width>
 						<height>50</height>
 						<font>font12</font>
 						<textcolor>FFFFFFFF</textcolor>
@@ -307,7 +308,7 @@
 					<control type="label">
 						<top>10</top>
 						<left>10</left>
-						<width>540</width>
+						<width>550</width>
 						<height>50</height>
 						<font>font12</font>
 						<textcolor>$INFO[Window().Property(settings.color)]</textcolor>
@@ -341,7 +342,7 @@
 				<!-- Card (anime — includes sub/dub presets) -->
 				<control type="image">
 					<width>500</width>
-					<height>630</height>
+					<height>585</height>
 					<texture>white.png</texture>
 					<colordiffuse>99362e33</colordiffuse>
 					<visible>String.IsEqual(Window().Property(profile.catalog),anime)</visible>
@@ -351,6 +352,8 @@
 					<top>25</top>
 					<onleft>9000</onleft>
 					<onup>6200</onup>
+					<ondown condition="String.IsEqual(Window().Property(profile.catalog),anime) + String.IsEqual(Window().Property(locale.trackfilter.enabled),True)">10000</ondown>
+					<ondown>6200</ondown>
 					<itemgap>10</itemgap>
 
 					<control type="button" id="6101">
@@ -415,27 +418,20 @@
 						<onleft>9000</onleft>
 					</control>
 
-					<control type="button" id="6107">
+					<control type="togglebutton" id="6210">
 						<height>55</height>
 						<textoffsetx>20</textoffsetx>
 						<texturefocus colordiffuse="$INFO[Window().Property(settings.color)]">white.png</texturefocus>
 						<texturenofocus colordiffuse="22000000">white.png</texturenofocus>
-						<label>$ADDON[plugin.video.prism 31063]: $INFO[Window().Property(locale.subtitlekeyword.label)]</label>
+						<alttexturenofocus colordiffuse="22000000">white.png</alttexturenofocus>
+						<alttexturefocus colordiffuse="$INFO[Window().Property(settings.color)]">white.png</alttexturefocus>
+						<label>$ADDON[plugin.video.prism 31076]</label>
+						<altlabel>$ADDON[plugin.video.prism 31077]</altlabel>
+						<usealttexture>String.IsEqual(Window().Property(locale.trackfilter.enabled),True)</usealttexture>
 						<align>right</align>
+						<aligny>center</aligny>
 						<textcolor>FFFFFFFF</textcolor>
 						<visible>String.IsEqual(Window().Property(profile.catalog),anime)</visible>
-						<onleft>9000</onleft>
-					</control>
-
-					<control type="button" id="6109">
-						<height>55</height>
-						<textoffsetx>20</textoffsetx>
-						<texturefocus colordiffuse="$INFO[Window().Property(settings.color)]">white.png</texturefocus>
-						<texturenofocus colordiffuse="22000000">white.png</texturenofocus>
-						<label>$ADDON[plugin.video.prism 31065]: $INFO[Window().Property(locale.subtitlekeyword.custom)]</label>
-						<align>right</align>
-						<textcolor>FFFFFFFF</textcolor>
-						<visible>String.IsEqual(Window().Property(profile.catalog),anime) + String.IsEqual(Window().Property(locale.subtitlekeyword),custom)</visible>
 						<onleft>9000</onleft>
 					</control>
 
@@ -461,6 +457,7 @@
 						<textcolor>FFFFFFFF</textcolor>
 						<onleft>9000</onleft>
 						<onup>6104</onup>
+						<ondown condition="String.IsEqual(Window().Property(profile.catalog),anime) + String.IsEqual(Window().Property(locale.trackfilter.enabled),True)">10000</ondown>
 						<ondown>6200</ondown>
 					</control>
 				</control>
@@ -492,6 +489,118 @@
 					<colordiffuse>$INFO[Window().Property(settings.color)]</colordiffuse>
 					<visible>String.IsEqual(Window().Property(profile.catalog),anime)</visible>
 				</control>
+			</control>
+		</control>
+
+		<!-- Track name filter list (anime, below close) -->
+		<control type="group">
+			<top>715</top>
+			<right>20</right>
+			<width>500</width>
+			<height>300</height>
+			<visible>String.IsEqual(Window().Property(profile.catalog),anime) + String.IsEqual(Window().Property(locale.trackfilter.enabled),True)</visible>
+
+			<control type="image">
+				<texture>white.png</texture>
+				<colordiffuse>99362e33</colordiffuse>
+			</control>
+
+			<control type="label">
+				<top>8</top>
+				<left>20</left>
+				<width>460</width>
+				<height>36</height>
+				<font>font12</font>
+				<textcolor>FFFFFFFF</textcolor>
+				<align>left</align>
+				<label>[B][UPPERCASE]$ADDON[plugin.video.prism 31067][/UPPERCASE][/B]</label>
+			</control>
+
+			<control type="label">
+				<top>40</top>
+				<left>20</left>
+				<width>460</width>
+				<height>44</height>
+				<font>font10</font>
+				<textcolor>99FFFFFF</textcolor>
+				<align>left</align>
+				<wrapmultiline>true</wrapmultiline>
+				<label>$ADDON[plugin.video.prism 31078]</label>
+			</control>
+
+			<control type="list" id="10000">
+				<left>20</left>
+				<top>105</top>
+				<width>460</width>
+				<height>180</height>
+				<onleft>9000</onleft>
+				<onright>6001</onright>
+				<onup>6001</onup>
+				<ondown>6200</ondown>
+				<orientation>vertical</orientation>
+				<scrolltime>0</scrolltime>
+
+				<itemlayout height="60">
+					<control type="label">
+						<top>10</top>
+						<left>10</left>
+						<width>420</width>
+						<height>50</height>
+						<font>font12</font>
+						<textcolor>66FFFFFF</textcolor>
+						<align>left</align>
+						<aligny>center</aligny>
+						<label>[B][UPPERCASE]$INFO[ListItem.Label][/UPPERCASE][/B]</label>
+						<visible>String.IsEqual(ListItem.Property(value),False)</visible>
+					</control>
+					<control type="label">
+						<top>10</top>
+						<left>10</left>
+						<width>420</width>
+						<height>50</height>
+						<font>font12</font>
+						<textcolor>$INFO[Window().Property(settings.color)]</textcolor>
+						<align>left</align>
+						<aligny>center</aligny>
+						<label>[B][UPPERCASE]$INFO[ListItem.Label][/UPPERCASE][/B]</label>
+						<visible>String.IsEqual(ListItem.Property(value),True)</visible>
+					</control>
+				</itemlayout>
+
+				<focusedlayout height="60">
+					<control type="image">
+						<top>8</top>
+						<left>0</left>
+						<width>440</width>
+						<height>52</height>
+						<texture>white.png</texture>
+						<colordiffuse>33FFFFFF</colordiffuse>
+					</control>
+					<control type="label">
+						<top>10</top>
+						<left>10</left>
+						<width>420</width>
+						<height>50</height>
+						<font>font12</font>
+						<textcolor>FFFFFFFF</textcolor>
+						<align>left</align>
+						<aligny>center</aligny>
+						<label>[B][UPPERCASE]$INFO[ListItem.Label][/UPPERCASE][/B]</label>
+						<visible>String.IsEqual(ListItem.Property(value),False)</visible>
+					</control>
+					<control type="label">
+						<top>10</top>
+						<left>10</left>
+						<width>420</width>
+						<height>50</height>
+						<font>font12</font>
+						<textcolor>$INFO[Window().Property(settings.color)]</textcolor>
+						<align>left</align>
+						<aligny>center</aligny>
+						<label>[B][UPPERCASE]$INFO[ListItem.Label][/UPPERCASE][/B]</label>
+						<visible>String.IsEqual(ListItem.Property(value),True)</visible>
+					</control>
+				</focusedlayout>
 			</control>
 		</control>
 	</controls>
