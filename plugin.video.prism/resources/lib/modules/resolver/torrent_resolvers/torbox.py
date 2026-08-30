@@ -26,6 +26,12 @@ class TorBoxResolver(TorrentResolverBase):
             ("id", "id", None),
         )
 
+    def _get_folder_details(self, torrent, item_information):
+        cached_id = torrent.get("_prism_torrent_id")
+        if cached_id:
+            self.torrent_id = cached_id
+        return super()._get_folder_details(torrent, item_information)
+
     def _fetch_source_files(self, torrent, item_information):
         """
         Fetch source files from TorBox for the given torrent.
@@ -43,10 +49,12 @@ class TorBoxResolver(TorrentResolverBase):
                 return []
 
             self.torrent_id = torrent_data.get("torrent_id")
+            if self.torrent_id is not None:
+                torrent["_prism_torrent_id"] = self.torrent_id
             files = torrent_data.get("files", [])
             
             g.log(f"TorBox: Got {len(files)} files for torrent_id {self.torrent_id}", "debug")
-            
+
             if not files:
                 g.log("TorBox: No files found in torrent", "warning")
                 return []

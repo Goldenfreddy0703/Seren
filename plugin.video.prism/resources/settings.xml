@@ -51,6 +51,11 @@
 					<default>false</default>
 					<control type="toggle"/>
 				</setting>
+				<setting id="general.kodiWatchedBridge" type="boolean" label="31080" help="31081">
+					<level>0</level>
+					<default>true</default>
+					<control type="toggle"/>
+				</setting>
 				<setting id="general.genres.endpoint.movies" type="integer" label="30447" help="">
 					<level>0</level>
 					<default>1</default>

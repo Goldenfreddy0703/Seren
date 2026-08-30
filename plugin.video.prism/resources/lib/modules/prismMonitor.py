@@ -48,6 +48,14 @@ class PrismMonitor(xbmc.Monitor):
         g.trigger_widget_refresh(if_playing=False)
 
     def onNotification(self, sender, method, data):
+        if method == "VideoLibrary.OnUpdate":
+            try:
+                from resources.lib.simkl.kodi_watched_bridge import scan_kodi_watched_bridge
+
+                scan_kodi_watched_bridge(force=True, trigger="VideoLibrary.OnUpdate")
+            except Exception:
+                g.log_stacktrace()
+
         if method == "System.OnWake":
             g.log("System.OnWake notification received", "info")
             if not g.wait_for_abort(ONWAKE_NETWORK_UP_DELAY):  # Sleep for 5 seconds to make sure network is up

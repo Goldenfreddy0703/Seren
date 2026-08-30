@@ -885,7 +885,8 @@ class PrismPlayer(xbmc.Player):
                 final_chapter = float(final_chapter.split(',')[-1])
                 if final_chapter >= 90:
                     return final_chapter
-        except: pass
+        except Exception:
+            pass
         return None
 
 

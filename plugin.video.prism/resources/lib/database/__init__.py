@@ -304,6 +304,69 @@ class _connection(metaclass=ABCMeta):
             g.log(query, "error")
 
 
+class KodiMyVideosReadConnection(_connection):
+    """Read-only access to Kodi's MyVideos DB while Kodi holds the write lock."""
+
+    def __init__(self, path, max_lock_retries=5):
+        super().__init__()
+        self.path = path
+        self.max_lock_retries = max_lock_retries
+
+    def _create_connection(self):
+        import sqlite3
+
+        retries = 0
+        delay = 0.05
+        last_lock_error = None
+        uri_path = os.path.normpath(self.path).replace("\\", "/")
+        uri = f"file:///{uri_path}?mode=ro"
+
+        while retries < self.max_lock_retries and not g.abort_requested():
+            try:
+                connection = sqlite3.connect(  # pylint: disable=no-member
+                    uri,
+                    uri=True,
+                    timeout=5,
+                    isolation_level=None,
+                    check_same_thread=False,
+                )
+                connection.row_factory = lambda c, r: {
+                    col[0]: _loads(r[idx]) if isinstance(r[idx], pickletype) else r[idx]
+                    for idx, col in enumerate(c.description)
+                }
+                connection.execute("PRAGMA busy_timeout = 5000")
+                return connection
+            except sqlite3.OperationalError as error:  # pylint: disable=no-member
+                if "database is locked" in str(error) or "unable to open database" in str(error):
+                    last_lock_error = error
+                    g.log(
+                        f"Kodi MyVideos read-only locked; retry ({retries + 1}/{self.max_lock_retries})",
+                        "debug",
+                    )
+                    g.wait_for_abort(delay)
+                    delay = min(delay * 2, 1.0)
+                else:
+                    raise
+            retries += 1
+
+        raise last_lock_error or sqlite3.OperationalError(  # pylint: disable=no-member
+            f"database is locked after {retries} attempts"
+        )
+
+    def _create_cursor(self):
+        return self._connection.cursor()
+
+    def _retry_handler(self, exception):
+        import sqlite3
+
+        if isinstance(exception, sqlite3.OperationalError) and (  # pylint: disable=no-member
+            "database is locked" in str(exception) or "unable to open database" in str(exception)
+        ):
+            g.wait_for_abort(0.05)
+        else:
+            super()._retry_handler(exception)
+
+
 class SQLiteConnection(_connection):
     def __init__(self, path, max_lock_retries=50):
         super().__init__()

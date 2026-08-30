@@ -26,6 +26,12 @@ class OffCloudResolver(TorrentResolverBase):
             ("link", "link", None),
         )
 
+    def _get_folder_details(self, torrent, item_information):
+        cached_id = torrent.get("_prism_request_id")
+        if cached_id:
+            self.request_id = cached_id
+        return super()._get_folder_details(torrent, item_information)
+
     def _fetch_source_files(self, torrent, item_information):
         try:
             magnet = torrent.get("magnet")
@@ -38,6 +44,8 @@ class OffCloudResolver(TorrentResolverBase):
                 return []
 
             self.request_id = torrent_data.get("request_id")
+            if self.request_id is not None:
+                torrent["_prism_request_id"] = self.request_id
             self._from_cloud_queue = not torrent_data.get("cached", False)
             files = torrent_data.get("files", [])
 

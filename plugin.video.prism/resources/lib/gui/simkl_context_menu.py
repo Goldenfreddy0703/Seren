@@ -1,7 +1,6 @@
 """Simkl context menu — watch history, list status, playback."""
 from __future__ import annotations
 
-import time
 from functools import cached_property
 
 import xbmcgui
@@ -10,8 +9,12 @@ from resources.lib.modules.globals import g
 from resources.lib.database.session import get_sync_database
 from resources.lib.simkl.library_status import (
     apply_local_library_status,
-    apply_local_status_after_watch,
     _library_info,
+)
+from resources.lib.simkl.watch_toggle import (
+    apply_mark_unwatched,
+    apply_mark_watched,
+    finish_library_action,
 )
 from resources.lib.simkl.payloads import (
     info_to_history_payload,
@@ -201,20 +204,7 @@ class SimklContextMenu:
 
     @staticmethod
     def _finish_library_action(item_information, *, refresh_container: bool = True) -> None:
-        """Refresh visible lists after a Simkl Manager edit without a full library sync."""
-        from resources.lib.meta.paint_cache import clear_session_page_paint_for_item
-        from resources.lib.simkl.library_list_sync import mark_library_catalog_verified
-
-        info = _library_info(item_information)
-        hub_catalog = library_hub_catalog(info)
-        mark_library_catalog_verified(hub_catalog)
-        if info.get("simkl_id") is not None:
-            clear_session_page_paint_for_item(int(info["simkl_id"]), info.get("mediatype"))
-        if refresh_container:
-            refreshed = g.refresh_visible_container()
-            if not refreshed:
-                g.container_refresh()
-        g.trigger_widget_refresh(if_playing=False)
+        finish_library_action(item_information, refresh_container=refresh_container)
 
     def _rate_item(self, item_information):
         labels = [str(score) for score in range(1, 11)]
@@ -360,94 +350,10 @@ class SimklContextMenu:
         return show_id_from_info(info)
 
     def _mark_watched(self, item_information, silent=False):
-        payload = info_to_history_payload(item_information)
-        response = self.simkl_api.add_to_history(payload)
-
-        if item_information["mediatype"] == "movie":
-            if not self._history_success(response, "movies"):
-                g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30287))
-                return
-            from resources.lib.simkl.library_status import ensure_library_row
-
-            ensure_library_row(item_information)
-            get_sync_database().mark_movie_watched(item_information["simkl_id"])
-        else:
-            if not self._history_success(response, "shows") and not self._history_success(response, "anime"):
-                g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30287))
-                return
-            if item_information["mediatype"] == "episode":
-                show_id = self._get_show_id(item_information)
-                get_sync_database().mark_episode_watched(
-                    show_id,
-                    item_information["season"],
-                    item_information["episode"],
-                )
-            elif item_information["mediatype"] == "season":
-                show_id = self._get_show_id(item_information)
-                get_sync_database().mark_season_watched(
-                    show_id,
-                    item_information["season"],
-                    1,
-                )
-            elif item_information["mediatype"] == "tvshow":
-                get_sync_database().mark_show_watched(item_information["simkl_id"], 1)
-
-        resolved = resolved_watched_status_from_response(response, item_information)
-        if resolved:
-            apply_local_library_status(item_information, resolved, touch_last_watched=True)
-        else:
-            apply_local_status_after_watch(item_information)
-
-        show_id = self._get_show_id(item_information)
-        mediatype = item_information.get("mediatype")
-        if show_id is not None and mediatype == "tvshow":
-            try:
-                get_sync_database().refresh_show_episode_watch_state(int(show_id), force=True)
-            except Exception:
-                g.log_stacktrace()
-
-        g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30288))
-        if not silent:
-            if show_id is not None:
-                g.set_runtime_setting(f"episode_watch_refresh_cooldown_{int(show_id)}", str(int(time.time())))
-            self._finish_library_action(item_information)
+        apply_mark_watched(item_information, silent=silent, refresh=not silent)
 
     def _mark_unwatched(self, item_information):
-        payload = info_to_history_payload(item_information)
-        response = self.simkl_api.remove_from_history(payload)
-
-        if item_information["mediatype"] == "movie":
-            if not self._remove_success(response, "movies"):
-                g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30287))
-                return
-            get_sync_database().mark_movie_unwatched(item_information["simkl_id"])
-        else:
-            if not self._remove_success(response, "episodes"):
-                g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30287))
-                return
-            if item_information["mediatype"] == "episode":
-                show_id = self._get_show_id(item_information)
-                get_sync_database().mark_episode_unwatched(
-                    show_id,
-                    item_information["season"],
-                    item_information["episode"],
-                )
-            elif item_information["mediatype"] == "season":
-                show_id = self._get_show_id(item_information)
-                get_sync_database().mark_season_watched(
-                    show_id,
-                    item_information["season"],
-                    0,
-                )
-            elif item_information["mediatype"] == "tvshow":
-                get_sync_database().mark_show_watched(item_information["simkl_id"], 0)
-
-        get_sync_database().remove_bookmark(item_information["simkl_id"])
-        show_id = self._get_show_id(item_information)
-        if show_id is not None:
-            g.set_runtime_setting(f"episode_watch_refresh_cooldown_{int(show_id)}", str(int(time.time())))
-        self._finish_library_action(item_information)
-        g.notification(f"{g.ADDON_NAME}: {g.get_language_string(30286)}", g.get_language_string(30289))
+        apply_mark_unwatched(item_information, silent=False, refresh=True)
 
     def _add_to_library(self, item_information):
         self._change_list_status(item_information, exclude_current=False, dialog_string_id=30762)

@@ -924,15 +924,15 @@ class GlobalVariables:
         self.SEARCH_HISTORY_DB_PATH = tools.translate_path(os.path.join(self.ADDON_USERDATA_PATH, "search.db"))
         self.SKINS_DB_PATH = tools.translate_path(os.path.join(self.ADDON_USERDATA_PATH, "skins.db"))
 
-    def get_kodi_video_db_connection(self, max_lock_retries=50):
+    def get_kodi_video_db_connection(self, max_lock_retries=50, read_only=False):
         config = self.get_kodi_video_db_config()
         if config["type"] == "sqlite3":
-            from resources.lib.database import SQLiteConnection
+            from resources.lib.database import KodiMyVideosReadConnection, SQLiteConnection
 
-            return SQLiteConnection(
-                os.path.join(self.KODI_DATABASE_PATH, f"{config['database']}.db"),
-                max_lock_retries=max_lock_retries,
-            )
+            path = os.path.join(self.KODI_DATABASE_PATH, f"{config['database']}.db")
+            if read_only:
+                return KodiMyVideosReadConnection(path, max_lock_retries=max_lock_retries)
+            return SQLiteConnection(path, max_lock_retries=max_lock_retries)
         elif config["type"] == "mysql":
             from resources.lib.database import MySqlConnection
 
@@ -1007,17 +1007,32 @@ class GlobalVariables:
         return result
 
     def clear_kodi_bookmarks(self, max_lock_retries=5):
-        """Remove stale Kodi-native bookmarks for Prism plugin URLs (fast-fail by default)."""
+        """Remove stale Kodi-native resume bookmarks for Prism plugin URLs (not watched-only rows)."""
         import sqlite3
 
         try:
             with self.get_kodi_video_db_connection(max_lock_retries=max_lock_retries) as video_database:
-                if file_ids := [
-                    str(i["idFile"])
-                    for i in video_database.fetchall(
-                        "SELECT * FROM files WHERE strFilename LIKE '%plugin.video.prism%'"
+                config = self.get_kodi_video_db_config()
+                if config.get("type") == "mysql":
+                    rows = video_database.fetchall(
+                        """
+                        SELECT DISTINCT f.idFile
+                        FROM files f
+                        INNER JOIN bookmark b ON b.idFile = f.idFile
+                        WHERE f.strFilename LIKE %s
+                        """,
+                        ("%plugin.video.prism%",),
                     )
-                ]:
+                else:
+                    rows = video_database.fetchall(
+                        """
+                        SELECT DISTINCT f.idFile
+                        FROM files f
+                        INNER JOIN bookmark b ON b.idFile = f.idFile
+                        WHERE f.strFilename LIKE '%plugin.video.prism%'
+                        """
+                    )
+                if file_ids := [str(i["idFile"]) for i in rows]:
                     video_database.execute_sql(
                         [
                             f"DELETE FROM {table} WHERE idFile IN ({','.join(file_ids)})"
@@ -1025,7 +1040,7 @@ class GlobalVariables:
                         ]
                     )
         except sqlite3.OperationalError:
-            g.log("Skipping Kodi bookmark cleanup; video database is locked", "debug")
+            self.log("Skipping Kodi bookmark cleanup; video database is locked", "debug")
 
     # region runtime settings
     def set_runtime_setting(self, setting_id, value):

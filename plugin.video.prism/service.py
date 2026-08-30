@@ -41,6 +41,23 @@ def _run_long_life_manager() -> None:
         g.log_stacktrace()
 
 
+def _run_kodi_watched_bridge_poller(monitor: PrismMonitor) -> None:
+    """Poll MyVideos for Kodi native watched toggles on Prism URLs (independent of maintenance cycle)."""
+    try:
+        from resources.lib.simkl.kodi_watched_bridge import bridge_enabled, scan_kodi_watched_bridge
+
+        while not monitor.abortRequested():
+            if bridge_enabled():
+                try:
+                    scan_kodi_watched_bridge(trigger="poller")
+                except Exception:
+                    g.log_stacktrace()
+            if monitor.waitForAbort(2):
+                break
+    except Exception:
+        g.log_stacktrace()
+
+
 g.init_globals(sys.argv)
 from resources.lib.common.backup_restore import apply_deferred_db_restore
 
@@ -65,6 +82,7 @@ except Exception:
 
 monitor = PrismMonitor()
 _long_life_thread: threading.Thread | None = None
+_bridge_poller_thread: threading.Thread | None = None
 try:
     _long_life_thread = threading.Thread(
         target=_run_long_life_manager,
@@ -72,6 +90,13 @@ try:
         name="prism-long-life",
     )
     _long_life_thread.start()
+    _bridge_poller_thread = threading.Thread(
+        target=_run_kodi_watched_bridge_poller,
+        args=(monitor,),
+        daemon=True,
+        name="prism-kodi-watched-bridge",
+    )
+    _bridge_poller_thread.start()
 
     do_update_news()
     validate_timezone_detected()
@@ -95,6 +120,7 @@ try:
             from resources.lib.discover.browse_catalog_seed import process_idle_browse_catalog_seed
             from resources.lib.meta.enrichment import MetaEnrichmentQueue
             from resources.lib.modules.cache_maintenance import process_idle_deferred_vacuum
+            from resources.lib.simkl.kodi_watched_bridge import bridge_enabled, scan_kodi_watched_bridge
 
             MetaEnrichmentQueue.process_idle()
             if monitor.abortRequested():
@@ -103,8 +129,10 @@ try:
             if monitor.abortRequested():
                 break
             process_idle_deferred_vacuum()
+            if bridge_enabled():
+                scan_kodi_watched_bridge(trigger="service")
         except Exception:
-            pass
+            g.log_stacktrace()
 
         if monitor.abortRequested():
             break

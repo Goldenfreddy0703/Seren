@@ -72,6 +72,17 @@ class TorrentResolverBase(ApiBase):
     def _filter_non_playable_files(folder_details):
         return [i for i in folder_details if source_utils.is_file_ext_valid(i["path"])]
 
+    def _get_folder_details(self, torrent, item_information):
+        """Fetch torrent files once; reuse the full list for manual pack selection retries."""
+        cached = torrent.get("_prism_cached_files")
+        if cached:
+            return list(cached)
+
+        folder_details = self._normalize_item(self._fetch_source_files(torrent, item_information))
+        if folder_details:
+            torrent["_prism_cached_files"] = list(folder_details)
+        return folder_details
+
     def _user_selection(self, folder_details):
         folder_details = self._filter_non_playable_files(folder_details)
         folder_details = sorted(folder_details, key=lambda k: k['path'].split("/")[-1])
@@ -100,7 +111,7 @@ class TorrentResolverBase(ApiBase):
         return filtered_files
 
     def _multi_pack_resolve(self, item_information, torrent):
-        folder_details = self._normalize_item(self._fetch_source_files(torrent, item_information))
+        folder_details = self._get_folder_details(torrent, item_information)
         if self.pack_select:
             return self._finalize_resolving(
                 item_information,
@@ -109,6 +120,8 @@ class TorrentResolverBase(ApiBase):
                 folder_details,
             )
         folder_details = self._sort_and_filter_files(folder_details, item_information)
+        if len(folder_details) == 1:
+            return self._finalize_resolving(item_information, torrent, folder_details[0], folder_details)
         best_match = source_utils.get_best_episode_match("path", folder_details, item_information)
         return self._finalize_resolving(item_information, torrent, best_match, folder_details)
 
@@ -123,17 +136,18 @@ class TorrentResolverBase(ApiBase):
             "title": item_information.get("info").get("title"),
         }
 
-        folder_details = self._sort_and_filter_files(
-            self._normalize_item(self._fetch_source_files(torrent, item_information)), item_information, True
-        )
-
         if self.pack_select:
+            folder_details = self._get_folder_details(torrent, item_information)
             return self._finalize_resolving(
                 item_information,
                 torrent,
                 self._user_selection(folder_details),
                 folder_details,
             )
+
+        folder_details = self._sort_and_filter_files(
+            self._get_folder_details(torrent, item_information), item_information, True
+        )
 
         if m2ts_check := self._try_m2ts_resolving(folder_details):
             return self._finalize_resolving(item_information, torrent, folder_details[0], [m2ts_check])

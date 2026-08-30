@@ -976,6 +976,39 @@ def ensure_season_title(info: dict[str, Any]) -> None:
     info.setdefault("sorttitle", title)
 
 
+def _info_has_synopsis(info: dict[str, Any]) -> bool:
+    for key in ("plot", "overview", "description"):
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    return False
+
+
+def is_anime_episode_info(info: dict[str, Any]) -> bool:
+    if (info or {}).get("mediatype") != "episode":
+        return False
+    if info.get("catalog") == "anime":
+        return True
+    tvshow = info.get("tvshow")
+    if isinstance(tvshow, dict) and tvshow.get("catalog") == "anime":
+        return True
+    for key in ("mal_id", "mal_show_id", "anidb_id", "anilist_id", "anime_episode", "anime_season"):
+        if info.get(key):
+            return True
+    return False
+
+
+def ensure_anime_episode_plot_placeholder(info: dict[str, Any]) -> None:
+    """Simkl often omits anime episode synopses — give Kodi a readable placeholder."""
+    if not info or not is_anime_episode_info(info) or _info_has_synopsis(info):
+        return
+    from resources.lib.modules.globals import g
+
+    placeholder = g.get_language_string(31079)
+    info["plot"] = placeholder
+    info["overview"] = placeholder
+
+
 def finalize_playback_info(info: dict[str, Any]) -> None:
     """Last pass before Kodi playback / a4kScrapers — fill gaps Simkl already gave us."""
     if not info:
@@ -1000,3 +1033,4 @@ def finalize_playback_info(info: dict[str, Any]) -> None:
     ensure_episode_title(info)
     ensure_season_title(info)
     promote_ratings_for_display(info)
+    ensure_anime_episode_plot_placeholder(info)

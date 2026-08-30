@@ -175,7 +175,6 @@ def dispatch(params):
         item_information = tools.get_item_information(action_args)
         smart_play = SmartPlay(item_information)
         background = None
-        resolver_window = None
         g.set_runtime_setting("playback.pipeline_busy", True)
 
         try:
@@ -190,7 +189,11 @@ def dispatch(params):
                 )
                 return None
 
-            # workaround for widgets not generating a playlist on playback request
+            # Context menu rescrape/source-select must not be short-circuited by SmartPlay playlist handling.
+            manual_playback_override = (
+                source_select_param in ("true", "false")
+                or overwrite_cache
+            )
             if tmdb_external_play:
                 if (
                     smart_url_arg
@@ -208,6 +211,8 @@ def dispatch(params):
                     }
                     item_information["external_play_url_extras"] = external_url_extras
                     smart_play.prepare_external_playlist(external_url_extras)
+                play_list = False
+            elif manual_playback_override:
                 play_list = False
             else:
                 play_list = smart_play.playlist_present_check(smart_url_arg)
@@ -310,11 +315,6 @@ def dispatch(params):
             try:
                 background.close()
                 del background
-            except (UnboundLocalError, AttributeError):
-                pass
-            try:
-                resolver_window.close()
-                del resolver_window
             except (UnboundLocalError, AttributeError):
                 pass
 
@@ -472,6 +472,15 @@ def dispatch(params):
         from resources.lib.common import tools
 
         SimklContextMenu(tools.get_item_information(action_args))
+
+    elif action == "kodiWatchedSync":
+        from resources.lib.simkl.kodi_watched_bridge import apply_pending_transition
+
+        apply_pending_transition(
+            action_args,
+            watched=params.get("watched") == "1",
+            id_file=params.get("kodi_id_file"),
+        )
 
     elif action == "cacheAssist":
         from resources.lib.modules.cacheAssist import CacheAssistHelper

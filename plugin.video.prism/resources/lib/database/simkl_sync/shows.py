@@ -413,7 +413,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                         self._format_episodes_local(
                             int(simkl_show_id),
                             _season_key(int(simkl_show_id), int(season_num)),
-            )
+                        )
             seasons_need_format = self._seasons_need_format(
                 simkl_show_id,
                 season_num=season,
@@ -2641,20 +2641,20 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         simkl_show_id = int(simkl_show_id)
         now = self._get_aired_cutoff()
         first_unwatched = self.fetchone(
-                f"""
-                SELECT season, number
-                FROM episodes
-                WHERE simkl_show_id = ?
-                  AND season > 0
-                  AND watched = 0
-                  AND (air_date IS NULL OR Datetime(air_date) < Datetime('{now}'))
-                ORDER BY season ASC, number ASC
-                LIMIT 1
-                """,
-                (simkl_show_id,),
-            )
+            f"""
+            SELECT season, number
+            FROM episodes
+            WHERE simkl_show_id = ?
+              AND season > 0
+              AND watched = 0
+              AND (air_date IS NULL OR Datetime(air_date) < Datetime('{now}'))
+            ORDER BY season ASC, number ASC
+            LIMIT 1
+            """,
+            (simkl_show_id,),
+        )
         if not first_unwatched or first_unwatched.get("season") is None or first_unwatched.get("number") is None:
-                return None
+            return None
         return int(first_unwatched["season"]), int(first_unwatched["number"])
 
     def get_watched_episodes(self, page=1, catalog=None):

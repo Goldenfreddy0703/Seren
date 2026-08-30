@@ -5592,3 +5592,18 @@ msgstr "Track name filter - On"
 msgctxt "#31078"
 msgid "Matches track names first. If none match, it uses your Preferred Subtitle setting."
 msgstr "Matches track names first. If none match, it uses your Preferred Subtitle setting."
+
+#: /resources/lib/simkl/field_map.py
+msgctxt "#31079"
+msgid "No episode synopsis is available at this time."
+msgstr "No episode synopsis is available at this time."
+
+#: /resources/settings.xml
+msgctxt "#31080"
+msgid "Sync Kodi Mark as Watched"
+msgstr "Sync Kodi Mark as Watched"
+
+#: /resources/settings.xml
+msgctxt "#31081"
+msgid "When enabled, Prism syncs Kodi's native Mark as Watched menu on Prism lists to Simkl and refreshes the list."
+msgstr "When enabled, Prism syncs Kodi's native Mark as Watched menu on Prism lists to Simkl and refreshes the list."

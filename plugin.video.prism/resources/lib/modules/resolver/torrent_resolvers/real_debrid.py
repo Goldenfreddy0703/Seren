@@ -1,6 +1,5 @@
-from resources.lib.common.source_utils import get_best_episode_match
+from resources.lib.common import source_utils
 from resources.lib.debrid.real_debrid import RealDebrid
-from resources.lib.modules.exceptions import FileIdentification
 from resources.lib.modules.globals import g
 from resources.lib.modules.resolver.torrent_resolvers.base_resolver import (
     TorrentResolverBase,
@@ -26,15 +25,42 @@ class RealDebridResolver(TorrentResolverBase):
             ("selected", "selected", None),
         )
 
-    def _get_selected_files(self, torrent_info):
-        files = [i for i in torrent_info["files"] if i["selected"]]
-        [i.update({"link": torrent_info["links"][idx]}) for idx, i in enumerate(files)]
-        return files
+    def _files_for_picker(self, torrent_info):
+        all_files = torrent_info.get("files") or []
+        links = torrent_info.get("links") or []
+        result = []
+        for idx, file in enumerate(all_files):
+            path = file.get("path") or ""
+            if "sample" in path.lower() or not source_utils.is_file_ext_valid(path):
+                continue
+            if not self.pack_select and not file.get("selected"):
+                continue
+            item = dict(file)
+            if idx < len(links) and links[idx]:
+                item["link"] = links[idx]
+            result.append(item)
+        return result
 
     def _fetch_source_files(self, torrent, item_information):
-        hash_check = self.debrid_module.check_hash(torrent["hash"])[torrent["hash"]]
-        self.torrent_id = hash_check["torrent_id"]
-        return self._get_selected_files(hash_check["torrent_info"])
+        hash_check = self.debrid_module.check_hash(torrent["hash"])
+        entry = hash_check.get(torrent["hash"])
+        if not entry:
+            return []
+
+        self.torrent_id = entry["torrent_id"]
+        torrent_info = entry["torrent_info"]
+        if self.pack_select:
+            self.debrid_module.torrent_select_all(self.torrent_id)
+            torrent_info = self.debrid_module.torrent_info(self.torrent_id) or torrent_info
+            if "files" in torrent_info:
+                torrent_info["files"] = [
+                    file
+                    for file in torrent_info["files"]
+                    if "sample" not in file.get("path", "").lower()
+                    and source_utils.is_file_ext_valid(file.get("path", ""))
+                ]
+
+        return self._files_for_picker(torrent_info)
 
     def resolve_stream_url(self, file_info):
         """
