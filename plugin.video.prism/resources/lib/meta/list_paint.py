@@ -970,7 +970,15 @@ def render_catalog_drilldown_episodes(
     db = get_sync_database()
     query_kwargs = {
         key: paint_kwargs[key]
-        for key in ("hide_unaired", "hide_watched", "hide_specials", "skip_update", "skip_mill")
+        for key in (
+            "hide_unaired",
+            "hide_watched",
+            "hide_specials",
+            "skip_update",
+            "skip_mill",
+            "skip_watch_refresh",
+            "force_watch_refresh",
+        )
         if key in paint_kwargs
     }
     if flat_list:

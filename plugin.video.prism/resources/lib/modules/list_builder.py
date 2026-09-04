@@ -10,6 +10,23 @@ from resources.lib.database.simkl_sync import shows
 from resources.lib.modules.air_date_delay import item_has_aired
 from resources.lib.modules.globals import g
 
+# Library membership widgets must not use POV-style hide-watched filtering.
+_LIBRARY_WIDGET_ACTIONS = frozenset(
+    {
+        "simklLibraryList",
+        "libraryRecentlyWatched",
+        "libraryWatchedMovies",
+    }
+)
+
+
+def _is_library_widget_list(library_status: str | None = None) -> bool:
+    if not g.FROM_WIDGET:
+        return False
+    if library_status:
+        return True
+    return (g.REQUEST_PARAMS or {}).get("action") in _LIBRARY_WIDGET_ACTIONS
+
 
 class ListBuilder:
     """
@@ -30,16 +47,16 @@ class ListBuilder:
         """Respect general-tab hide settings unless the caller overrides them."""
         params.setdefault("hide_unaired", self.hide_unaired)
         hide_watched = self.hide_watched
-        if g.FROM_WIDGET:
+        if g.FROM_WIDGET and not _is_library_widget_list(params.get("library_status")):
             hide_watched = True
         params.setdefault("hide_watched", hide_watched)
         params.setdefault("hide_specials", self.hide_specials)
         return params
 
     @staticmethod
-    def _skip_watched_widget_item(item) -> bool:
+    def _skip_watched_widget_item(item, library_status=None) -> bool:
         """POV-style: do not build list rows for watched items in widgets."""
-        if not g.FROM_WIDGET:
+        if not g.FROM_WIDGET or _is_library_widget_list(library_status):
             return False
         info = item.get("info") if isinstance(item.get("info"), dict) else {}
         mediatype = info.get("mediatype")
@@ -682,7 +699,7 @@ class ListBuilder:
                 menu_row = movie_rows.get(simkl_id) if catalog == "movie" else show_rows.get(simkl_id)
                 if not menu_row:
                     menu_row = self._sync_dict_to_menu_row(item)
-                if not menu_row or self._skip_watched_widget_item(menu_row):
+                if not menu_row or self._skip_watched_widget_item(menu_row, library_status=library_status):
                     continue
 
                 if catalog == "movie":
@@ -817,6 +834,16 @@ class ListBuilder:
             updated["art"] = merged.get("art") or blob.get("art") or art
             if merged.get("mal_id"):
                 updated["mal_id"] = merged["mal_id"]
+            for watch_key in ("episode_count", "watched_episodes", "unwatched_episodes"):
+                if row.get(watch_key) is None:
+                    continue
+                try:
+                    existing = int(updated.get(watch_key) or 0)
+                    incoming = int(row.get(watch_key) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if incoming > existing:
+                    updated[watch_key] = incoming
             merged_rows.append(updated)
         return merged_rows
 
@@ -1235,7 +1262,7 @@ class ListBuilder:
         if not item:
             return
 
-        if self._skip_watched_widget_item(item):
+        if self._skip_watched_widget_item(item, library_status=library_status):
             return None
 
         item = self._apply_completed_watched_display(item, library_status=library_status)
@@ -1305,10 +1332,68 @@ class ListBuilder:
             ensure_episode_title(info)
             name = info.get("title") or item.get("name")
 
+        if info.get("mediatype") == "tvshow":
+            ep_count = (
+                item.get("episode_count")
+                or info.get("episode_count")
+                or info.get("total_episodes_count")
+                or info.get("total_episodes")
+            )
+            watched = item.get("watched_episodes") or info.get("watched_episodes_count")
+            unwatched = item.get("unwatched_episodes") or info.get("unwatched_episodes")
+            try:
+                ep_count = int(ep_count) if ep_count is not None else 0
+            except (TypeError, ValueError):
+                ep_count = 0
+            try:
+                watched = int(watched) if watched is not None else 0
+            except (TypeError, ValueError):
+                watched = 0
+            if ep_count > 0:
+                item["episode_count"] = ep_count
+                info.setdefault("episode_count", ep_count)
+                item["watched_episodes"] = watched
+                info.setdefault("watched_episodes_count", watched)
+                if unwatched is None:
+                    unwatched = max(0, ep_count - watched)
+                else:
+                    try:
+                        unwatched = int(unwatched)
+                    except (TypeError, ValueError):
+                        unwatched = max(0, ep_count - watched)
+                item["unwatched_episodes"] = max(0, unwatched)
+                info.setdefault("unwatched_episodes", item["unwatched_episodes"])
+
         if info.get("mediatype") == "season":
+            ep_count = item.get("episode_count") or info.get("episode_count") or info.get("aired_episodes")
+            watched = item.get("watched_episodes") or info.get("watched_episodes_count")
+            unwatched = item.get("unwatched_episodes") or info.get("unwatched_episodes")
+            try:
+                ep_count = int(ep_count) if ep_count is not None else 0
+            except (TypeError, ValueError):
+                ep_count = 0
+            try:
+                watched = int(watched) if watched is not None else 0
+            except (TypeError, ValueError):
+                watched = 0
+            if ep_count > 0:
+                item["episode_count"] = ep_count
+                info.setdefault("episode_count", ep_count)
+                info.setdefault("aired_episodes", ep_count)
+                item["watched_episodes"] = watched
+                info.setdefault("watched_episodes_count", watched)
+                if unwatched is None:
+                    unwatched = max(0, ep_count - watched)
+                else:
+                    try:
+                        unwatched = int(unwatched)
+                    except (TypeError, ValueError):
+                        unwatched = max(0, ep_count - watched)
+                item["unwatched_episodes"] = max(0, unwatched)
+                info.setdefault("unwatched_episodes", item["unwatched_episodes"])
             g.log(
                 f"[season trace] season menu item show={info.get('simkl_show_id')} "
-                f"info.season={info.get('season')} label={name!r}",
+                f"info.season={info.get('season')} label={name!r} episodes={item.get('episode_count')}",
                 "debug",
             )
 
@@ -1320,6 +1405,16 @@ class ListBuilder:
             name = g.color_string(tools.italic_string(name), "red")
 
         if info.get("mediatype") == "episode":
+            play_count = item.get("play_count")
+            if play_count is None:
+                play_count = info.get("playcount")
+            try:
+                play_count = int(play_count) if play_count is not None else 0
+            except (TypeError, ValueError):
+                play_count = 0
+            if play_count > 0:
+                item["play_count"] = play_count
+                info.setdefault("playcount", play_count)
             if mixed_list:
                 style = int(self.title_appends_mixed or 0)
                 if style > 0:

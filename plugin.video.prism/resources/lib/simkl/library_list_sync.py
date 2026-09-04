@@ -9,6 +9,7 @@ from resources.lib.simkl.library import _unwrap_sync_items, simkl_entry_to_sync_
 from resources.lib.simkl.statuses import MOVIE_STATUS_OPTIONS, SHOW_STATUS_OPTIONS
 
 _VERIFY_COOLDOWN_SECONDS = 120
+_WATCH_COUNTERS_COOLDOWN_SECONDS = 300
 _MOVIE_STATUSES = tuple(status for status, _ in MOVIE_STATUS_OPTIONS)
 _SHOW_STATUSES = tuple(status for status, _ in SHOW_STATUS_OPTIONS)
 _verify_lock = threading.Lock()
@@ -152,6 +153,58 @@ def _clear_local_status_membership(db, catalog: str, status: str, simkl_ids: set
         db.set_simkl_status(int(simkl_id), catalog, None)
 
 
+def _watch_counters_setting_key(catalog: str, status: str) -> str:
+    return f"library.watch_counters.{catalog}.{status}"
+
+
+def refresh_library_watch_counters(catalog: str, status: str, *, force: bool = False) -> bool:
+    """
+    Pull Simkl all-items progress totals into the shows table.
+
+    Seren reads episode_count / watched / unwatched from sync DB columns; this keeps
+    those columns aligned with Simkl's watched_episodes_count and total_episodes_count.
+    """
+    from resources.lib.database.session import get_sync_database
+    from resources.lib.indexers.simkl import SimklAPI
+
+    if catalog == "movie":
+        return False
+    if not SimklAPI().is_authenticated():
+        return False
+
+    key = _watch_counters_setting_key(catalog, status)
+    if not force:
+        raw = g.get_runtime_setting(key)
+        if raw:
+            try:
+                if (time.time() - float(raw)) < _WATCH_COUNTERS_COOLDOWN_SECONDS:
+                    return False
+            except (TypeError, ValueError):
+                pass
+
+    db = get_sync_database()
+    media_key = _media_key(catalog)
+    try:
+        payload = db.simkl_api.get_all_items(
+            media_key,
+            status=status,
+            extended="full",
+            next_watch_info="no",
+        )
+    except Exception:
+        g.log_stacktrace()
+        return False
+
+    entries = [entry for entry in _unwrap_sync_items(payload, media_key) if isinstance(entry, dict)]
+    if not entries:
+        return False
+
+    db.apply_show_watch_counters(entries)
+    g.set_runtime_setting(key, str(time.time()))
+
+    return True
+
+
 def _ingest_remote_status_payload(
     db,
     catalog: str,
@@ -195,6 +248,8 @@ def _ingest_remote_status_payload(
             shows.append(normalized)
     if shows:
         db.insert_simkl_shows(shows, force_meta=force_meta)
+    if entries and catalog != "movie":
+        db.apply_show_watch_counters(entries)
 
 
 def _normalize_remote_status_entries(catalog: str, status: str, payload) -> list[dict]:
@@ -299,6 +354,7 @@ def fetch_library_status_items_from_api(catalog: str, status: str) -> list[dict]
         return []
 
     _ingest_remote_status_payload(db, catalog, status, payload, force_meta=True)
+    refresh_library_watch_counters(catalog, status, force=True)
     try:
         remote_ids = fetch_remote_status_simkl_ids(db.simkl_api, catalog, status)
     except Exception:
@@ -403,6 +459,7 @@ def refresh_library_status_list(catalog: str, status: str, *, force: bool = Fals
         if refs:
             _save_cached_refs(catalog, status, refs)
         record_library_sync_watermark(db, catalog)
+        refresh_library_watch_counters(catalog, status, force=True)
         enriched = _enrich_thin_library_status_items(catalog, status)
         if enriched:
             g.log(
@@ -434,6 +491,7 @@ def refresh_library_status_list(catalog: str, status: str, *, force: bool = Fals
 
     if payload:
         _ingest_remote_status_payload(db, catalog, status, payload, force_meta=True)
+        refresh_library_watch_counters(catalog, status, force=True)
 
     for simkl_id in remote_ids:
         db.set_simkl_status(int(simkl_id), catalog, status)

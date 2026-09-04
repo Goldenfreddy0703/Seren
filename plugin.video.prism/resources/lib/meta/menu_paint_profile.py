@@ -49,10 +49,10 @@ _ACTION_PROFILES: dict[str, MenuPaintProfile] = {
     "moviesSearchResults": MenuPaintProfile.SEARCH,
     "showsSearchResults": MenuPaintProfile.SEARCH,
     "animeSearchResults": MenuPaintProfile.SEARCH,
-    # Library title lists (genre-style paint)
-    "simklLibraryList": MenuPaintProfile.BROWSE,
-    "libraryRecentlyWatched": MenuPaintProfile.BROWSE,
-    "libraryWatchedMovies": MenuPaintProfile.BROWSE,
+    # Library title lists (show full membership; no widget hide-watched)
+    "simklLibraryList": MenuPaintProfile.LIBRARY,
+    "libraryRecentlyWatched": MenuPaintProfile.LIBRARY,
+    "libraryWatchedMovies": MenuPaintProfile.LIBRARY,
     "libraryOnDeck": MenuPaintProfile.LIBRARY_EPISODES,
     "libraryNextUp": MenuPaintProfile.LIBRARY_EPISODES,
     "libraryWatchedEpisodes": MenuPaintProfile.LIBRARY_EPISODES,
@@ -163,6 +163,8 @@ def profile_list_kwargs(
         base.update(_browse_hide_filters())
         base["paint_only"] = False
         base["menu_cache"] = False
+        base["skip_watch_refresh"] = False
+        base["force_watch_refresh"] = True
         base.setdefault("enrichment_reason", "drilldown")
     elif profile == MenuPaintProfile.RELATED:
         base.update(_browse_hide_filters())

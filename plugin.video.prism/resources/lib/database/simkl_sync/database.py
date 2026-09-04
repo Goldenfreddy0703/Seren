@@ -360,7 +360,8 @@ class SimklSyncDatabase(Database):
             """
         else:
             query = f"""
-                SELECT s.simkl_id, s.args, s.watched_episodes, s.episode_count, s.user_rating,
+                SELECT s.simkl_id, s.args, s.watched_episodes, s.unwatched_episodes,
+                       s.episode_count, s.season_count, s.user_rating,
                        s.tmdb_id, s.tvdb_id, s.imdb_id, s.air_date, s.is_airing, s.[cast],
                        b.resume_time, b.percent_played
                 FROM shows AS s
@@ -1593,6 +1594,20 @@ class SimklSyncDatabase(Database):
 
         get = MetadataHandler.get_simkl_info
         simkl_obj = MetadataHandler.simkl_object
+
+        def _insert_episode_count(item):
+            info = MetadataHandler.simkl_info(item) or {}
+            best = 0
+            for key in ("total_episodes_count", "total_episodes", "episode_count"):
+                val = info.get(key)
+                if val is None:
+                    continue
+                try:
+                    best = max(best, int(val))
+                except (TypeError, ValueError):
+                    continue
+            return best if best > 0 else get(item, "episode_count")
+
         self.execute_sql(
             self.upsert_show_query,
             (
@@ -1614,7 +1629,7 @@ class SimklSyncDatabase(Database):
                     get(i, "imdb_id"),
                     self.simkl_api.meta_hash,
                     get(i, "season_count"),
-                    get(i, "episode_count"),
+                    _insert_episode_count(i),
                     self._create_args(i),
                     get(i, "is_airing"),
                     g.validate_date(get(i, "last_watched_at")),
@@ -1736,6 +1751,24 @@ class SimklSyncDatabase(Database):
         self._prepare_sync_inserts(to_insert)
         g.log(f"Inserting seasons into sync database: {len(to_insert)}")
         get = MetadataHandler.get_simkl_info
+
+        def _insert_episode_count(item):
+            for candidate in (
+                item.get("aired_episodes"),
+                item.get("episode_count"),
+                get(item, "aired_episodes"),
+                get(item, "episode_count"),
+            ):
+                if candidate is None:
+                    continue
+                try:
+                    count = int(candidate)
+                except (TypeError, ValueError):
+                    continue
+                if count > 0:
+                    return count
+            return None
+
         for i in to_insert:
             g.log(
                 f"[season trace] insert_simkl_seasons show={i.get('simkl_show_id')} "
@@ -1756,7 +1789,7 @@ class SimklSyncDatabase(Database):
                     get(i, "tmdb_id"),
                     get(i, "tvdb_id"),
                     self.simkl_api.meta_hash,
-                    None,
+                    _insert_episode_count(i),
                     get(i, "season"),
                     self._create_args(i),
                     g.validate_date(get(i, "last_watched_at")),
@@ -2446,6 +2479,8 @@ class SimklSyncDatabase(Database):
     def _episode_marked_watched(episode: dict, entry: dict | None = None) -> bool:
         if not isinstance(episode, dict):
             return False
+        if episode.get("watched") in (False, 0, "false", "False"):
+            return False
         if episode.get("watched") in (True, 1, "true", "True"):
             return True
         if episode.get("watched_at") or episode.get("last_watched_at"):
@@ -2471,6 +2506,19 @@ class SimklSyncDatabase(Database):
         for season in entry.get("seasons") or []:
             if isinstance(season, dict) and season.get("episodes"):
                 return True
+        return False
+
+    @staticmethod
+    def _entry_has_explicit_episode_watch_fields(entry: dict) -> bool:
+        """True when episodes include explicit watched booleans (POST /sync/watched style)."""
+        if not isinstance(entry, dict):
+            return False
+        for season in entry.get("seasons") or []:
+            if not isinstance(season, dict):
+                continue
+            for episode in season.get("episodes") or []:
+                if isinstance(episode, dict) and "watched" in episode:
+                    return True
         return False
 
     def _resolve_anime_watch_episode_coords(
@@ -2507,6 +2555,54 @@ class SimklSyncDatabase(Database):
             menu_episode = episode_num
         return int(menu_season), int(menu_episode)
 
+    def _resolve_episode_watch_coords_for_db(
+        self,
+        show_id: int,
+        episode: dict,
+        season_num: int,
+        episode_num: int,
+        catalog: str,
+        anime_raw_cache: dict[int, list[dict]],
+        anime_slug_cache: dict[int, str | None],
+    ) -> tuple[int, int]:
+        """Map Simkl watch payload coords onto local episode rows (anime + TV)."""
+        candidates: list[tuple[int, int]] = []
+        if catalog == "anime":
+            resolved = self._resolve_anime_watch_episode_coords(
+                show_id,
+                episode,
+                int(season_num),
+                int(episode_num),
+                catalog,
+                anime_raw_cache,
+                anime_slug_cache,
+            )
+            candidates.append(resolved)
+        candidates.append((int(season_num), int(episode_num)))
+
+        ep_ids = episode.get("ids") or {}
+        ep_simkl = ep_ids.get("simkl_id") or ep_ids.get("simkl")
+        if ep_simkl is not None:
+            row = self.fetchone(
+                "SELECT season, number FROM episodes WHERE simkl_show_id=? AND simkl_id=?",
+                (int(show_id), int(ep_simkl)),
+            )
+            if row:
+                candidates.insert(0, (int(row["season"]), int(row["number"])))
+
+        for season, number in candidates:
+            exists = self.fetchone(
+                """
+                SELECT 1 AS ok
+                FROM episodes
+                WHERE simkl_show_id=? AND season=? AND number=?
+                """,
+                (int(show_id), int(season), int(number)),
+            )
+            if exists:
+                return int(season), int(number)
+        return candidates[0]
+
     def apply_episode_watch_state_from_entries(self, entries, shows) -> bool:
         """Apply Simkl per-episode watched and unwatched flags when episode rows are present."""
         show_ids = {int(show["simkl_id"]): show for show in shows if show.get("simkl_id")}
@@ -2541,7 +2637,7 @@ class SimklSyncDatabase(Database):
                     )
                     if episode_num is None:
                         continue
-                    season_num, episode_num = self._resolve_anime_watch_episode_coords(
+                    season_num, episode_num = self._resolve_episode_watch_coords_for_db(
                         show_id,
                         episode,
                         int(season_num),
@@ -2620,13 +2716,28 @@ class SimklSyncDatabase(Database):
         return True
 
     def _apply_entry_watch_state(self, entries, shows) -> None:
-        """Apply per-episode watch flags, using bidirectional sync when Simkl returned episode rows."""
-        full_entries = [entry for entry in (entries or []) if self._entry_has_full_episode_watch_detail(entry)]
-        partial_entries = [entry for entry in (entries or []) if entry not in full_entries]
-        if full_entries:
-            self.apply_episode_watch_state_from_entries(full_entries, shows)
-        if partial_entries:
-            self.apply_watched_episodes_from_entries(partial_entries, shows)
+        """Apply per-episode watch flags.
+
+        Bidirectional reset+apply only when Simkl returned explicit per-episode watched
+        booleans (sync/watched). Otherwise use the TV-style path that only marks watched
+        episodes without wiping local state.
+        """
+        authoritative = []
+        partial = []
+        for entry in entries or []:
+            if self._entry_has_explicit_episode_watch_fields(entry):
+                authoritative.append(entry)
+            else:
+                partial.append(entry)
+        if authoritative:
+            self.apply_episode_watch_state_from_entries(authoritative, shows)
+        if partial:
+            self.apply_watched_episodes_from_entries(partial, shows)
+
+    @staticmethod
+    def _simkl_airable_unwatched(total: int, watched: int, not_aired: int = 0) -> int:
+        """Match Simkl UI: unwatched excludes episodes that have not aired yet."""
+        return max(0, int(total) - int(watched) - int(not_aired or 0))
 
     def apply_show_watch_counters(self, entries):
         """Apply Simkl summary progress (watched/total episode counts) to show rows for list indicators."""
@@ -2637,11 +2748,13 @@ class SimklSyncDatabase(Database):
             simkl_id = self._entry_show_simkl_id(entry)
             watched = entry.get("watched_episodes_count")
             total = entry.get("total_episodes_count")
-            if simkl_id is None or watched is None or total is None:
+            if simkl_id is None or total is None:
                 continue
-            watched = int(watched)
+            watched = int(watched) if watched is not None else 0
             total = int(total)
-            rows.append((watched, total, max(0, total - watched), simkl_id))
+            not_aired = int(entry.get("not_aired_episodes_count") or 0)
+            unwatched = self._simkl_airable_unwatched(total, watched, not_aired)
+            rows.append((watched, total, unwatched, simkl_id))
 
         if not rows:
             return
@@ -2655,6 +2768,30 @@ class SimklSyncDatabase(Database):
             WHERE simkl_id = ?
             """,
             rows,
+        )
+
+    def _reconcile_show_unwatched_counts(self, show_ids=None) -> None:
+        """Fill missing unwatched_episodes from episode_count - watched_episodes (legacy rows)."""
+        clause = ""
+        params: tuple = ()
+        if show_ids:
+            ids = [int(sid) for sid in show_ids if sid is not None]
+            if not ids:
+                return
+            placeholders = ",".join("?" for _ in ids)
+            clause = f" WHERE simkl_id IN ({placeholders})"
+            params = tuple(ids)
+        self.execute_sql(
+            f"""
+            UPDATE shows
+            SET unwatched_episodes = MAX(
+                0,
+                COALESCE(episode_count, 0) - COALESCE(watched_episodes, 0)
+            )
+            {clause}
+            AND (unwatched_episodes IS NULL OR unwatched_episodes = 0)
+            """,
+            params if params else None,
         )
 
     def apply_sync_episode_stubs_from_entries(self, entries, shows, catalog: str | None = None, *, selective: bool = False):
@@ -3218,7 +3355,7 @@ class SimklSyncDatabase(Database):
                         continue
                     if not self._episode_marked_watched(episode, entry):
                         continue
-                    season_num, episode_num = self._resolve_anime_watch_episode_coords(
+                    season_num, episode_num = self._resolve_episode_watch_coords_for_db(
                         show_id,
                         episode,
                         int(season_num),
@@ -3556,45 +3693,80 @@ class SimklSyncDatabase(Database):
                                                                              AND Datetime(e.air_date) < Datetime('{now}')
                                                                              THEN season END)
                                              END, s.season_count)  AS season_count,
-                                coalesce(CASE
-                                             WHEN max(e.simkl_id) IS NOT NULL
-                                                 THEN sum(
-                                                     CASE
-                                                         WHEN e.season > 0
-                                                             AND datetime(e.air_date) < datetime('{now}')
-                                                             THEN 1
-                                                         ELSE 0
-                                                         END
-                                                 )
-                                             END, s.episode_count) AS episode_count,
-                                coalesce(CASE
-                                             WHEN max(e.simkl_id) IS NOT NULL
-                                                 THEN sum(
-                                                     CASE
-                                                         WHEN e.season > 0 AND e.watched > 0
-                                                             AND (e.air_date IS NULL OR datetime(e.air_date) < datetime('{now}'))
-                                                             THEN 1
-                                                         ELSE 0
-                                                         END
-                                                 )
-                                             END,
-                                         s.watched_episodes)       AS watched_episodes,
-                                coalesce(CASE
-                                             WHEN sum(CASE
-                                                          WHEN e.season > 0
-                                                              AND Datetime(e.air_date) < Datetime('{now}')
-                                                              THEN 1 END) > s.episode_count
-                                                 THEN sum(CASE
-                                                              WHEN e.season > 0
-                                                                  AND Datetime(e.air_date) < Datetime('{now}')
-                                                                  THEN 1 END)
-                                             ELSE s.episode_count
-                                             END - sum(CASE
-                                                           WHEN e.season > 0 AND e.watched > 0
-                                                               AND (e.air_date IS NULL OR Datetime(e.air_date) < Datetime('{now}'))
-                                                               THEN 1
-                                                           ELSE 0
-                                    END), s.unwatched_episodes)    AS unwatched_episodes,
+                                CASE
+                                    WHEN max(e.simkl_id) IS NOT NULL
+                                        THEN MAX(
+                                            COALESCE(s.episode_count, 0),
+                                            COALESCE(
+                                                sum(
+                                                    CASE
+                                                        WHEN e.season > 0
+                                                            AND datetime(e.air_date) < datetime('{now}')
+                                                            THEN 1
+                                                        ELSE 0
+                                                    END
+                                                ),
+                                                0
+                                            )
+                                        )
+                                    ELSE s.episode_count
+                                END                             AS episode_count,
+                                CASE
+                                    WHEN max(e.simkl_id) IS NOT NULL
+                                        THEN MAX(
+                                            COALESCE(s.watched_episodes, 0),
+                                            COALESCE(
+                                                sum(
+                                                    CASE
+                                                        WHEN e.season > 0 AND e.watched > 0
+                                                            AND (e.air_date IS NULL OR datetime(e.air_date) < datetime('{now}'))
+                                                            THEN 1
+                                                        ELSE 0
+                                                    END
+                                                ),
+                                                0
+                                            )
+                                        )
+                                    ELSE s.watched_episodes
+                                END                             AS watched_episodes,
+                                MAX(
+                                    0,
+                                    CASE
+                                        WHEN max(e.simkl_id) IS NOT NULL
+                                            THEN MAX(
+                                                COALESCE(s.episode_count, 0),
+                                                COALESCE(
+                                                    sum(
+                                                        CASE
+                                                            WHEN e.season > 0
+                                                                AND datetime(e.air_date) < datetime('{now}')
+                                                                THEN 1
+                                                            ELSE 0
+                                                        END
+                                                    ),
+                                                    0
+                                                )
+                                            )
+                                        ELSE COALESCE(s.episode_count, 0)
+                                    END - CASE
+                                        WHEN max(e.simkl_id) IS NOT NULL
+                                            THEN MAX(
+                                                COALESCE(s.watched_episodes, 0),
+                                                COALESCE(
+                                                    sum(
+                                                        CASE
+                                                            WHEN e.season > 0 AND e.watched > 0
+                                                                AND (e.air_date IS NULL OR datetime(e.air_date) < datetime('{now}'))
+                                                                THEN 1
+                                                            ELSE 0
+                                                        END
+                                                    ),
+                                                    0
+                                                )
+                                            )
+                                        ELSE COALESCE(s.watched_episodes, 0)
+                                    END
+                                )                               AS unwatched_episodes,
                                 CASE
                                     WHEN max(e.simkl_id) IS NOT NULL
                                         THEN max(e.last_watched_at)

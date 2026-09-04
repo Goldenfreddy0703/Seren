@@ -186,7 +186,16 @@ def normalize_library_entry(entry: dict[str, Any], catalog: str) -> dict[str, An
     if entry.get("watched_episodes_count") is not None:
         info["watched_episodes_count"] = entry.get("watched_episodes_count")
     if entry.get("total_episodes_count") is not None:
-        info["total_episodes_count"] = entry.get("total_episodes_count")
+        total = entry.get("total_episodes_count")
+        info["total_episodes_count"] = total
+        try:
+            total_int = int(total)
+        except (TypeError, ValueError):
+            total_int = 0
+        if total_int > 0:
+            info.setdefault("episode_count", total_int)
+    if entry.get("not_aired_episodes_count") is not None:
+        info["not_aired_episodes_count"] = entry.get("not_aired_episodes_count")
     return normalized
 
 

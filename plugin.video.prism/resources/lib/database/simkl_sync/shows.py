@@ -273,6 +273,178 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
 
         return self.fetchall(query, tuple(params) if params else None)
 
+    @staticmethod
+    def _show_episode_count_from_info(info: dict | None) -> int:
+        if not isinstance(info, dict):
+            return 0
+        best = 0
+        for key in ("total_episodes_count", "total_episodes", "episode_count"):
+            val = info.get(key)
+            if val is None:
+                continue
+            try:
+                best = max(best, int(val))
+            except (TypeError, ValueError):
+                continue
+        return best
+
+    def _season_episode_totals_for_shows(self, show_ids: list[int]) -> dict[int, int]:
+        if not show_ids:
+            return {}
+        ids_sql = ",".join(str(int(sid)) for sid in show_ids)
+        totals: dict[int, int] = {}
+        season_rows = self.fetchall(
+            f"""
+            SELECT simkl_show_id,
+                   SUM(CASE WHEN season > 0 THEN COALESCE(episode_count, 0) ELSE 0 END) AS episode_sum
+            FROM seasons
+            WHERE simkl_show_id IN ({ids_sql})
+            GROUP BY simkl_show_id
+            """
+        ) or []
+        for row in season_rows:
+            if row.get("simkl_show_id") is None:
+                continue
+            totals[int(row["simkl_show_id"])] = int(row.get("episode_sum") or 0)
+
+        low_ids = [sid for sid in show_ids if totals.get(sid, 0) <= 1]
+        if not low_ids:
+            return totals
+
+        low_sql = ",".join(str(int(sid)) for sid in low_ids)
+        meta_rows = self.fetchall(
+            f"""
+            SELECT se.simkl_show_id, se.episode_count, sm.value AS simkl_object
+            FROM seasons AS se
+                     LEFT JOIN seasons_meta AS sm ON sm.id = se.simkl_id AND sm.type = 'simkl'
+            WHERE se.simkl_show_id IN ({low_sql}) AND se.season > 0
+            """
+        ) or []
+        for row in meta_rows:
+            if row.get("simkl_show_id") is None:
+                continue
+            sid = int(row["simkl_show_id"])
+            count = int(row.get("episode_count") or 0)
+            if count <= 0:
+                meta = row.get("simkl_object")
+                if isinstance(meta, dict):
+                    block = meta.get("info") if isinstance(meta.get("info"), dict) else meta
+                    if isinstance(block, dict):
+                        try:
+                            count = int(block.get("aired_episodes") or block.get("episode_count") or 0)
+                        except (TypeError, ValueError):
+                            count = 0
+            if count > 0:
+                totals[sid] = totals.get(sid, 0) + count
+        return totals
+
+    def _show_meta_episode_totals(self, show_ids: list[int]) -> dict[int, int]:
+        if not show_ids:
+            return {}
+        ids_sql = ",".join(str(int(sid)) for sid in show_ids)
+        totals: dict[int, int] = {}
+        meta_rows = self.fetchall(
+            f"SELECT id, value FROM shows_meta WHERE type = 'simkl' AND id IN ({ids_sql})"
+        ) or []
+        for row in meta_rows:
+            if row.get("id") is None:
+                continue
+            meta = row.get("value")
+            if not isinstance(meta, dict):
+                continue
+            block = meta.get("info") if isinstance(meta.get("info"), dict) else meta
+            if not isinstance(block, dict):
+                continue
+            count = self._show_episode_count_from_info(block)
+            if count > 0:
+                totals[int(row["id"])] = count
+        return totals
+
+    def _enrich_show_episode_counts(self, rows: list[dict] | None) -> list[dict] | None:
+        if not rows:
+            return rows
+
+        show_ids = [int(row["simkl_id"]) for row in rows if row.get("simkl_id") is not None]
+        if not show_ids:
+            return rows
+
+        season_totals = self._season_episode_totals_for_shows(show_ids)
+        meta_totals = self._show_meta_episode_totals(show_ids)
+
+        for row in rows:
+            sid = row.get("simkl_id")
+            if sid is None:
+                continue
+            sid = int(sid)
+            info = row.get("info")
+            if not isinstance(info, dict):
+                info = {}
+                row["info"] = info
+
+            try:
+                db_count = int(row.get("episode_count") or 0)
+            except (TypeError, ValueError):
+                db_count = 0
+            effective = max(
+                db_count,
+                season_totals.get(sid, 0),
+                meta_totals.get(sid, 0),
+                self._show_episode_count_from_info(info),
+            )
+            if effective <= max(db_count, 1):
+                catalog = row.get("catalog") or info.get("catalog") or self.show_catalog(sid)
+                if catalog in ("tv", "anime"):
+                    try:
+                        from resources.lib.discover.catalog_store import get_items_batch
+
+                        loaded = get_items_batch(catalog, [sid])
+                        cat_item = loaded.get(sid) if isinstance(loaded, dict) else None
+                        if isinstance(cat_item, dict):
+                            cat_info = (cat_item.get("simkl_object") or {}).get("info")
+                            if isinstance(cat_info, dict):
+                                effective = max(effective, self._show_episode_count_from_info(cat_info))
+                    except Exception:
+                        pass
+            if effective <= 0:
+                continue
+
+            try:
+                watched = int(row.get("watched_episodes") or 0)
+            except (TypeError, ValueError):
+                watched = 0
+            info_watched = info.get("watched_episodes_count")
+            if info_watched is not None:
+                try:
+                    watched = max(watched, int(info_watched))
+                except (TypeError, ValueError):
+                    pass
+
+            unwatched = row.get("unwatched_episodes")
+            if unwatched is None:
+                unwatched = info.get("unwatched_episodes")
+            try:
+                not_aired = int(info.get("not_aired_episodes_count") or 0)
+            except (TypeError, ValueError):
+                not_aired = 0
+            try:
+                if unwatched is not None:
+                    unwatched = int(unwatched)
+                else:
+                    unwatched = max(0, effective - watched - not_aired)
+            except (TypeError, ValueError):
+                unwatched = max(0, effective - watched - not_aired)
+            if effective > db_count and unwatched == max(0, effective - watched):
+                unwatched = max(0, effective - watched - not_aired)
+
+            row["episode_count"] = effective
+            row["watched_episodes"] = watched
+            row["unwatched_episodes"] = max(0, unwatched)
+            info.setdefault("episode_count", effective)
+            info.setdefault("watched_episodes_count", watched)
+            info.setdefault("unwatched_episodes", row["unwatched_episodes"])
+
+        return rows
+
     @guard_against_none(list)
     def get_show_list(self, media_list, **params):
         """
@@ -293,7 +465,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
 
             fast_rows = try_fast_paint_list(media_list, "tvshow", self, **params)
             if fast_rows is not None:
-                return fast_rows
+                return self._enrich_show_episode_counts(fast_rows)
 
         if not skip_update:
             self._update_mill_format_shows(media_list, False, skip_mill=skip_mill)
@@ -329,7 +501,7 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
         else:
             self.set_list_enrichment_refs([], "tvshow")
         rows = MetadataHandler.sort_list_items(rows, media_list)
-        return rows
+        return self._enrich_show_episode_counts(rows)
 
     def _has_season_rows(self, simkl_show_id, *, season=None, simkl_id=None) -> bool:
         if season is not None:
@@ -378,6 +550,218 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 (int(simkl_show_id),),
             )
         return bool(row)
+
+    @staticmethod
+    def _season_episode_count_from_row_fields(row: dict) -> int:
+        ep = row.get("episode_count")
+        if ep is not None:
+            try:
+                count = int(ep)
+                if count > 0:
+                    return count
+            except (TypeError, ValueError):
+                pass
+        info = row.get("info")
+        if isinstance(info, dict):
+            for key in ("episode_count", "aired_episodes"):
+                val = info.get(key)
+                if val is None:
+                    continue
+                try:
+                    count = int(val)
+                    if count > 0:
+                        return count
+                except (TypeError, ValueError):
+                    continue
+        return 0
+
+    def _enrich_season_episode_counts(self, rows: list[dict] | None) -> list[dict] | None:
+        if not rows:
+            return rows
+
+        needs_meta: list[dict] = []
+        for row in rows:
+            count = self._season_episode_count_from_row_fields(row)
+            if count > 0:
+                row["episode_count"] = count
+                info = row.get("info")
+                if not isinstance(info, dict):
+                    info = {}
+                    row["info"] = info
+                info.setdefault("episode_count", count)
+                info.setdefault("aired_episodes", count)
+            else:
+                needs_meta.append(row)
+
+        if not needs_meta:
+            return rows
+
+        ids = [int(row["simkl_id"]) for row in needs_meta if row.get("simkl_id") is not None]
+        if not ids:
+            return rows
+
+        ids_sql = ",".join(str(sid) for sid in ids)
+        meta_rows = self.fetchall(
+            f"SELECT id, value FROM seasons_meta WHERE type='simkl' AND id IN ({ids_sql})"
+        ) or []
+        meta_by_id = {
+            int(meta_row["id"]): meta_row.get("value")
+            for meta_row in meta_rows
+            if meta_row.get("id") is not None
+        }
+        for row in needs_meta:
+            sid = row.get("simkl_id")
+            if sid is None:
+                continue
+            meta = meta_by_id.get(int(sid))
+            if not isinstance(meta, dict):
+                continue
+            info_block = meta.get("info") if isinstance(meta.get("info"), dict) else meta
+            if not isinstance(info_block, dict):
+                continue
+            count_val = info_block.get("aired_episodes") or info_block.get("episode_count")
+            if count_val is None:
+                continue
+            try:
+                count = int(count_val)
+            except (TypeError, ValueError):
+                continue
+            if count <= 0:
+                continue
+            row["episode_count"] = count
+            info = row.get("info")
+            if not isinstance(info, dict):
+                info = {}
+                row["info"] = info
+            info.setdefault("episode_count", count)
+            info.setdefault("aired_episodes", count)
+        return rows
+
+    def _enrich_season_watch_counts(self, show_id: int, rows: list[dict] | None) -> list[dict] | None:
+        """Align season watch counters with show-level SimKL totals when local episode flags are empty."""
+        if not rows:
+            return rows
+
+        show_id = int(show_id)
+        ep_stats_rows = self.fetchall(
+            """
+            SELECT season,
+                   COUNT(*) AS episode_total,
+                   SUM(CASE WHEN COALESCE(watched, 0) > 0 THEN 1 ELSE 0 END) AS watched_total
+            FROM episodes
+            WHERE simkl_show_id = ? AND season > 0
+            GROUP BY season
+            """,
+            (show_id,),
+        ) or []
+        ep_stats = {
+            int(row["season"]): {
+                "total": int(row.get("episode_total") or 0),
+                "watched": int(row.get("watched_total") or 0),
+            }
+            for row in ep_stats_rows
+            if row.get("season") is not None
+        }
+
+        show_rows = self._enrich_show_episode_counts(
+            self.fetchall(
+                """
+                SELECT simkl_id, info, episode_count, watched_episodes, unwatched_episodes
+                FROM shows WHERE simkl_id = ?
+                """,
+                (show_id,),
+            )
+        )
+        show_effective = 0
+        show_watched = 0
+        show_unwatched = 0
+        if show_rows and isinstance(show_rows[0], dict):
+            show_stub = show_rows[0]
+            show_effective = int(show_stub.get("episode_count") or 0)
+            show_watched = int(show_stub.get("watched_episodes") or 0)
+            show_unwatched = int(show_stub.get("unwatched_episodes") or 0)
+
+        visible: list[dict] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            info = row.get("info") if isinstance(row.get("info"), dict) else {}
+            season_num = row.get("season", info.get("season"))
+            try:
+                season_key = int(season_num) if season_num is not None else None
+            except (TypeError, ValueError):
+                season_key = None
+            if season_key is not None and season_key > 0:
+                visible.append(row)
+
+        visible_ep_sum = 0
+        for row in visible:
+            try:
+                visible_ep_sum += int(row.get("episode_count") or 0)
+            except (TypeError, ValueError):
+                pass
+
+        allocated_watched = 0
+        for visible_idx, row in enumerate(visible):
+            info = row.get("info")
+            if not isinstance(info, dict):
+                info = {}
+                row["info"] = info
+            season_num = int(row.get("season") or info.get("season") or 0)
+            stats = ep_stats.get(season_num, {"total": 0, "watched": 0})
+
+            try:
+                ep_count = int(row.get("episode_count") or 0)
+            except (TypeError, ValueError):
+                ep_count = 0
+            if ep_count <= 0 and stats["total"] > 0:
+                ep_count = stats["total"]
+            elif stats["total"] > ep_count:
+                ep_count = stats["total"]
+
+            watched = int(row.get("watched_episodes") or 0)
+            if stats["watched"] > watched:
+                watched = stats["watched"]
+
+            if stats["watched"] == 0 and watched == 0 and show_watched > 0 and ep_count > 0:
+                if len(visible) == 1:
+                    watched = min(ep_count, show_watched)
+                elif visible_ep_sum > 0:
+                    if visible_idx == len(visible) - 1:
+                        watched = min(ep_count, max(0, show_watched - allocated_watched))
+                    else:
+                        watched = min(ep_count, (show_watched * ep_count) // visible_ep_sum)
+                allocated_watched += watched
+
+            unwatched = row.get("unwatched_episodes")
+            if unwatched is None:
+                unwatched = info.get("unwatched_episodes")
+            try:
+                unwatched = int(unwatched) if unwatched is not None else max(0, ep_count - watched)
+            except (TypeError, ValueError):
+                unwatched = max(0, ep_count - watched)
+
+            if (
+                stats["watched"] == 0
+                and len(visible) == 1
+                and show_unwatched > 0
+                and show_effective > 0
+                and ep_count > 0
+                and (ep_count == show_effective or visible_ep_sum == show_effective)
+            ):
+                unwatched = min(ep_count, show_unwatched)
+                watched = max(0, ep_count - unwatched)
+            elif watched > 0 and unwatched >= ep_count:
+                unwatched = max(0, ep_count - watched)
+
+            row["episode_count"] = ep_count
+            row["watched_episodes"] = watched
+            row["unwatched_episodes"] = max(0, unwatched)
+            info.setdefault("episode_count", ep_count)
+            info.setdefault("watched_episodes_count", watched)
+            info.setdefault("unwatched_episodes", row["unwatched_episodes"])
+
+        return rows
 
     @guard_against_none(list, 1)
     def get_season_list(self, simkl_show_id, simkl_id=None, season=None, **params):
@@ -446,13 +830,16 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             statement += " AND (s.episode_count = 0 OR s.watched_episodes < s.episode_count)"
         statement += " order by s.Season"
         rows = self.fetchall(statement)
+        rows = self._enrich_season_episode_counts(rows)
+        rows = self._enrich_season_watch_counts(int(simkl_show_id), rows)
         for row in rows or []:
             info = row.get("info") or {}
             info_season = info.get("season") if isinstance(info, dict) else None
             g.log(
                 f"[season trace] get_season_list show={simkl_show_id} "
                 f"db.season={row.get('season')} info.season={info_season} "
-                f"title={info.get('title') if isinstance(info, dict) else None} row_id={row.get('simkl_id')}",
+                f"title={info.get('title') if isinstance(info, dict) else None} row_id={row.get('simkl_id')} "
+                f"episodes={row.get('episode_count')}",
                 "debug",
                 )
         return rows
@@ -539,9 +926,52 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 scope_formatted = True
         elif simkl_pulled or episodes_need_format:
             self._try_update_episodes(simkl_show_id, season_row_id, simkl_id)
-        skip_watch_refresh = params.pop("skip_watch_refresh", skip_update)
+        skip_watch_refresh = params.pop("skip_watch_refresh", False)
+        force_watch_refresh = params.pop("force_watch_refresh", False)
         if not skip_watch_refresh:
-            self.refresh_show_episode_watch_state(simkl_show_id)
+            self.refresh_show_episode_watch_state(
+                simkl_show_id,
+                force=force_watch_refresh,
+            )
+            show_stub = self.fetchone(
+                "SELECT watched_episodes FROM shows WHERE simkl_id=?",
+                (int(simkl_show_id),),
+            )
+            local_watched = int(
+                (self.fetchone(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM episodes
+                    WHERE simkl_show_id=? AND season != 0 AND COALESCE(watched, 0) > 0
+                    """,
+                    (int(simkl_show_id),),
+                ) or {}).get("c")
+                or 0
+            )
+            show_watched = int((show_stub or {}).get("watched_episodes") or 0)
+            if show_watched > 0 and local_watched < show_watched:
+                from resources.lib.simkl.all_items_sync import (
+                    _reconcile_show_watch_entry,
+                    fetch_show_watch_entry_from_sync_watched,
+                )
+
+                catalog = self.show_catalog(int(simkl_show_id)) or "tv"
+                status_row = self.fetchone(
+                    "SELECT simkl_status FROM shows WHERE simkl_id=?",
+                    (int(simkl_show_id),),
+                )
+                status = str((status_row or {}).get("simkl_status") or "watching").strip().lower()
+                watch_entry = fetch_show_watch_entry_from_sync_watched(
+                    self.simkl_api, int(simkl_show_id), catalog
+                )
+                if watch_entry:
+                    _reconcile_show_watch_entry(
+                        self,
+                        int(simkl_show_id),
+                        watch_entry,
+                        catalog,
+                        status,
+                    )
         self._refresh_show_and_season_statistics(int(simkl_show_id))
         g.log("Updated required episodes", "debug")
         statement = """SELECT e.simkl_id, e.simkl_show_id, e.simkl_season_id, e.info, e.cast, e.art, e.args, e.watched as play_count,

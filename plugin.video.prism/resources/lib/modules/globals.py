@@ -1629,12 +1629,28 @@ class GlobalVariables:
                     str(max(1, int((float(watched_eps) / float(ep_count)) * 100))),
                 )
         if (
-            menu_item.get("watched_episodes", 0) == 0
+            "unwatched_episodes" not in menu_item
+            and menu_item.get("watched_episodes", 0) == 0
             and menu_item.get("episode_count", 0)
             and menu_item.get("episode_count", 0) > 0
         ):
             item.setProperty("WatchedEpisodes", str(0))
             item.setProperty("UnWatchedEpisodes", str(menu_item.get("episode_count", 0)))
+        elif (
+            mediatype in ("tvshow", "season")
+            and "unwatched_episodes" not in menu_item
+            and menu_item.get("episode_count")
+            and menu_item.get("watched_episodes") is not None
+        ):
+            try:
+                unwatched = max(
+                    0,
+                    int(menu_item["episode_count"]) - int(menu_item["watched_episodes"]),
+                )
+                if unwatched > 0:
+                    item.setProperty("UnWatchedEpisodes", str(unwatched))
+            except (TypeError, ValueError):
+                pass
         if "episode_count" in menu_item:
             item.setProperty("TotalEpisodes", str(menu_item["episode_count"]))
         if "season_count" in menu_item:

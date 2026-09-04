@@ -82,6 +82,12 @@ _DISPLAY_INFO_KEYS = frozenset(
         "watched",
         "uniqueid",
         "dbid",
+        "total_episodes",
+        "total_episodes_count",
+        "watched_episodes_count",
+        "unwatched_episodes",
+        "aired_episodes",
+        "not_aired_episodes_count",
     }
 )
 

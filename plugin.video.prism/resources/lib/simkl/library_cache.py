@@ -354,8 +354,12 @@ def record_library_sync_watermark(db=None, catalog: str | None = None) -> None:
 def library_status_items_from_db(catalog: str, status: str) -> list[dict]:
     """Load sorted library SyncRows from simkl_sync for one status bucket."""
     from resources.lib.meta.list_paint import rows_to_sync_items
+    from resources.lib.simkl.library_list_sync import refresh_library_watch_counters
     from resources.lib.simkl.library_sort import sort_library_refs
     from resources.lib.simkl.media_ref import sync_db_rows_for_refs
+
+    if catalog != "movie":
+        refresh_library_watch_counters(catalog, status)
 
     refs = sort_library_refs(_load_refs_from_sync_db(catalog, status), catalog, status)
     if not refs:

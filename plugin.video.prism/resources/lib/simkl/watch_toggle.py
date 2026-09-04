@@ -143,7 +143,7 @@ def apply_mark_watched(
         apply_local_status_after_watch(item_information)
 
     show_id = _get_show_id(item_information)
-    if show_id is not None and mediatype == "tvshow":
+    if show_id is not None and mediatype in ("tvshow", "episode", "season"):
         try:
             get_sync_database().refresh_show_episode_watch_state(int(show_id), force=True)
         except Exception:
@@ -218,6 +218,11 @@ def apply_mark_unwatched(
 
     get_sync_database().remove_bookmark(info["simkl_id"])
     show_id = _get_show_id(item_information)
+    if show_id is not None and mediatype in ("tvshow", "episode", "season"):
+        try:
+            get_sync_database().refresh_show_episode_watch_state(int(show_id), force=True)
+        except Exception:
+            g.log_stacktrace()
     if not silent:
         g.notification(
             f"{g.ADDON_NAME}: {g.get_language_string(30286)}",

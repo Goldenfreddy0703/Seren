@@ -167,6 +167,45 @@ def _apply_list_filters(row: dict[str, Any], media_type: str, *, hide_unaired: b
     return False
 
 
+def _merge_watch_overlay_fields(updated: dict[str, Any], overlay: dict[str, Any]) -> None:
+    """Merge live DB watch counters without downgrading richer list-row totals."""
+    watch_keys = ("episode_count", "watched_episodes", "unwatched_episodes")
+    for key in watch_keys:
+        if key not in overlay or overlay.get(key) is None:
+            continue
+        try:
+            overlay_val = int(overlay.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        try:
+            row_val = int(updated.get(key) or 0)
+        except (TypeError, ValueError):
+            row_val = 0
+        updated[key] = max(row_val, overlay_val)
+
+    info = updated.get("info")
+    if not isinstance(info, dict):
+        return
+    for info_key, row_key in (
+        ("total_episodes_count", "episode_count"),
+        ("watched_episodes_count", "watched_episodes"),
+        ("unwatched_episodes", "unwatched_episodes"),
+    ):
+        info_val = info.get(info_key)
+        if info_val is None:
+            continue
+        try:
+            info_int = int(info_val)
+        except (TypeError, ValueError):
+            continue
+        try:
+            row_val = int(updated.get(row_key) or 0)
+        except (TypeError, ValueError):
+            row_val = 0
+        if info_int > row_val:
+            updated[row_key] = info_int
+
+
 def _overlay_sync_fields(rows: list[dict[str, Any]], media_type: str, db) -> list[dict[str, Any]]:
     simkl_ids = [int(row["simkl_id"]) for row in rows if row.get("simkl_id") is not None]
     if not simkl_ids:
@@ -178,7 +217,9 @@ def _overlay_sync_fields(rows: list[dict[str, Any]], media_type: str, db) -> lis
         overlay = overlays.get(int(row["simkl_id"]))
         if overlay:
             overlay_cast = overlay.get("cast")
-            updated.update({k: v for k, v in overlay.items() if k != "cast"})
+            passthrough = {k: v for k, v in overlay.items() if k not in ("cast", *("episode_count", "watched_episodes", "unwatched_episodes"))}
+            updated.update(passthrough)
+            _merge_watch_overlay_fields(updated, overlay)
             if overlay_cast and not _row_has_cast(updated):
                 updated["cast"] = overlay_cast
             info = updated.get("info")
@@ -216,7 +257,14 @@ def overlay_page_watch_fields(
         for row in _overlay_sync_fields(movie_rows, "movie", db):
             by_id[int(row["simkl_id"])] = row
     if show_rows:
-        for row in _overlay_sync_fields(show_rows, "tvshow", db):
+        overlaid_shows = _overlay_sync_fields(show_rows, "tvshow", db)
+        try:
+            enriched = db._enrich_show_episode_counts(overlaid_shows)
+            if enriched:
+                overlaid_shows = enriched
+        except Exception:
+            pass
+        for row in overlaid_shows:
             by_id[int(row["simkl_id"])] = row
     if not by_id:
         return rows
