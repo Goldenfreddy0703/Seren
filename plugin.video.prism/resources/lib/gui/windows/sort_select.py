@@ -186,7 +186,7 @@ class SortSelect(BaseWindow):
     def _apply_anime_preset(self, preset: str):
         if self.catalog != "anime":
             return
-        if not catalog_profiles.apply_anime_preset(preset):
+        if not catalog_profiles.apply_anime_sort_preset(preset):
             return
         self.sort_options = catalog_profiles.load_sort_options(self.catalog)
         self._populate_all_lists()

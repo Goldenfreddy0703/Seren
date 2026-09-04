@@ -190,7 +190,7 @@ class LocaleSelect(BaseWindow):
     def _apply_anime_preset(self, preset: str):
         if self.catalog != "anime":
             return
-        if not catalog_profiles.apply_anime_preset(preset):
+        if not catalog_profiles.apply_anime_playback_preset(preset):
             return
         self._refresh_catalog_state()
         label = g.get_language_string(30942 if preset == "sub" else 30943)

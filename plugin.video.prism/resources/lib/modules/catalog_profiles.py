@@ -311,7 +311,10 @@ def apply_anime_playback_preset(preset: str) -> bool:
 
 
 def apply_anime_preset(preset: str) -> bool:
-    """Apply full anime sub/dub preset: filters, sort, and playback locale."""
+    """Apply full anime sub/dub preset: filters, sort, and playback locale.
+
+    Prefer the scoped helpers when changing a single settings screen.
+    """
     key = str(preset or "").strip().lower()
     if key not in ANIME_FILTER_PRESETS:
         return False

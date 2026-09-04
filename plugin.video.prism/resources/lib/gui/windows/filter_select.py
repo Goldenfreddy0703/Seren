@@ -136,7 +136,7 @@ class FilterSelect(BaseWindow):
     def _apply_anime_preset(self, preset: str):
         if self.catalog != "anime":
             return
-        if not catalog_profiles.apply_anime_preset(preset):
+        if not catalog_profiles.apply_anime_filter_preset(preset):
             return
         self.current_filters = catalog_profiles.get_filters(self.catalog)
         self._refresh_lists()
