@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from resources.lib.discover.normalize import _int_or_none
+from resources.lib.simkl.field_map import tvdb_from_episode
 
 
 def is_anime_item(ep_info: dict[str, Any], item_info: dict[str, Any] | None) -> bool:
@@ -121,5 +122,16 @@ def build_anime_simple_info_fields(
             tvdb_bucket = _first_int(tvdb_season, menu_season)
             if tvdb_bucket is not None and anime_season != tvdb_bucket:
                 fields["thetvdb_part"] = anime_season
+
+    # Explicit scrape coordinates for cloud / torrent matchers.
+    tvdb_bucket, tvdb_ep = tvdb_from_episode(ep_info)
+    if tvdb_bucket is not None:
+        fields["tvdb_season_number"] = str(1 if int(tvdb_bucket) == 0 else tvdb_bucket)
+    if tvdb_ep is not None:
+        fields["tvdb_episode_number"] = str(tvdb_ep)
+
+    simkl_episode = _first_int(ep_info.get("anime_episode"), ep_info.get("episode"))
+    if simkl_episode is not None:
+        fields["simkl_episode_number"] = str(simkl_episode)
 
     return fields

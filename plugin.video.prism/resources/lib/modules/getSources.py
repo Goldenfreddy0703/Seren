@@ -953,6 +953,20 @@ class Sources:
             aliases.append(clean_alias)
 
     @staticmethod
+    def _append_scraper_title_aliases(ep_info, show_info, aliases):
+        """Merge show + episode anime title slots, then append English/Romaji aliases."""
+        from resources.lib.simkl.field_map import merge_anime_title_slots
+
+        merged = dict(ep_info) if isinstance(ep_info, dict) else {}
+        if isinstance(show_info, dict):
+            show_inner = show_info.get("info") if isinstance(show_info.get("info"), dict) else show_info
+            merge_anime_title_slots(merged, show_inner)
+            merge_anime_title_slots(merged, show_info)
+        Sources._append_language_aliases(merged, aliases)
+        if isinstance(ep_info, dict) and ep_info is not merged:
+            Sources._append_language_aliases(ep_info, aliases)
+
+    @staticmethod
     def _append_language_aliases(info_dict, aliases):
         """For anime, queue both the English and Romaji titles as aliases so the
         anime scrapers (nyaa/anirena/animetosho) match releases regardless of which
@@ -994,19 +1008,24 @@ class Sources:
         if '.' in simple_info['show_title']:
             simple_info['show_aliases'].append(source_utils.clean_title(simple_info['show_title'].replace('.', '')))
         Sources._append_clean_alias(simple_info['show_title'], simple_info['show_aliases'])
-        Sources._append_language_aliases(ep_info, simple_info['show_aliases'])
+        Sources._append_scraper_title_aliases(ep_info, show_info, simple_info['show_aliases'])
         simple_info['isanime'] = is_anime_item(ep_info, info)
 
         if simple_info['isanime']:
             simple_info.update(build_anime_simple_info_fields(ep_info, info, show_info))
+            if simple_info.get("simkl_episode_number"):
+                simple_info["absolute_number"] = simple_info["simkl_episode_number"]
             g.log(
                 "Anime scraper handoff: isanime=%s, title='%s', aliases=%s, abs=%s, "
-                "alt_s=%s, alt_e=%s, anidb=%s, mal=%s, tvdb_season=%s, tvdb_part=%s"
+                "simkl_ep=%s, tvdb=%sx%s, alt_s=%s, alt_e=%s, anidb=%s, mal=%s, tvdb_season=%s, tvdb_part=%s"
                 % (
                     simple_info['isanime'],
                     simple_info['show_title'],
                     simple_info['show_aliases'],
                     simple_info.get('absolute_number', ''),
+                    simple_info.get('simkl_episode_number', ''),
+                    simple_info.get('tvdb_season_number', ''),
+                    simple_info.get('tvdb_episode_number', ''),
                     simple_info.get('alternative_season', ''),
                     simple_info.get('alternative_episode', ''),
                     simple_info.get('anidb_id', ''),

@@ -102,6 +102,11 @@ class LocalFileScraper(CloudScraper):
         )
         return source_utils.filter_files_for_resolving(items, self.item_information)
 
+    @staticmethod
+    def _parent_folder_name(path):
+        parts = [part for part in (path or '').replace('\\', '/').split('/') if part]
+        return parts[-2] if len(parts) > 1 else ''
+
     def _walk_folder(self, root):
         items = []
         stack = [root]
@@ -132,11 +137,14 @@ class LocalFileScraper(CloudScraper):
                 except Exception:
                     size_bytes = 0
 
+                path_normalized = full_path.replace('\\', '/')
                 items.append(
                     {
                         'release_title': filename,
+                        'name': filename,
+                        'folder_name': self._parent_folder_name(path_normalized),
                         'url': full_path,
-                        'path': full_path.replace('\\', '/'),
+                        'path': path_normalized,
                         'size': (size_bytes / 1024) / 1024 if size_bytes else 0,
                     }
                 )
@@ -252,6 +260,22 @@ class LocalFileScraper(CloudScraper):
 
         return self._title_in_local_item(item, self._episode_title_candidates())
 
+    def _episode_match_title(self, item):
+        match_title = source_utils.build_cloud_match_title(item)
+        if not match_title:
+            match_title = self._local_search_text(item)
+        return match_title
+
+    def _matches_shared_episode(self, item):
+        if not self.simple_info or not self.episode_regex:
+            return False
+        return source_utils.cloud_episode_item_matches(
+            self._episode_match_title(item),
+            episode_regex=self.episode_regex,
+            season_regex=self.season_regex,
+            simple_info=self.simple_info,
+        )
+
     def _matches_local_movie(self, item):
         if not self.simple_info:
             return False
@@ -279,9 +303,8 @@ class LocalFileScraper(CloudScraper):
             for item in cloud_items:
                 search_text = self._local_search_text(item)
                 if (
-                    self.episode_regex(search_text)
-                    or self.show_regex(search_text)
-                    or self.season_regex(search_text)
+                    self._matches_shared_episode(item)
+                    or (self.show_regex and self.show_regex(search_text))
                     or self._matches_local_episode(item)
                 ):
                     sources.append(item)
@@ -306,6 +329,8 @@ class LocalFileScraper(CloudScraper):
                 g.log(
                     f"Local scraper: no episode match for {show_title} "
                     f"S{self.simple_info.get('season_number')}E{self.simple_info.get('episode_number')} "
+                    f"simkl_ep={self.simple_info.get('simkl_episode_number')} "
+                    f"tvdb={self.simple_info.get('tvdb_season_number')}x{self.simple_info.get('tvdb_episode_number')} "
                     f"from {len(cloud_items)} indexed file(s)",
                     'info',
                 )

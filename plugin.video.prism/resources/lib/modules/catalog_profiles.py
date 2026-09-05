@@ -14,7 +14,7 @@ DEFAULT_FILTERS = "3D,AV1"
 ANIME_BASE_FILTERS = frozenset({"3D", "AV1"})
 ANIME_FILTER_PRESETS = {
     "sub": ANIME_BASE_FILTERS | {"DUB"},
-    "dub": ANIME_BASE_FILTERS | {"SUB", "MULTI-SUB"},
+    "dub": ANIME_BASE_FILTERS | {"SUB", "MULTI-SUB", "HC"},
 }
 
 DEFAULT_SORTMETHOD = {1: 2, 2: 1, 3: 4, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0}

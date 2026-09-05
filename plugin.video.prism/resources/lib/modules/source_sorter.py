@@ -55,55 +55,64 @@ class SourceSorter:
 
         return current_filters.difference({"HDR", "DV"})
 
+    def _filter_reject_reason(self, source, max_size=None, min_size=None):
+        quality = source.get("quality", "Unknown")
+        if (
+            quality not in self.resolution_set
+            and all(part not in self.resolution_set for part in quality.split("/"))
+            and quality != "Unknown"
+        ):
+            return "resolution", {
+                "quality": quality,
+                "accepted_resolutions": sorted(self.resolution_set),
+            }
+
+        info = source.get("info") or set()
+        overlap = self.filter_set & info
+        if overlap:
+            return "info_tag", {
+                "matched_tags": sorted(overlap),
+                "parsed_tags": sorted(info),
+                "active_tag_filters": sorted(self.filter_set),
+            }
+
+        if self.disable_dv and "DV" in info and "HYBRID" not in info:
+            return "dv", {"parsed_tags": sorted(info)}
+        if self.disable_hdr and "HDR" in info and "HYBRID" not in info:
+            return "hdr", {"parsed_tags": sorted(info)}
+        if self.disable_dv and self.disable_hdr and "HYBRID" in info:
+            return "hybrid", {"parsed_tags": sorted(info)}
+
+        if self.enable_size_limit:
+            size = source.get("size", 0)
+            if self.enable_size_limit == 1 and (
+                (isinstance(size, (int, float)) and not max_size >= float(size) >= min_size)
+                or (isinstance(size, str) and size != "Variable")
+            ):
+                return "size_speed", {"size": size, "min_size": min_size, "max_size": max_size}
+            if self.enable_size_limit == 2 and (
+                (isinstance(size, (int, float)) and not (self.size_minimum <= float(size) <= self.size_limit))
+                or (isinstance(size, str) and size != "Variable")
+            ):
+                return "size_limit", {
+                    "size": size,
+                    "min_size": self.size_minimum,
+                    "max_size": self.size_limit,
+                }
+
+        return None
+
     def filter_sources(self, source_list):
         # Iterate sources, yielding only those that are not filtered
-        if self.enable_size_limit == 1 :
+        max_size = min_size = None
+        if self.enable_size_limit == 1:
             duration = self.item_information["info"].get("duration") or (5400 if self.mediatype == "movie" else 2400)
             max_size = self.speed_limit * 0.125 * duration * 0.9
             min_size = self.speed_minimum * 0.125 * duration * 0.9
-            
-        for source in source_list:
-            # Quality filter
-            if (
-                source['quality'] not in self.resolution_set
-                and all(quality not in self.resolution_set for quality in source['quality'].split('/'))
-                and source['quality'] != "Unknown"
-            ):
-                continue
-            # Info Filter
-            if self.filter_set & source['info']:
-                continue
-            # DV filter
-            if self.disable_dv and "DV" in source['info'] and "HYBRID" not in source['info']:
-                continue
-            # HDR Filter
-            if self.disable_hdr and "HDR" in source['info'] and "HYBRID" not in source['info']:
-                continue
-            # Hybrid Filter
-            if self.disable_dv and self.disable_hdr and "HYBRID" in source['info']:
-                continue
-            if self.enable_size_limit:
-                size = source.get("size", 0)
-                if self.enable_size_limit == 1 and (
-                    (
-                        isinstance(size, (int, float))
-                        and not max_size >= float(size) >= min_size
-                    )
-                    or isinstance(size, str)
-                    and size != "Variable"
-                ):
-                    continue
-                elif self.enable_size_limit == 2 and (
-                    (
-                        isinstance(size, (int, float))
-                        and not (self.size_minimum <= float(size) <= self.size_limit)
-                    )
-                    or isinstance(size, str)
-                    and size != "Variable"
-                ):
-                    continue
 
-            # If not filtered, yield source
+        for source in source_list:
+            if self._filter_reject_reason(source, max_size=max_size, min_size=min_size):
+                continue
             yield source
 
     def sort_sources(self, sources_list):

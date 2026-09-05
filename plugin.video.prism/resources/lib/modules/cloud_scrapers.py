@@ -189,9 +189,18 @@ class PremiumizeCloudScraper(CloudScraper, ApiBase):
         self.debrid_provider = "premiumize"
         self._source_normalization = (
             ("name", "release_title", None),
+            ("path", "path", None),
             ("id", "url", None),
             ("size", "size", lambda k: (int(k) / 1024) / 1024),
         )
+
+    def _normalize_item(self, item):
+        normalized = super()._normalize_item(item)
+        path = item.get("path") or ""
+        if isinstance(path, str) and "/" in path:
+            normalized["folder_name"] = path.rsplit("/", 1)[0]
+        normalized["name"] = item.get("name") or normalized.get("release_title", "")
+        return normalized
 
     def _fetch_cloud_items(self):
         return source_utils.filter_files_for_resolving(self.api_adapter.list_folder_all(), self.item_information)
