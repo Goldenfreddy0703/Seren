@@ -73,10 +73,14 @@ g.log(f"### Detected Kodi Version: {g.KODI_VERSION}")
 g.log(f"### Detected timezone: {repr(g.LOCAL_TIMEZONE.zone)}")
 g.log("#############  SERVICE ENTERED KEEP ALIVE  #################")
 
+g.set_runtime_setting("cache_maintenance.service_started_at", time.time())
+
 try:
     from resources.lib.database.session import get_sync_database
+    from resources.lib.modules.cache_maintenance import mark_service_migrations_ready
 
     get_sync_database()
+    mark_service_migrations_ready()
 except Exception:
     g.log_stacktrace()
 
@@ -108,9 +112,12 @@ try:
             "warning",
         )
 
-    xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=torrentCacheCleanup")')
+    from resources.lib.modules.cache_maintenance import (
+        process_pending_torrent_cache_cleanup,
+        queue_torrent_cache_cleanup,
+    )
 
-    g.set_runtime_setting("cache_maintenance.service_started_at", time.time())
+    queue_torrent_cache_cleanup()
 
     while not monitor.abortRequested():
         if monitor.waitForAbort(0):
@@ -122,6 +129,9 @@ try:
             from resources.lib.modules.cache_maintenance import process_idle_deferred_vacuum
             from resources.lib.simkl.kodi_watched_bridge import bridge_enabled, scan_kodi_watched_bridge
 
+            process_pending_torrent_cache_cleanup()
+            if monitor.abortRequested():
+                break
             MetaEnrichmentQueue.process_idle()
             if monitor.abortRequested():
                 break
@@ -137,7 +147,10 @@ try:
         if monitor.abortRequested():
             break
 
-        xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=runMaintenance")')
+        from resources.lib.modules.cache_maintenance import service_foreground_ready
+
+        if service_foreground_ready():
+            xbmc.executebuiltin('RunPlugin("plugin://plugin.video.prism/?action=runMaintenance")')
         if monitor.waitForAbort(15):
             break
         if monitor.abortRequested():

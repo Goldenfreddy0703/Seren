@@ -5607,3 +5607,8 @@ msgstr "Sync Kodi Mark as Watched"
 msgctxt "#31081"
 msgid "When enabled, Prism syncs Kodi's native Mark as Watched menu on Prism lists to Simkl and refreshes the list."
 msgstr "When enabled, Prism syncs Kodi's native Mark as Watched menu on Prism lists to Simkl and refreshes the list."
+
+#: /resources/lib/common/plugin_invoker_gate.py
+msgctxt "#31087"
+msgid "Starting Prism"
+msgstr "Starting Prism"

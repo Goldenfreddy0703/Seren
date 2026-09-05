@@ -60,8 +60,18 @@ def prism_endpoint():
 
     enter_prism_plugin_mode()
     foreground_menu = False
+    plugin_slot_token = None
     try:
         try:
+            from resources.lib.common.plugin_invoker_gate import (
+                acquire_prism_plugin_slot,
+                release_prism_plugin_slot,
+                should_hold_plugin_slot_from_argv,
+            )
+
+            if should_hold_plugin_slot_from_argv():
+                plugin_slot_token = acquire_prism_plugin_slot()
+
             g.init_globals(sys.argv)
             action = (g.REQUEST_PARAMS or {}).get("action")
             if plugin_action_allows_threads(action):
@@ -82,12 +92,19 @@ def prism_endpoint():
 
                     set_drilldown_navigation_active(True)
                 if g.PLUGIN_HANDLE > 0 and not g.FROM_WIDGET:
+                    from resources.lib.common.plugin_invoker_gate import ensure_startup_ready_for_foreground
                     from resources.lib.modules.page_prefetch import set_foreground_menu_active
 
-                    set_foreground_menu_active(True)
-                    foreground_menu = True
-                with WidgetLoadGate(), TimeLogger(f"{g.REQUEST_PARAMS.get('action', '')}"):
-                    router.dispatch(g.REQUEST_PARAMS)
+                    if ensure_startup_ready_for_foreground():
+                        if not plugin_slot_token:
+                            plugin_slot_token = acquire_prism_plugin_slot()
+                        set_foreground_menu_active(True)
+                        foreground_menu = True
+                        with WidgetLoadGate(), TimeLogger(f"{g.REQUEST_PARAMS.get('action', '')}"):
+                            router.dispatch(g.REQUEST_PARAMS)
+                else:
+                    with WidgetLoadGate(), TimeLogger(f"{g.REQUEST_PARAMS.get('action', '')}"):
+                        router.dispatch(g.REQUEST_PARAMS)
 
         except Exception:
             g.cancel_directory()
@@ -110,6 +127,10 @@ def prism_endpoint():
                     set_drilldown_navigation_active(False)
             except Exception:
                 pass
+            if plugin_slot_token:
+                from resources.lib.common.plugin_invoker_gate import release_prism_plugin_slot
+
+                release_prism_plugin_slot(plugin_slot_token)
             _release_plugin_threads()
             g.clear_runtime_setting("prism.inline_pool")
             g.deinit()

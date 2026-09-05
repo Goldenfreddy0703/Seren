@@ -31,6 +31,78 @@ _SYNC_VACUUM_LAST_RUN_KEY = "cache_maintenance.sync_vacuum.last_run"
 _META_VACUUM_PENDING_KEY = "cache_maintenance.meta_vacuum.pending"
 _META_VACUUM_LAST_RUN_KEY = "cache_maintenance.meta_vacuum.last_run"
 _ENRICH_IN_FLIGHT_KEY = "meta_enrich.in_flight"
+_MIGRATIONS_READY_AT_KEY = "cache_maintenance.migrations_ready_at"
+_FOREGROUND_READY_KEY = "cache_maintenance.service_foreground_ready"
+_TORRENT_CLEANUP_PENDING_KEY = "cache_maintenance.torrent_cleanup_pending"
+_FOREGROUND_GRACE_SEC_ANDROID = 12
+_FOREGROUND_GRACE_SEC_DEFAULT = 8
+
+
+def _foreground_grace_seconds() -> int:
+    return _FOREGROUND_GRACE_SEC_ANDROID if g.PLATFORM == "android" else _FOREGROUND_GRACE_SEC_DEFAULT
+
+
+def mark_service_migrations_ready() -> None:
+    """Called by service.py once sync DB migrations finish."""
+    if g.get_float_runtime_setting(_MIGRATIONS_READY_AT_KEY, 0):
+        return
+    ready_at = time.time()
+    g.set_runtime_setting(_MIGRATIONS_READY_AT_KEY, ready_at)
+    g.log("PRISM: Service migrations ready", "info")
+
+
+def service_foreground_ready() -> bool:
+    """True when foreground menus may run without contending with cold-start service work."""
+    if g.get_bool_runtime_setting(_FOREGROUND_READY_KEY):
+        return True
+    if g.abort_requested():
+        return True
+    migrations_at = g.get_float_runtime_setting(_MIGRATIONS_READY_AT_KEY, 0)
+    if not migrations_at:
+        return False
+    elapsed = time.time() - migrations_at
+    if elapsed < _foreground_grace_seconds():
+        return False
+    g.set_runtime_setting(_FOREGROUND_READY_KEY, True)
+    g.log(f"PRISM: Foreground startup gate open ({elapsed:.1f}s after migrations)", "info")
+    return True
+
+
+def startup_gate_progress_percent() -> int:
+    """Rough 0-99 progress while waiting for the post-migration grace window."""
+    migrations_at = g.get_float_runtime_setting(_MIGRATIONS_READY_AT_KEY, 0)
+    if not migrations_at:
+        return 5
+    elapsed = time.time() - migrations_at
+    grace = max(_foreground_grace_seconds(), 1)
+    return min(99, max(5, int(elapsed / grace * 100)))
+
+
+def queue_torrent_cache_cleanup() -> None:
+    g.set_runtime_setting(_TORRENT_CLEANUP_PENDING_KEY, True)
+
+
+def process_pending_torrent_cache_cleanup() -> bool:
+    """Service hook: run torrent cache cleanup after the foreground gate opens."""
+    if not g.get_bool_runtime_setting(_TORRENT_CLEANUP_PENDING_KEY):
+        return False
+    if not service_foreground_ready():
+        return False
+    try:
+        from resources.lib.modules.page_prefetch import foreground_browse_busy
+
+        if foreground_browse_busy():
+            return False
+    except Exception:
+        pass
+    g.clear_runtime_setting(_TORRENT_CLEANUP_PENDING_KEY)
+    try:
+        from resources.lib.database import torrentCache
+
+        torrentCache.TorrentCache().do_cleanup()
+    except Exception:
+        g.log_stacktrace()
+    return True
 
 
 def trim_api_cache(max_rows: int = API_CACHE_MAX_ROWS) -> int:
