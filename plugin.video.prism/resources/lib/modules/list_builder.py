@@ -64,11 +64,20 @@ class ListBuilder:
             return bool(item.get("play_count") or info.get("playcount"))
         if mediatype == "tvshow":
             try:
+                from resources.lib.simkl.watch_counters import is_caught_up, not_aired_count, total_for_watch_math
+
                 episode_count = int(item.get("episode_count") or info.get("episode_count") or 0)
                 watched_episodes = int(item.get("watched_episodes") or info.get("watched_episodes_count") or 0)
+                unwatched = item.get("unwatched_episodes", info.get("unwatched_episodes"))
             except (TypeError, ValueError):
                 return False
-            return episode_count > 0 and watched_episodes >= episode_count
+            return is_caught_up(
+                watched_episodes,
+                total_for_watch_math(item, info) or episode_count,
+                not_aired=not_aired_count(info),
+                unwatched=unwatched,
+                aired_episode_count=episode_count,
+            )
         if mediatype == "episode":
             return bool(item.get("play_count") or info.get("playcount"))
         return False
@@ -93,16 +102,19 @@ class ListBuilder:
 
     @staticmethod
     def _season_fully_watched(row: dict) -> bool:
+        from resources.lib.simkl.watch_counters import is_caught_up
+
         info = row.get("info") if isinstance(row.get("info"), dict) else {}
         episode_count = row.get("episode_count") or info.get("episode_count")
         watched_episodes = row.get("watched_episodes") or info.get("watched_episodes_count")
+        unwatched = row.get("unwatched_episodes", info.get("unwatched_episodes"))
         try:
             episode_count = int(episode_count) if episode_count is not None else 0
             watched_episodes = int(watched_episodes) if watched_episodes is not None else 0
         except (TypeError, ValueError):
             episode_count = 0
             watched_episodes = 0
-        if episode_count > 0 and watched_episodes >= episode_count:
+        if is_caught_up(watched_episodes, episode_count, unwatched=unwatched):
             return True
         play_count = row.get("play_count")
         if play_count is None:
@@ -1333,64 +1345,19 @@ class ListBuilder:
             name = info.get("title") or item.get("name")
 
         if info.get("mediatype") == "tvshow":
-            ep_count = (
-                item.get("episode_count")
-                or info.get("episode_count")
-                or info.get("total_episodes_count")
-                or info.get("total_episodes")
-            )
-            watched = item.get("watched_episodes") or info.get("watched_episodes_count")
-            unwatched = item.get("unwatched_episodes") or info.get("unwatched_episodes")
+            from resources.lib.simkl.watch_counters import apply_show_watch_fields
+
+            aired_hint = info.get("aired_episodes")
             try:
-                ep_count = int(ep_count) if ep_count is not None else 0
+                aired_hint = int(aired_hint) if aired_hint is not None else 0
             except (TypeError, ValueError):
-                ep_count = 0
-            try:
-                watched = int(watched) if watched is not None else 0
-            except (TypeError, ValueError):
-                watched = 0
-            if ep_count > 0:
-                item["episode_count"] = ep_count
-                info.setdefault("episode_count", ep_count)
-                item["watched_episodes"] = watched
-                info.setdefault("watched_episodes_count", watched)
-                if unwatched is None:
-                    unwatched = max(0, ep_count - watched)
-                else:
-                    try:
-                        unwatched = int(unwatched)
-                    except (TypeError, ValueError):
-                        unwatched = max(0, ep_count - watched)
-                item["unwatched_episodes"] = max(0, unwatched)
-                info.setdefault("unwatched_episodes", item["unwatched_episodes"])
+                aired_hint = 0
+            apply_show_watch_fields(item, info, aired_episode_count=aired_hint if aired_hint > 0 else None)
 
         if info.get("mediatype") == "season":
-            ep_count = item.get("episode_count") or info.get("episode_count") or info.get("aired_episodes")
-            watched = item.get("watched_episodes") or info.get("watched_episodes_count")
-            unwatched = item.get("unwatched_episodes") or info.get("unwatched_episodes")
-            try:
-                ep_count = int(ep_count) if ep_count is not None else 0
-            except (TypeError, ValueError):
-                ep_count = 0
-            try:
-                watched = int(watched) if watched is not None else 0
-            except (TypeError, ValueError):
-                watched = 0
-            if ep_count > 0:
-                item["episode_count"] = ep_count
-                info.setdefault("episode_count", ep_count)
-                info.setdefault("aired_episodes", ep_count)
-                item["watched_episodes"] = watched
-                info.setdefault("watched_episodes_count", watched)
-                if unwatched is None:
-                    unwatched = max(0, ep_count - watched)
-                else:
-                    try:
-                        unwatched = int(unwatched)
-                    except (TypeError, ValueError):
-                        unwatched = max(0, ep_count - watched)
-                item["unwatched_episodes"] = max(0, unwatched)
-                info.setdefault("unwatched_episodes", item["unwatched_episodes"])
+            from resources.lib.simkl.watch_counters import apply_season_watch_fields
+
+            apply_season_watch_fields(item, info)
             g.log(
                 f"[season trace] season menu item show={info.get('simkl_show_id')} "
                 f"info.season={info.get('season')} label={name!r} episodes={item.get('episode_count')}",

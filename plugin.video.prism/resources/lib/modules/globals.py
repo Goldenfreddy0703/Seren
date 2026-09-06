@@ -1614,28 +1614,41 @@ class GlobalVariables:
             item.setProperty("WatchedEpisodes", str(menu_item["watched_episodes"]))
 
         mediatype = (info.get("mediatype") or "").lower()
-        if mediatype in ("tvshow", "season") and menu_item.get("episode_count", 0) and menu_item.get("watched_episodes", 0):
+        from resources.lib.simkl.watch_counters import (
+            airable_unwatched,
+            is_caught_up,
+            not_aired_count,
+            total_for_watch_math,
+        )
+
+        if mediatype in ("tvshow", "season") and menu_item.get("episode_count", 0):
             ep_count = int(menu_item["episode_count"])
-            watched_eps = int(menu_item["watched_episodes"])
-            if ep_count == watched_eps:
-                # Single-episode stub catalogs from Simkl sync are not full seasons.
+            watched_eps = int(menu_item.get("watched_episodes") or 0)
+            unwatched_eps = menu_item.get("unwatched_episodes")
+            if is_caught_up(
+                watched_eps,
+                total_for_watch_math(menu_item, info) or ep_count,
+                not_aired=not_aired_count(info),
+                unwatched=unwatched_eps,
+                aired_episode_count=ep_count,
+            ):
                 if mediatype == "season" and ep_count <= 1:
                     info["playcount"] = 0
                 else:
                     info["playcount"] = 1
-            else:
+            elif watched_eps > 0 and ep_count > 0:
                 item.setProperty(
                     "WatchedProgress",
                     str(max(1, int((float(watched_eps) / float(ep_count)) * 100))),
                 )
         if (
-            "unwatched_episodes" not in menu_item
-            and menu_item.get("watched_episodes", 0) == 0
+            menu_item.get("watched_episodes", 0) == 0
             and menu_item.get("episode_count", 0)
             and menu_item.get("episode_count", 0) > 0
         ):
-            item.setProperty("WatchedEpisodes", str(0))
-            item.setProperty("UnWatchedEpisodes", str(menu_item.get("episode_count", 0)))
+            if "unwatched_episodes" not in menu_item:
+                item.setProperty("WatchedEpisodes", str(0))
+                item.setProperty("UnWatchedEpisodes", str(menu_item.get("episode_count", 0)))
         elif (
             mediatype in ("tvshow", "season")
             and "unwatched_episodes" not in menu_item
@@ -1643,9 +1656,11 @@ class GlobalVariables:
             and menu_item.get("watched_episodes") is not None
         ):
             try:
-                unwatched = max(
-                    0,
-                    int(menu_item["episode_count"]) - int(menu_item["watched_episodes"]),
+                total = total_for_watch_math(menu_item, info) or int(menu_item["episode_count"])
+                unwatched = airable_unwatched(
+                    total,
+                    int(menu_item["watched_episodes"]),
+                    not_aired_count(info),
                 )
                 if unwatched > 0:
                     item.setProperty("UnWatchedEpisodes", str(unwatched))

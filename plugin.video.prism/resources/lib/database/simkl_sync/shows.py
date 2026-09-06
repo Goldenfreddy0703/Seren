@@ -426,22 +426,26 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
                 not_aired = int(info.get("not_aired_episodes_count") or 0)
             except (TypeError, ValueError):
                 not_aired = 0
-            try:
-                if unwatched is not None:
-                    unwatched = int(unwatched)
-                else:
-                    unwatched = max(0, effective - watched - not_aired)
-            except (TypeError, ValueError):
-                unwatched = max(0, effective - watched - not_aired)
-            if effective > db_count and unwatched == max(0, effective - watched):
-                unwatched = max(0, effective - watched - not_aired)
+            from resources.lib.simkl.watch_counters import airable_episode_count, airable_unwatched
 
-            row["episode_count"] = effective
+            season_aired = season_totals.get(sid, 0)
+            if not_aired <= 0 and season_aired > 0 and effective > season_aired:
+                not_aired = effective - season_aired
+
+            aired = season_aired if season_aired > 0 else airable_episode_count(effective, not_aired)
+            unwatched = max(0, aired - watched)
+            if unwatched == 0 and watched < effective and not_aired > 0:
+                unwatched = airable_unwatched(effective, watched, not_aired)
+
+            row["episode_count"] = aired
             row["watched_episodes"] = watched
             row["unwatched_episodes"] = max(0, unwatched)
-            info.setdefault("episode_count", effective)
+            info.setdefault("episode_count", aired)
+            info["aired_episodes"] = aired
             info.setdefault("watched_episodes_count", watched)
-            info.setdefault("unwatched_episodes", row["unwatched_episodes"])
+            info["unwatched_episodes"] = row["unwatched_episodes"]
+            if not_aired > 0:
+                info.setdefault("not_aired_episodes_count", not_aired)
 
         return rows
 
@@ -643,11 +647,25 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
             return rows
 
         show_id = int(show_id)
+        aired_cutoff = self._get_aired_cutoff()
         ep_stats_rows = self.fetchall(
-            """
+            f"""
             SELECT season,
-                   COUNT(*) AS episode_total,
-                   SUM(CASE WHEN COALESCE(watched, 0) > 0 THEN 1 ELSE 0 END) AS watched_total
+                   SUM(
+                       CASE
+                           WHEN air_date IS NULL OR Datetime(air_date) < Datetime('{aired_cutoff}')
+                               THEN 1
+                           ELSE 0
+                       END
+                   ) AS episode_total,
+                   SUM(
+                       CASE
+                           WHEN COALESCE(watched, 0) > 0
+                               AND (air_date IS NULL OR Datetime(air_date) < Datetime('{aired_cutoff}'))
+                               THEN 1
+                           ELSE 0
+                       END
+                   ) AS watched_total
             FROM episodes
             WHERE simkl_show_id = ? AND season > 0
             GROUP BY season

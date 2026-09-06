@@ -1050,7 +1050,7 @@ class SimklSyncDatabase(Database):
 
         from resources.lib.database.session import get_sync_database
 
-        if sync_errors := get_sync_database().sync_activities(silent):
+        if sync_errors := get_sync_database().sync_activities(silent=silent, force=True):
             g.notification(self.notification_prefix, g.get_language_string(30332), time=5000)
         elif sync_errors is None:
             self.refresh_activities()
@@ -2754,7 +2754,8 @@ class SimklSyncDatabase(Database):
             total = int(total)
             not_aired = int(entry.get("not_aired_episodes_count") or 0)
             unwatched = self._simkl_airable_unwatched(total, watched, not_aired)
-            rows.append((watched, total, unwatched, simkl_id))
+            aired = max(0, total - not_aired)
+            rows.append((watched, aired, unwatched, simkl_id))
 
         if not rows:
             return
@@ -3419,17 +3420,6 @@ class SimklSyncDatabase(Database):
         seasons = self.fetchall("SELECT simkl_id FROM seasons WHERE simkl_show_id=?", (show_id,))
         if seasons:
             self.update_season_statistics(seasons)
-            self.execute_sql(
-                """
-                UPDATE seasons
-                SET unwatched_episodes = MAX(
-                    0,
-                    COALESCE(episode_count, 0) - COALESCE(watched_episodes, 0)
-                )
-                WHERE simkl_show_id = ?
-                """,
-                (show_id,),
-            )
 
     def apply_watched_progress_from_entry(self, entry: dict) -> int:
         """Mark episodes watched up to Simkl last_watched when seasons[] is missing or sparse."""

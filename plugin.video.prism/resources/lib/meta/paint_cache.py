@@ -154,15 +154,24 @@ def _apply_list_filters(row: dict[str, Any], media_type: str, *, hide_unaired: b
             if row.get("play_count") or info.get("playcount"):
                 return True
         else:
+            from resources.lib.simkl.watch_counters import is_caught_up, not_aired_count, total_for_watch_math
+
             episode_count = row.get("episode_count") or info.get("episode_count") or info.get("total_episodes_count")
             watched_episodes = row.get("watched_episodes") or info.get("watched_episodes_count")
+            unwatched = row.get("unwatched_episodes", info.get("unwatched_episodes"))
             try:
                 episode_count = int(episode_count) if episode_count is not None else 0
                 watched_episodes = int(watched_episodes) if watched_episodes is not None else 0
             except (TypeError, ValueError):
                 episode_count = 0
                 watched_episodes = 0
-            if episode_count > 0 and watched_episodes >= episode_count:
+            if is_caught_up(
+                watched_episodes,
+                total_for_watch_math(row, info) or episode_count,
+                not_aired=not_aired_count(info),
+                unwatched=unwatched,
+                aired_episode_count=episode_count,
+            ):
                 return True
     return False
 
