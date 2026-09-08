@@ -143,8 +143,6 @@ def normalize_library_entry(entry: dict[str, Any], catalog: str) -> dict[str, An
     item = {
         "title": media.get("title"),
         "en_title": media.get("en_title"),
-        "title_en": media.get("title_en") or media.get("en_title"),
-        "title_romaji": media.get("title_romaji"),
         "overview": media.get("overview") or media.get("description"),
         "year": media.get("year"),
         "release_date": media.get("released") or media.get("release_date") or media.get("first_aired"),
@@ -165,6 +163,11 @@ def normalize_library_entry(entry: dict[str, Any], catalog: str) -> dict[str, An
         "ratings": ratings,
         "ids": ids,
     }
+    if catalog == "anime":
+        if media.get("title_romaji"):
+            item["title_romaji"] = media.get("title_romaji")
+    else:
+        item["title_en"] = media.get("title_en") or media.get("en_title")
     if entry.get("listed_at"):
         item["dateadded"] = entry.get("listed_at")
 

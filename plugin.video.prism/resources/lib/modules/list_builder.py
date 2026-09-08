@@ -1208,15 +1208,51 @@ class ListBuilder:
         if not isinstance(info, dict):
             return item
 
+        mediatype = info.get("mediatype")
+        if mediatype == "movie":
+            sid = item.get("simkl_id")
+            db_history_cleared = False
+            if sid is not None:
+                try:
+                    from resources.lib.database.session import get_sync_database
+
+                    row = get_sync_database().fetchone(
+                        "SELECT history_cleared, simkl_status FROM movies WHERE simkl_id=?",
+                        (int(sid),),
+                    )
+                    if row:
+                        db_history_cleared = int(row.get("history_cleared") or 0) > 0
+                        if row.get("simkl_status"):
+                            info["simkl_status"] = row["simkl_status"]
+                except Exception:
+                    pass
+            history_cleared = bool(info.get("watch_history_cleared")) or db_history_cleared
+            completed = library_status == "completed" if library_status else info.get("simkl_status") == "completed"
+            try:
+                play_count = int(
+                    item.get("play_count")
+                    if item.get("play_count") is not None
+                    else info.get("playcount") or 0
+                )
+            except (TypeError, ValueError):
+                play_count = 0
+            if history_cleared:
+                item["play_count"] = play_count
+                info["playcount"] = play_count if play_count > 0 else 0
+            elif completed:
+                item["play_count"] = 1
+                info["playcount"] = 1
+            elif play_count > 0:
+                item["play_count"] = play_count
+                info["playcount"] = play_count
+            item["info"] = info
+            return item
+
         completed = library_status == "completed" if library_status else info.get("simkl_status") == "completed"
         if not completed:
             return item
 
-        mediatype = info.get("mediatype")
-        if mediatype == "movie":
-            item["play_count"] = 1
-            info["playcount"] = 1
-        elif mediatype == "tvshow":
+        if mediatype == "tvshow":
             episode_count = item.get("episode_count") or info.get("episode_count") or info.get("total_episodes_count")
             watched_episodes = item.get("watched_episodes") or info.get("watched_episodes_count")
             try:

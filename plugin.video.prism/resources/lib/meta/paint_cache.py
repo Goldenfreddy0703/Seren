@@ -226,16 +226,39 @@ def _overlay_sync_fields(rows: list[dict[str, Any]], media_type: str, db) -> lis
         overlay = overlays.get(int(row["simkl_id"]))
         if overlay:
             overlay_cast = overlay.get("cast")
-            passthrough = {k: v for k, v in overlay.items() if k not in ("cast", *("episode_count", "watched_episodes", "unwatched_episodes"))}
+            passthrough = {
+                k: v
+                for k, v in overlay.items()
+                if k
+                not in (
+                    "cast",
+                    "episode_count",
+                    "watched_episodes",
+                    "unwatched_episodes",
+                    "simkl_status",
+                    "watch_history_cleared",
+                )
+            }
             updated.update(passthrough)
             _merge_watch_overlay_fields(updated, overlay)
             if overlay_cast and not _row_has_cast(updated):
                 updated["cast"] = overlay_cast
             info = updated.get("info")
-            if isinstance(info, dict):
-                for id_key in ("tmdb_id", "tvdb_id", "imdb_id"):
-                    if overlay.get(id_key) is not None and info.get(id_key) is None:
-                        info[id_key] = overlay[id_key]
+            if not isinstance(info, dict):
+                info = {}
+                updated["info"] = info
+            else:
+                info = dict(info)
+                updated["info"] = info
+            for id_key in ("tmdb_id", "tvdb_id", "imdb_id"):
+                if overlay.get(id_key) is not None and info.get(id_key) is None:
+                    info[id_key] = overlay[id_key]
+            if overlay.get("simkl_status"):
+                info["simkl_status"] = overlay["simkl_status"]
+            if overlay.get("watch_history_cleared"):
+                info["watch_history_cleared"] = True
+            else:
+                info.pop("watch_history_cleared", None)
         merged.append(updated)
     return merged
 
@@ -786,6 +809,9 @@ def try_fast_paint_list(
 
     if not rows:
         return rows
+
+    if media_type == "movie":
+        rows = overlay_page_watch_fields(rows, db)
 
     prepared, enrichment_refs, prepare_skipped = paint_rows_fast_or_prepare(
         rows, media_type, db, profile=profile

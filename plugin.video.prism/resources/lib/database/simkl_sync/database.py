@@ -188,6 +188,7 @@ schema = {
                 ("user_rating", ["INTEGER", "NULL"]),
                 ("needs_update", ["BOOLEAN", "NOT NULL", "DEFAULT 1"]),
                 ("simkl_status", ["TEXT", "NULL"]),
+                ("history_cleared", ["INTEGER", "NOT NULL", "DEFAULT 0"]),
             ]
         ),
         "table_constraints": [],
@@ -273,10 +274,14 @@ class SimklSyncDatabase(Database):
             self._migrate_last_changes_poll_column()
             g.set_runtime_setting("simkl_sync.migrations.done", True)
 
+        self._migrate_movie_history_cleared_column()
+
         # Heavy migrations touch display_meta + bulk SQL — run from service only.
         if int(getattr(g, "PLUGIN_HANDLE", 0) or 0) <= 0:
             self._migrate_provider_cast_art_only_policy()
             self._migrate_episode_watch_state_repair()
+            self._migrate_anime_title_slots_repair()
+            self._migrate_anime_title_slots_repair_v2()
         self._migrate_activities_slim_schema()
 
         if self.activities is None:
@@ -352,6 +357,7 @@ class SimklSyncDatabase(Database):
         if media_type == "movie":
             query = f"""
                 SELECT m.simkl_id, m.args, m.watched AS play_count, m.user_rating,
+                       m.simkl_status, m.history_cleared,
                        m.tmdb_id, m.tvdb_id, m.imdb_id, m.air_date, m.[cast],
                        b.resume_time, b.percent_played
                 FROM movies AS m
@@ -369,11 +375,19 @@ class SimklSyncDatabase(Database):
                 WHERE s.simkl_id IN ({ids_sql})
             """
         rows = self.fetchall(query) or []
-        return {
-            int(row["simkl_id"]): dict(row)
-            for row in rows
-            if isinstance(row, dict) and row.get("simkl_id") is not None
-        }
+        overlays: dict[int, dict] = {}
+        for row in rows:
+            if not isinstance(row, dict) or row.get("simkl_id") is None:
+                continue
+            entry = dict(row)
+            if media_type == "movie":
+                if int(entry.get("history_cleared") or 0) > 0:
+                    entry["watch_history_cleared"] = True
+                status = entry.get("simkl_status")
+                if status:
+                    entry["simkl_status"] = status
+            overlays[int(row["simkl_id"])] = entry
+        return overlays
 
     def fetch_paint_rows_batch(self, media_type: str, simkl_ids: list[int]) -> dict[int, dict]:
         """Load denormalized info/art/cast rows for list paint (Seren-style)."""
@@ -590,6 +604,13 @@ class SimklSyncDatabase(Database):
                         (status, row["simkl_id"]),
                     )
 
+    def _migrate_movie_history_cleared_column(self):
+        """Persist Simkl Manager mark-unwatched across metadata upserts."""
+        columns = {row["name"] for row in self.fetchall("PRAGMA table_info(movies)")}
+        if "history_cleared" not in columns:
+            self.execute_sql("ALTER TABLE movies ADD COLUMN history_cleared INTEGER NOT NULL DEFAULT 0")
+            g.log("SimklSync: migrated movies.history_cleared column", "info")
+
     def _migrate_movies_tvdb_id_column(self):
         columns = {row["name"] for row in self.fetchall("PRAGMA table_info(movies)")}
         if "tvdb_id" not in columns:
@@ -751,6 +772,82 @@ class SimklSyncDatabase(Database):
             f"(display_meta cleared, {updated} info rows scrubbed)",
             "info",
         )
+
+    def _migrate_anime_title_slots_repair(self) -> None:
+        """Repair swapped anime title_en/title_romaji slots persisted in show rows."""
+        flag = "anime_title_slots_repair_v1"
+        if g.get_bool_runtime_setting(flag):
+            return
+
+        from resources.lib.simkl.field_map import ensure_anime_title_slots, repair_inverted_anime_title_slots
+
+        updated = 0
+        rows = self.fetchall("SELECT simkl_id, info FROM shows WHERE info IS NOT NULL") or []
+        for row in rows:
+            info = row.get("info")
+            if not isinstance(info, dict):
+                continue
+            if info.get("catalog") != "anime" and not info.get("mal_id"):
+                continue
+            prior = (info.get("title_en"), info.get("title_romaji"))
+            changed = repair_inverted_anime_title_slots(info)
+            ensure_anime_title_slots(info)
+            after = (info.get("title_en"), info.get("title_romaji"))
+            if changed or prior != after:
+                self.execute_sql(
+                    "UPDATE shows SET info=? WHERE simkl_id=?",
+                    (info, int(row["simkl_id"])),
+                )
+                updated += 1
+
+        if updated:
+            try:
+                from resources.lib.meta.display_store import get_display_meta_store
+
+                get_display_meta_store().clear_all()
+            except Exception:
+                g.log_stacktrace()
+
+        g.set_runtime_setting(flag, True)
+        g.log(f"SimklSync: anime title slot repair complete ({updated} show row(s) updated)", "info")
+
+    def _migrate_anime_title_slots_repair_v2(self) -> None:
+        """Re-run anime title slot repair with expanded Pattern B heuristics."""
+        flag = "anime_title_slots_repair_v2"
+        if g.get_bool_runtime_setting(flag):
+            return
+
+        from resources.lib.simkl.field_map import ensure_anime_title_slots, repair_inverted_anime_title_slots
+
+        updated = 0
+        rows = self.fetchall("SELECT simkl_id, info FROM shows WHERE info IS NOT NULL") or []
+        for row in rows:
+            info = row.get("info")
+            if not isinstance(info, dict):
+                continue
+            if info.get("catalog") != "anime" and not info.get("mal_id"):
+                continue
+            prior = (info.get("title_en"), info.get("title_romaji"), info.get("title"))
+            changed = repair_inverted_anime_title_slots(info)
+            ensure_anime_title_slots(info)
+            after = (info.get("title_en"), info.get("title_romaji"), info.get("title"))
+            if changed or prior != after:
+                self.execute_sql(
+                    "UPDATE shows SET info=? WHERE simkl_id=?",
+                    (info, int(row["simkl_id"])),
+                )
+                updated += 1
+
+        if updated:
+            try:
+                from resources.lib.meta.display_store import get_display_meta_store
+
+                get_display_meta_store().clear_all()
+            except Exception:
+                g.log_stacktrace()
+
+        g.set_runtime_setting(flag, True)
+        g.log(f"SimklSync: anime title slot repair v2 complete ({updated} show row(s) updated)", "info")
 
     def _migrate_episode_watch_state_repair(self) -> None:
         """Backfill episode watched flags cleared by episode-catalog warm upserts."""

@@ -42,8 +42,6 @@ def api_detail_to_sync_dict(payload: dict[str, Any] | None, catalog: str) -> dic
     item = {
         "title": payload.get("title"),
         "en_title": payload.get("en_title"),
-        "title_en": payload.get("title_en") or payload.get("en_title"),
-        "title_romaji": payload.get("title_romaji"),
         "overview": payload.get("overview") or payload.get("description"),
         "release_date": air_date,
         "poster": poster,
@@ -64,6 +62,10 @@ def api_detail_to_sync_dict(payload: dict[str, Any] | None, catalog: str) -> dic
         "total_episodes": payload.get("total_episodes"),
         "episode_count": payload.get("episode_count"),
     }
+    if catalog != "anime":
+        item["title_en"] = payload.get("title_en") or payload.get("en_title")
+    if payload.get("title_romaji"):
+        item["title_romaji"] = payload.get("title_romaji")
 
     from resources.lib.discover.normalize import cdn_item_to_sync_dict
 

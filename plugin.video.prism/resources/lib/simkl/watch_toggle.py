@@ -25,6 +25,10 @@ def finish_library_action(item_information: dict, *, refresh_container: bool = T
     mark_library_catalog_verified(hub_catalog)
     if info.get("simkl_id") is not None:
         clear_session_page_paint_for_item(int(info["simkl_id"]), info.get("mediatype"))
+        if (info.get("mediatype") or "").lower() in ("movie", "movies"):
+            from resources.lib.meta.display_store import get_display_meta_store
+
+            get_display_meta_store().delete_row("movie", int(info["simkl_id"]))
     if refresh_container:
         refreshed = g.refresh_visible_container()
         if not refreshed:

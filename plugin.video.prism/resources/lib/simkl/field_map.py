@@ -56,9 +56,19 @@ def resolve_anime_titles_from_source(source: dict[str, Any]) -> tuple[str | None
     has_romaji_key = romaji_raw is not None and str(romaji_raw).strip()
 
     if has_romaji_key:
-        romaji = _unescape(romaji_raw)
-        if not english and base_title:
-            english = base_title
+        romaji_candidate = _unescape(romaji_raw)
+        if english:
+            if base_title and base_title != english and _english_title_confidence(base_title) <= _english_title_confidence(english):
+                romaji = base_title
+            else:
+                romaji = romaji_candidate or base_title
+        elif _english_title_confidence(romaji_candidate) > _english_title_confidence(base_title):
+            english = romaji_candidate
+            romaji = base_title
+        else:
+            romaji = romaji_candidate
+            if not english and base_title:
+                english = base_title
     elif source.get("en_title") is not None or source.get("title_en"):
         romaji = base_title
     else:
@@ -87,14 +97,34 @@ def resolve_anime_titles_from_source(source: dict[str, Any]) -> tuple[str | None
     ):
         english, romaji = romaji, english
 
+    if english and romaji and english == romaji and base_title and base_title not in (english, romaji):
+        romaji = base_title
+
     return english, romaji
 
 
 def _is_likely_localized_english_title(text: str | None) -> bool:
+    return _english_title_confidence(text) >= 2
+
+
+def _english_title_confidence(text: str | None) -> int:
     title = (text or "").strip()
     if not title:
-        return False
-    return title.startswith(("The ", "A ", "An "))
+        return 0
+    lower = f" {title.lower()} "
+    score = 0
+    if title.startswith(("The ", "A ", "An ", "You ", "Your ")):
+        score += 2
+    if " and " in lower:
+        score += 2
+    if " of the " in lower:
+        score += 1
+    if ": " in title:
+        score += 1
+    for particle in (" no ", " na ", " ni ", " wo ", " wa ", " ga ", " to ", " e ", " wo "):
+        if particle in lower:
+            score -= 2
+    return score
 
 
 def repair_inverted_anime_title_slots(info: dict[str, Any]) -> bool:
@@ -104,20 +134,34 @@ def repair_inverted_anime_title_slots(info: dict[str, Any]) -> bool:
 
     en = (info.get("title_en") or "").strip()
     romaji = (info.get("title_romaji") or "").strip()
+    main = (info.get("title") or "").strip()
     if not en or not romaji or en == romaji:
         return False
+
+    # CDN/list rows keep the English name in `title`; bad merges stored romaji in title_en.
+    if main and main == romaji and main != en:
+        if _english_title_confidence(main) > _english_title_confidence(en):
+            info["title_en"] = main
+            info["title_romaji"] = en
+            return True
+        return False
+
+    if main and main == en and main != romaji:
+        if _english_title_confidence(romaji) > _english_title_confidence(main):
+            info["title_en"] = romaji
+            info["title_romaji"] = main
+            return True
 
     if _is_likely_localized_english_title(en) and not _is_likely_localized_english_title(romaji):
         return False
 
     api_en = (info.get("en_title") or "").strip()
-    main = (info.get("title") or "").strip()
     if api_en and api_en != en:
         info["title_en"] = api_en
         info["title_romaji"] = main or en if (main or en) != api_en else romaji
         return True
 
-    if main and en == main and _is_likely_localized_english_title(romaji) and not _is_likely_localized_english_title(main):
+    if main and en == main and _english_title_confidence(romaji) > _english_title_confidence(main):
         info["title_en"] = romaji
         info["title_romaji"] = main
         return True
@@ -137,19 +181,24 @@ def _normalized_anime_title_slots(
     if not en_val or not romaji_val or en_val == romaji_val:
         return en_val or None, romaji_val or None
 
-    if _is_likely_localized_english_title(en_val) and not _is_likely_localized_english_title(romaji_val):
+    if _english_title_confidence(en_val) > _english_title_confidence(romaji_val):
         return en_val, romaji_val
 
-    if _is_likely_localized_english_title(romaji_val) and not _is_likely_localized_english_title(en_val):
+    if _english_title_confidence(romaji_val) > _english_title_confidence(en_val):
         return romaji_val, en_val
 
     if (
         main_val
         and en_val == main_val
-        and _is_likely_localized_english_title(romaji_val)
-        and not _is_likely_localized_english_title(main_val)
+        and en_val != romaji_val
+        and _english_title_confidence(romaji_val) > _english_title_confidence(en_val)
     ):
         return romaji_val, main_val
+
+    if main_val and en_val and romaji_val and main_val == romaji_val and main_val != en_val:
+        if _english_title_confidence(main_val) > _english_title_confidence(en_val):
+            return main_val, en_val
+        return en_val, main_val
 
     return en_val, romaji_val
 
@@ -320,17 +369,15 @@ def ensure_anime_title_slots(info: dict[str, Any]) -> bool:
     if not info:
         return False
     english, romaji = resolve_anime_titles_from_source(info)
-    if english and not info.get("title_en"):
+    if english:
         info["title_en"] = english
-    if romaji and not info.get("title_romaji"):
+    if romaji:
         info["title_romaji"] = romaji
     api_en = info.get("en_title")
     if api_en and not info.get("title_en"):
         info["title_en"] = _unescape(api_en)
     if not info.get("title_en") and info.get("title_romaji"):
         info["title_en"] = info["title_romaji"]
-    elif not info.get("title_romaji") and info.get("title_en"):
-        info["title_romaji"] = info["title_en"]
     if not info.get("title"):
         info["title"] = info.get("title_en") or info.get("title_romaji")
     repair_inverted_anime_title_slots(info)
@@ -576,9 +623,9 @@ def enrich_info_from_simkl(
     # Capture anime English / Romaji titles so the title-language preference can pick at render time.
     if catalog == "anime" or source.get("anime_type") or info.get("mal_id"):
         en_title, romaji_title = resolve_anime_titles_from_source(source)
-        if en_title and not info.get("title_en"):
+        if en_title:
             info["title_en"] = en_title
-        if romaji_title and not info.get("title_romaji"):
+        if romaji_title:
             info["title_romaji"] = romaji_title
         raw_api_en = source.get("en_title")
         if raw_api_en and not info.get("en_title"):

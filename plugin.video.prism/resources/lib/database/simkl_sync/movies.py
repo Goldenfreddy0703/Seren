@@ -118,10 +118,12 @@ class SimklSyncDatabase(database.SimklSyncDatabase):
     def mark_movie_watched(self, simkl_id):
         play_count = self.fetchone("SELECT watched FROM movies WHERE simkl_id=?", (simkl_id,))["watched"]
         self._mark_movie_record("watched", play_count + 1, simkl_id)
+        self.execute_sql("UPDATE movies SET history_cleared=0 WHERE simkl_id=?", (int(simkl_id),))
 
     @guard_against_none()
     def mark_movie_unwatched(self, simkl_id):
         self._mark_movie_record("watched", 0, simkl_id)
+        self.execute_sql("UPDATE movies SET history_cleared=1 WHERE simkl_id=?", (int(simkl_id),))
 
     def refresh_movie_watch_state(self, simkl_id: int) -> bool:
         """Pull movie watched/list status from Simkl for one library row."""
